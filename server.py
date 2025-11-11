@@ -1,248 +1,162 @@
-from typing import Optional, List, Dict, Any
+"""
+LDAP Assistant MCP Server.
+
+Multi-directory health and diagnostics assistant for LDAP environments.
+Provides natural-language access to 389 Directory Server operations,
+health checks, and multi-server monitoring.
+"""
+
 import os
 import json
-from datetime import datetime
 import logging
-import ldap
+from typing import Optional
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base
 from mcp.types import CallToolResult, TextContent
-from lib389 import DirSrv
-from lib389.idm.user import nsUserAccounts
-from lib389.idm.group import Groups
-from lib389.idm.account import Accounts
-from lib389.monitor import Monitor
-from lib389.backend import Backends
 from lib389.config import Config
+
+# Import our modular components
+from src.config.loader import load_config, initialize_connection_manager
+from src.providers.dirsrv_mcp.tools import (
+    list_all_users as _list_all_users,
+    search_users_by_name as _search_users_by_name,
+    get_user_details as _get_user_details,
+    list_active_users as _list_active_users,
+    list_locked_users as _list_locked_users,
+    search_users_by_attribute as _search_users_by_attribute,
+    list_all_groups as _list_all_groups,
+    run_monitor as _run_monitor,
+    ldap_search as _ldap_search,
+)
+from src.providers.dirsrv_mcp.health import first_look as _first_look
+from src.providers.dirsrv_mcp.connection import get_connection
+from src.lib.result_formatter import format_tool_result
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create an MCP server
-mcp = FastMCP("DirKeeper")
+mcp = FastMCP("LDAP Assistant")
 
+# Initialize configuration and connection manager
+try:
+    config = load_config()
+    initialize_connection_manager(config)
+    logger.info(f"Initialized with {len(config.servers)} server(s)")
+except Exception as e:
+    logger.warning(f"Failed to initialize multi-server config: {e}")
+    logger.info("Will use single-server mode with environment variables")
 
-def _convert_datetimes_to_strings(data):
-    """Recursively convert datetime objects in dicts/lists to ISO strings."""
-    if isinstance(data, dict):
-        return {k: _convert_datetimes_to_strings(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [_convert_datetimes_to_strings(i) for i in data]
-    elif isinstance(data, datetime):
-        return data.isoformat()
-    return data
-
-def get_ldap_config():
-    """Get LDAP configuration from environment variables."""
-    return {
-        'ldap_url': os.environ.get('LDAP_URL', 'ldap://localhost:389'),
-        'base_dn': os.environ.get('LDAP_BASE_DN', 'dc=example,dc=com'),
-        'bind_dn': os.environ.get('LDAP_BIND_DN', 'cn=directory manager'),
-        'bind_password': os.environ.get('LDAP_BIND_PASSWORD', 'Password123')
-    }
-
-def get_ldap_connection():
-    """Create and return a connection to the LDAP server."""
-    try:
-        config = get_ldap_config()
-        logger.info(f"Connecting to LDAP at {config['ldap_url']}")
-
-        # Create a DirSrv instance
-        ds = DirSrv(verbose=False)
-
-        # Connect to the remote LDAP server
-        ds.remote_simple_allocate(
-            config['ldap_url'],
-            config['bind_dn'],
-            config['bind_password']
-        )
-
-        # Open the connection
-        ds.open()
-        logger.info("LDAP connection established successfully")
-        return ds
-    except Exception as e:
-        logger.error(f"Failed to connect to LDAP: {str(e)}")
-        raise
-
-def _get_user_status(ds_instance, user_dn: str, basedn: str) -> Dict[str, Any]:
-    """Get comprehensive user status using proper 389 DS API."""
-    try:
-        accounts = Accounts(ds_instance, basedn)
-        acct = accounts.get(dn=user_dn)
-        status_data = acct.status()
-
-        # Extract status information
-        account_state = status_data.get('state', 'unknown')
-        params = status_data.get('params', {})
-        calc_time = status_data.get('calc_time', None)
-
-        # Convert calc_time to string if it's a datetime object
-        if isinstance(calc_time, datetime):
-            calc_time_str = calc_time.isoformat()
-        else:
-            calc_time_str = calc_time
-
-        # Ensure params are serializable
-        serializable_params = _convert_datetimes_to_strings(params)
-
-        # Map 389 DS AccountState to our simplified status
-        if hasattr(account_state, 'name'):
-            state_name = account_state.name
-        elif hasattr(account_state, 'value'):
-            state_name = str(account_state.value)
-        else:
-            state_name = str(account_state)
-
-        if state_name in ['DIRECTLY_LOCKED', 'INDIRECTLY_LOCKED']:
-            simple_status = 'locked'
-        elif state_name == 'INACTIVITY_LIMIT_EXCEEDED':
-            simple_status = 'inactive'
-        elif state_name == 'ACTIVATED':
-            simple_status = 'active'
-        else:
-            simple_status = 'unknown'
-
-        return {
-            'simple_status': simple_status,
-            'detailed_status': state_name,
-            'status_params': serializable_params,
-            'calc_time': calc_time_str
-        }
-
-    except Exception as e:
-        logger.warning(f"Error getting user status for {user_dn}: {str(e)}")
-        # Fallback to basic status check
-        try:
-            accounts = Accounts(ds_instance, basedn)
-            acct = accounts.get(dn=user_dn)
-            # Check nsAccountLock attribute directly
-            attrs = acct.get_all_attrs()
-            if 'nsAccountLock' in attrs and attrs['nsAccountLock'] and attrs['nsAccountLock'][0].lower() == 'true':
-                return {
-                    'simple_status': 'locked',
-                    'detailed_status': 'DIRECTLY_LOCKED',
-                    'status_params': {},
-                    'calc_time': None
-                }
-            else:
-                return {
-                    'simple_status': 'active',
-                    'detailed_status': 'ACTIVATED',
-                    'status_params': {},
-                    'calc_time': None
-                }
-        except Exception as fallback_error:
-            logger.error(f"Fallback status check failed for {user_dn}: {str(fallback_error)}")
-            return {
-                'simple_status': 'unknown',
-                'detailed_status': f'error: {str(e)}',
-                'status_params': {},
-                'calc_time': None
-            }
 
 @mcp.prompt(title="Tool Navigator")
 def tool_navigator(goal: str) -> list[base.Message]:
+    """Guide users through available tools and their usage."""
     return [
         base.UserMessage("Directory task:"),
         base.UserMessage(goal),
         base.AssistantMessage(
             (
                 "Use the available MCP tools to accomplish the task. Prefer specialized tools first, "
-                "falling back to ldap_search for advanced queries.\n"
-                "- list_active_users / list_locked_users / list_all_users: enumerate users.\n"
-                "- search_users_by_name or search_users_by_attribute: find users.\n"
-                "- get_user_details: retrieve a specific user's details.\n"
-                "- list_all_groups: view groups.\n"
-                "- run_monitor: check server/Backend monitor.\n"
-                "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit): custom queries.\n"
-                "Resources: config://config-all and config://config-attribute/{attribute} for cn=config.\n"
+                "falling back to ldap_search for advanced queries.\n\n"
+                "**Health & Diagnostics:**\n"
+                "- first_look: Quick health overview across all servers (RECOMMENDED for troubleshooting)\n\n"
+                "**User Management:**\n"
+                "- list_active_users / list_locked_users / list_all_users: enumerate users\n"
+                "- search_users_by_name or search_users_by_attribute: find users\n"
+                "- get_user_details: retrieve a specific user's details\n\n"
+                "**Group Management:**\n"
+                "- list_all_groups: view groups\n\n"
+                "**Monitoring:**\n"
+                "- run_monitor: check server/backend monitor\n\n"
+                "**Advanced:**\n"
+                "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit): custom queries\n\n"
+                "**Resources:** config://config-all and config://config-attribute/{attribute} for cn=config.\n\n"
                 "State which tool you'll call next and why; keep outputs concise."
             )
         ),
     ]
 
+
+# ============================================================================
+# HEALTH CHECK TOOLS
+# ============================================================================
+
+@mcp.tool()
+def first_look() -> CallToolResult:
+    """
+    Quick health overview across all configured LDAP servers.
+
+    This is the PRIMARY diagnostic tool for support engineers. It provides
+    rapid assessment of the entire LDAP topology, identifying critical issues
+    that require immediate attention. Use this FIRST when troubleshooting.
+
+    The tool checks:
+    - Server connectivity for all configured servers
+    - Basic operational status
+    - Critical resource indicators (connections, threads)
+    - Identifies servers that are unreachable or degraded
+
+    Returns:
+        JSON containing:
+            - summary: High-level health status
+            - critical_count, high_count, etc.: Counts by severity
+            - findings: Detailed findings with severity/impact/remediation
+            - servers_checked: Successfully checked servers
+            - servers_failed: Servers that couldn't be checked
+
+    Examples:
+        >>> # Check health of all servers
+        >>> result = first_look()
+        >>> # Returns summary like "CRITICAL: 2 critical issues found across 5 servers"
+    """
+    try:
+        result = _first_look()
+        return format_tool_result("first_look", result)
+    except Exception as e:
+        error_message = f"Error during first_look health check: {str(e)}"
+        logger.error(error_message)
+        return format_tool_result(
+            "first_look_error",
+            {},
+            is_error=True,
+            error_message=error_message
+        )
+
+
+# ============================================================================
+# USER MANAGEMENT TOOLS
+# ============================================================================
+
 @mcp.tool()
 def list_all_users(limit: int = 50) -> CallToolResult:
-    """List all users in the directory.
+    """
+    List all users in the directory.
 
     Args:
         limit: Maximum number of users to return (default: 50)
 
     Returns:
-        JSON containing all user entries
+        JSON containing all user entries with computed status
     """
     try:
-        logger.info(f"Listing all users with limit {limit}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        users = nsUserAccounts(ds, config['base_dn'])
-        user_entries = users.list()
-
-        results = []
-        count = 0
-
-        for user in user_entries:
-            if count >= limit:
-                break
-
-            try:
-                user_data_json = user.get_all_attrs_json()
-                user_data = json.loads(user_data_json)
-                user_dn = user_data.get('dn', '')
-
-                # Convert datetime objects
-                if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                    user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-                # Add status information
-                status_info = _get_user_status(ds, user_dn, config['base_dn'])
-                user_data['attrs']['computed_status'] = status_info
-
-                results.append(user_data)
-                count += 1
-
-            except Exception as user_error:
-                logger.error(f"Error processing user: {str(user_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "user_list",
-            "total_returned": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Successfully returned {len(results)} users")
+        result = _list_all_users(limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error listing users: {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
+
 
 @mcp.tool()
 def search_users_by_name(name: str, limit: int = 50) -> CallToolResult:
-    """Search for users by name (uid, cn, givenName, sn, or displayName).
+    """
+    Search for users by name (uid, cn, givenName, sn, or displayName).
 
     Args:
         name: Name to search for (supports wildcards with *)
@@ -252,85 +166,23 @@ def search_users_by_name(name: str, limit: int = 50) -> CallToolResult:
         JSON containing matching user entries
     """
     try:
-        logger.info(f"Searching users by name: {name}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        # Build search filter for name
-        if '*' in name:
-            # User provided wildcards
-            search_filter = f"(|(uid={name})(cn={name})(givenName={name})(sn={name})(displayName={name})(mail={name}))"
-        else:
-            # Add wildcards for partial matching
-            search_filter = f"(|(uid=*{name}*)(cn=*{name}*)(givenName=*{name}*)(sn=*{name}*)(displayName=*{name}*)(mail=*{name}*))"
-
-        users = nsUserAccounts(ds, config['base_dn'])
-        user_entries = users.filter(search_filter)
-
-        results = []
-        count = 0
-
-        for user in user_entries:
-            if count >= limit:
-                break
-
-            try:
-                user_data_json = user.get_all_attrs_json()
-                user_data = json.loads(user_data_json)
-                user_dn = user_data.get('dn', '')
-
-                # Convert datetime objects
-                if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                    user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-                # Add status information
-                status_info = _get_user_status(ds, user_dn, config['base_dn'])
-                user_data['attrs']['computed_status'] = status_info
-
-                results.append(user_data)
-                count += 1
-
-            except Exception as user_error:
-                logger.error(f"Error processing user: {str(user_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "user_search",
-            "search_term": name,
-            "filter_used": search_filter,
-            "total_returned": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Found {len(results)} users matching '{name}'")
+        result = _search_users_by_name(name=name, limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error searching users by name '{name}': {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
+
 
 @mcp.tool()
 def get_user_details(username: str) -> CallToolResult:
-    """Get detailed information about a specific user.
+    """
+    Get detailed information about a specific user.
 
     Args:
         username: Username (uid) to get details for
@@ -339,74 +191,23 @@ def get_user_details(username: str) -> CallToolResult:
         JSON containing detailed user information
     """
     try:
-        logger.info(f"Getting details for user: {username}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        users = nsUserAccounts(ds, config['base_dn'])
-
-        try:
-            user = users.get(username)
-            user_data_json = user.get_all_attrs_json()
-            user_data = json.loads(user_data_json)
-            user_dn = user_data.get('dn', '')
-
-            # Convert datetime objects
-            if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-            # Add status information
-            status_info = _get_user_status(ds, user_dn, config['base_dn'])
-            user_data['attrs']['computed_status'] = status_info
-
-            ds.unbind_s()
-
-            response_data = {
-                "type": "user_details",
-                "username": username,
-                "user": user_data
-            }
-
-            logger.info(f"Successfully retrieved details for user: {username}")
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=json.dumps(response_data, indent=2)
-                    )
-                ]
-            )
-
-        except Exception as user_error:
-            ds.unbind_s()
-            error_message = f"User '{username}' not found: {str(user_error)}"
-            logger.warning(error_message)
-            return CallToolResult(
-                isError=True,
-                content=[
-                    TextContent(
-                        type="text",
-                        text=error_message
-                    )
-                ]
-            )
-
+        result = _get_user_details(username=username)
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
+        )
     except Exception as e:
         error_message = f"Error getting user details for '{username}': {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
+
 
 @mcp.tool()
 def list_active_users(limit: int = 50) -> CallToolResult:
-    """List all active (unlocked) users in the directory.
+    """
+    List all active (unlocked) users in the directory.
 
     Args:
         limit: Maximum number of users to return (default: 50)
@@ -415,80 +216,23 @@ def list_active_users(limit: int = 50) -> CallToolResult:
         JSON containing active user entries
     """
     try:
-        logger.info(f"Listing active users with limit {limit}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        users = nsUserAccounts(ds, config['base_dn'])
-        user_entries = users.list()
-
-        results = []
-        count = 0
-        processed = 0
-
-        for user in user_entries:
-            if count >= limit:
-                break
-
-            try:
-                processed += 1
-                user_data_json = user.get_all_attrs_json()
-                user_data = json.loads(user_data_json)
-                user_dn = user_data.get('dn', '')
-
-                # Convert datetime objects
-                if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                    user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-                # Add status information
-                status_info = _get_user_status(ds, user_dn, config['base_dn'])
-                user_data['attrs']['computed_status'] = status_info
-
-                # Only include active users
-                if status_info.get('simple_status') == 'active':
-                    results.append(user_data)
-                    count += 1
-
-            except Exception as user_error:
-                logger.error(f"Error processing user: {str(user_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "active_users",
-            "total_processed": processed,
-            "active_users_found": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Successfully returned {len(results)} active users out of {processed} processed")
+        result = _list_active_users(limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error listing active users: {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
+
 
 @mcp.tool()
 def list_locked_users(limit: int = 50) -> CallToolResult:
-    """List all locked users in the directory.
+    """
+    List all locked users in the directory.
 
     Args:
         limit: Maximum number of users to return (default: 50)
@@ -497,80 +241,23 @@ def list_locked_users(limit: int = 50) -> CallToolResult:
         JSON containing locked user entries
     """
     try:
-        logger.info(f"Listing locked users with limit {limit}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        users = nsUserAccounts(ds, config['base_dn'])
-        user_entries = users.list()
-
-        results = []
-        count = 0
-        processed = 0
-
-        for user in user_entries:
-            if count >= limit:
-                break
-
-            try:
-                processed += 1
-                user_data_json = user.get_all_attrs_json()
-                user_data = json.loads(user_data_json)
-                user_dn = user_data.get('dn', '')
-
-                # Convert datetime objects
-                if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                    user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-                # Add status information
-                status_info = _get_user_status(ds, user_dn, config['base_dn'])
-                user_data['attrs']['computed_status'] = status_info
-
-                # Only include locked users
-                if status_info.get('simple_status') == 'locked':
-                    results.append(user_data)
-                    count += 1
-
-            except Exception as user_error:
-                logger.error(f"Error processing user: {str(user_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "locked_users",
-            "total_processed": processed,
-            "locked_users_found": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Successfully returned {len(results)} locked users out of {processed} processed")
+        result = _list_locked_users(limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error listing locked users: {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
+
 
 @mcp.tool()
 def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> CallToolResult:
-    """Search for users by a specific attribute value.
+    """
+    Search for users by a specific attribute value.
 
     Args:
         attribute: LDAP attribute name to search (e.g., 'employeeType', 'department', 'title')
@@ -581,141 +268,27 @@ def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> Ca
         JSON containing matching user entries
     """
     try:
-        logger.info(f"Searching users by attribute {attribute}={value}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        # Build search filter
-        if '*' in value:
-            search_filter = f"({attribute}={value})"
-        else:
-            search_filter = f"({attribute}=*{value}*)"
-
-        users = nsUserAccounts(ds, config['base_dn'])
-        user_entries = users.filter(search_filter)
-
-        results = []
-        count = 0
-
-        for user in user_entries:
-            if count >= limit:
-                break
-
-            try:
-                user_data_json = user.get_all_attrs_json()
-                user_data = json.loads(user_data_json)
-                user_dn = user_data.get('dn', '')
-
-                # Convert datetime objects
-                if 'attrs' in user_data and isinstance(user_data['attrs'], dict):
-                    user_data['attrs'] = _convert_datetimes_to_strings(user_data['attrs'])
-
-                # Add status information
-                status_info = _get_user_status(ds, user_dn, config['base_dn'])
-                user_data['attrs']['computed_status'] = status_info
-
-                results.append(user_data)
-                count += 1
-
-            except Exception as user_error:
-                logger.error(f"Error processing user: {str(user_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "attribute_search",
-            "attribute": attribute,
-            "value": value,
-            "filter_used": search_filter,
-            "total_returned": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Found {len(results)} users with {attribute}={value}")
+        result = _search_users_by_attribute(attribute=attribute, value=value, limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error searching users by attribute {attribute}={value}: {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
 
 
-@mcp.tool()
-def run_monitor(backend: str = "", suffix: str = "") -> CallToolResult:
-    """Get the Directory Server's monitor information
-
-    Get the backend monitor information if backend/suffix is provided
-
-    Args:
-        backend: the database backend name, like 'userroot'
-        suffix: the database suffix name, like dc=example,dc=com
-
-    Returns:
-        JSON object containing the server's monitor information
-    """
-    try:
-        logger.info("Get the Directory Server monitor information")
-        ds = get_ldap_connection()
-
-        if backend or suffix:
-            # Backend monitor
-            bes = Backends(ds)
-            be = bes.get(backend or suffix)
-            monitor = be.get_monitor()
-        else:
-            # Main monitor
-            monitor = Monitor(ds)
-        data_json = monitor.get_all_attrs_json()
-        result = json.loads(data_json)
-
-        ds.unbind_s()
-        response_data = {
-            "type": "monitor",
-            "item": result
-        }
-
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
-        )
-
-    except Exception as e:
-        error_message = f"Error accessing the monitor: {str(e)}"
-        logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
-        )
+# ============================================================================
+# GROUP MANAGEMENT TOOLS
+# ============================================================================
 
 @mcp.tool()
 def list_all_groups(limit: int = 50) -> CallToolResult:
-    """List all groups in the directory.
+    """
+    List all groups in the directory.
 
     Args:
         limit: Maximum number of groups to return (default: 50)
@@ -724,72 +297,66 @@ def list_all_groups(limit: int = 50) -> CallToolResult:
         JSON containing all group entries
     """
     try:
-        logger.info(f"Listing all groups with limit {limit}")
-        config = get_ldap_config()
-        ds = get_ldap_connection()
-
-        groups = Groups(ds, config['base_dn'])
-        group_entries = groups.list()
-
-        results = []
-        count = 0
-
-        for group in group_entries:
-            if count >= limit:
-                break
-
-            try:
-                group_data_json = group.get_all_attrs_json()
-                group_data = json.loads(group_data_json)
-
-                # Convert datetime objects
-                if 'attrs' in group_data and isinstance(group_data['attrs'], dict):
-                    group_data['attrs'] = _convert_datetimes_to_strings(group_data['attrs'])
-
-                results.append(group_data)
-                count += 1
-
-            except Exception as group_error:
-                logger.error(f"Error processing group: {str(group_error)}")
-                continue
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "group_list",
-            "total_returned": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"Successfully returned {len(results)} groups")
+        result = _list_all_groups(limit=limit)
         return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
         )
-
     except Exception as e:
         error_message = f"Error listing groups: {str(e)}"
         logger.error(error_message)
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
 
 
+# ============================================================================
+# MONITORING TOOLS
+# ============================================================================
+
 @mcp.tool()
-def ldap_search(base_dn: str, scope: str = 'SUBTREE', filter: str = '(objectClass=*)',
-                attributes: str = None, attrs_only: bool = False, limit: int = 100) -> CallToolResult:
-    """Perform a general LDAP search with full control over search parameters.
+def run_monitor(backend: str = "", suffix: str = "") -> CallToolResult:
+    """
+    Get the Directory Server's monitor information.
+
+    Get the backend monitor information if backend/suffix is provided.
+
+    Args:
+        backend: The database backend name, like 'userroot'
+        suffix: The database suffix name, like 'dc=example,dc=com'
+
+    Returns:
+        JSON object containing the server's monitor information
+    """
+    try:
+        result = _run_monitor(backend=backend, suffix=suffix)
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
+        )
+    except Exception as e:
+        error_message = f"Error accessing the monitor: {str(e)}"
+        logger.error(error_message)
+        return CallToolResult(
+            isError=True,
+            content=[TextContent(type="text", text=error_message)]
+        )
+
+
+# ============================================================================
+# ADVANCED SEARCH TOOLS
+# ============================================================================
+
+@mcp.tool()
+def ldap_search(
+    base_dn: str,
+    scope: str = 'SUBTREE',
+    filter: str = '(objectClass=*)',
+    attributes: Optional[str] = None,
+    attrs_only: bool = False,
+    limit: int = 100
+) -> CallToolResult:
+    """
+    Perform a general LDAP search with full control over search parameters.
 
     This tool provides direct access to LDAP search functionality for cases where
     the specialized search tools (user/group specific) are not sufficient. It allows
@@ -814,180 +381,44 @@ def ldap_search(base_dn: str, scope: str = 'SUBTREE', filter: str = '(objectClas
         JSON containing the search results with full entry details
     """
     try:
-        logger.info(f"Performing LDAP search - base: {base_dn}, scope: {scope}, filter: {filter}")
-
-        # Store original scope string for response
-        original_scope = scope.upper()
-
-        # Validate and convert scope
-        scope_map = {
-            'BASE': ldap.SCOPE_BASE,
-            'ONELEVEL': ldap.SCOPE_ONELEVEL,
-            'SUBTREE': ldap.SCOPE_SUBTREE
-        }
-
-        if original_scope not in scope_map:
-            # Return a structured error instead of raising
-            return CallToolResult(
-                isError=True,
-                content=[
-                    TextContent(
-                        type="text",
-                        text=f"Invalid scope '{scope}'. Must be one of: BASE, ONELEVEL, SUBTREE"
-                    )
-                ]
-            )
-
-        search_scope = scope_map[original_scope]
-
-        # Validate limit
-        if limit < 1:
-            limit = 1
-        elif limit > 1000:
-            limit = 1000
-            logger.warning("Limit exceeded maximum of 1000, capping at 1000")
-
-        # Parse attributes
-        attrlist = None
-        if attributes:
-            # Handle special cases and comma-separated list
-            if attributes.strip() in ['*', '+', '*,+', '+,*']:
-                attrlist = attributes.strip().split(',')
-            else:
-                attrlist = [attr.strip() for attr in attributes.split(',') if attr.strip()]
-
-        # Connect to LDAP
-        ds = get_ldap_connection()
-
-        # Perform the search
-        try:
-            # Use search_s which returns a list of (dn, attrs) tuples
-            search_results = ds.search_s(
-                base_dn,
-                search_scope,
-                filter,
-                attrlist=attrlist,
-                attrsonly=1 if attrs_only else 0
-            )
-        except ldap.NO_SUCH_OBJECT:
-            ds.unbind_s()
-            return CallToolResult(
-                isError=True,
-                content=[
-                    TextContent(
-                        type="text",
-                        text=f"Base DN '{base_dn}' does not exist"
-                    )
-                ]
-            )
-        except ldap.INVALID_SYNTAX as e:
-            ds.unbind_s()
-            return CallToolResult(
-                isError=True,
-                content=[
-                    TextContent(
-                        type="text",
-                        text=f"Invalid LDAP filter syntax: {str(e)}"
-                    )
-                ]
-            )
-
-        results = []
-        for item in search_results:
-            if len(results) >= limit:
-                break
-
-            if isinstance(item, tuple) and len(item) == 2:
-                dn, attrs = item
-            else:
-                dn = getattr(item, 'dn', None)
-                attrs = getattr(item, 'data', None)
-
-            if not dn or attrs is None:
-                continue
-
-            attrs_out = {}
-            if hasattr(attrs, 'items'):
-                for attr_name, attr_values in attrs.items():
-                    values_iter = attr_values if isinstance(attr_values, (list, tuple)) else [attr_values]
-                    converted_values = []
-                    for val in values_iter:
-                        if isinstance(val, bytes):
-                            try:
-                                converted_values.append(val.decode('utf-8'))
-                            except UnicodeDecodeError:
-                                import base64
-                                converted_values.append(base64.b64encode(val).decode('ascii'))
-                        else:
-                            converted_values.append(str(val))
-                    attrs_out[attr_name] = converted_values
-
-            results.append({'dn': dn, 'attrs': attrs_out})
-
-        ds.unbind_s()
-
-        response_data = {
-            "type": "ldap_search",
-            "base_dn": base_dn,
-            "scope": original_scope,
-            "filter": filter,
-            "attributes_requested": attributes if attributes else "all",
-            "attrs_only": attrs_only,
-            "total_returned": len(results),
-            "limit_applied": limit,
-            "items": results
-        }
-
-        logger.info(f"LDAP search completed, returned {len(results)} entries")
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )
-            ]
+        result = _ldap_search(
+            base_dn=base_dn,
+            scope=scope,
+            filter=filter,
+            attributes=attributes,
+            attrs_only=attrs_only,
+            limit=limit
         )
-
-    except ldap.LDAPError as e:
-        error_message = f"LDAP search failed: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
+        )
+    except ValueError as e:
+        # Handle validation errors (like invalid scope)
+        error_message = str(e)
         logger.error(error_message)
-        try:
-            ds.unbind_s()
-        except:
-            pass
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
     except Exception as e:
         error_message = f"Unexpected error during LDAP search: {str(e)}"
         logger.error(error_message)
-        try:
-            ds.unbind_s()
-        except:
-            pass
         return CallToolResult(
             isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=error_message
-                )
-            ]
+            content=[TextContent(type="text", text=error_message)]
         )
 
+
+# ============================================================================
+# RESOURCES
+# ============================================================================
 
 @mcp.resource("config://config-all")
 def get_cn_config_all_attributes() -> str:
     """Return all attributes for cn=config as JSON."""
     ds = None
     try:
-        ds = get_ldap_connection()
+        ds = get_connection()
         config_entry = Config(ds)
         return config_entry.get_all_attrs_json()
     except Exception as e:
@@ -1004,12 +435,13 @@ def get_cn_config_all_attributes() -> str:
         except Exception:
             pass
 
+
 @mcp.resource("config://config-attribute/{attribute}")
 def get_cn_config_attribute(attribute: str) -> str:
     """Get a specific attribute from cn=config as JSON."""
     ds = None
     try:
-        ds = get_ldap_connection()
+        ds = get_connection()
         config_entry = Config(ds)
 
         attr_name = attribute.strip()

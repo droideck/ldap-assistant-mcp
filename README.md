@@ -1,204 +1,299 @@
-# DirKeeper
+# LDAP Assistant MCP
 
-> A natural-language MCP server for 389 Directory Server
+> **⚠️ Experimental Project - Active Development**
+> This is an experimental MCP server in early development. Current focus: building foundational architecture and health diagnostics for 389 Directory Server. Not production-ready.
 
-> **⚠️ Experimental**
-> DirKeeper is an experimental project. It targets local development and testing, is read‑only for directory data, and is not intended for production use yet.
+## Project Intent
 
-## What is DirKeeper?
+LDAP Assistant MCP aims to be a **multi-directory health and diagnostics assistant** that transforms how support engineers and LDAP administrators troubleshoot directory services.
 
-DirKeeper lets you explore a 389 Directory Server using natural language through the Model Context Protocol (MCP). Instead of crafting LDAP filters, ask questions like “show me active users named Alice” and the MCP tools will run the appropriate directory queries.
+The assistant:
+- **Rapidly assesses** health across all configured LDAP servers
+- **Identifies root causes** with actionable findings (severity, impact, remediation)
+- **Guides troubleshooting** following "What's wrong?" → "Why?" → "How to fix?" workflow
 
-### Current capabilities
-- **User discovery**: enumerate users; search by name or attribute
-- **Group discovery**: list groups
-- **Account status**: compute active/locked/inactive using 389 DS `Accounts.status()` with safe fallbacks
-- **User details**: fetch all attributes for a given `uid`
-- **Advanced queries**: general-purpose LDAP search with custom base/scope/filter/attributes
-- **Server monitor**: fetch main or backend monitor info
-- **Config resources**: expose `cn=config` as MCP resources (all attributes or single attribute)
+Instead of manually checking servers, ask:
+- "What's wrong across all my servers?"
+- "Show me all locked users"
+- "Which servers have connection issues?"
 
-### Provided MCP prompts/tools/resources
-- **Prompt**
-  - `Tool Navigator` – guides tool selection for directory tasks
-- **Tools**
-  - `list_all_users(limit=50)`
-  - `search_users_by_name(name, limit=50)`
-  - `get_user_details(username)`
-  - `list_active_users(limit=50)`
-  - `list_locked_users(limit=50)`
-  - `search_users_by_attribute(attribute, value, limit=50)`
-  - `list_all_groups(limit=50)`
-  - `ldap_search(base_dn, scope, filter, attributes=None, attrs_only=False, limit=100)`
-  - `run_monitor(backend="", suffix="")`
-- **Resources**
-  - `config://config-all` – all attributes of `cn=config` (JSON)
-  - `config://config-attribute/{attribute}` – value(s) for one attribute under `cn=config` (JSON)
+## Current Status
 
-## Requirements
+### What's Implemented ✅
+
+**Architecture & Foundation:**
+- ✅ Modular provider system (`src/providers/dirsrv_mcp/`, `src/providers/openldap_mcp/`)
+- ✅ Multi-server connection management (concurrent server support)
+- ✅ JSON-based multi-server configuration
+- ✅ Shared utilities library
+- ✅ MCP server with FastMCP
+
+**389 Directory Server Provider:**
+- ✅ Full implementation using lib389
+- ✅ Connection pooling and management
+- ✅ User account status computation with fallback logic
+
+**Health & Diagnostics:**
+- ✅ `first_look()` - Multi-server quick health overview
+- `replication_status()` - Replication agreement health and lag detection
+- `performance_summary()` - Thread/connection/cache metrics and bottlenecks
+- `indexing_analysis()` - Index configuration and unindexed search detection
+- `aci_audit()` - Access control validation and security checks
+
+**User Management Tools:**
+- ✅ `list_all_users()` - Enumerate all users
+- ✅ `search_users_by_name()` - Search by name/email
+- ✅ `get_user_details()` - Get full user details
+- ✅ `list_active_users()` - List only active/unlocked users
+- ✅ `list_locked_users()` - List only locked users
+- ✅ `search_users_by_attribute()` - Search by any attribute
+
+**Group & Directory Tools:**
+- ✅ `list_all_groups()` - Enumerate groups
+- ✅ `ldap_search()` - Generic LDAP search with full control
+- ✅ `run_monitor()` - Server and backend monitoring
+
+**MCP Resources:**
+- ✅ `config://config-all` - All cn=config attributes
+- ✅ `config://config-attribute/{attribute}` - Single cn=config attribute
+
+**Supported Platforms:**
+- ✅ **389 Directory Server**
+- 🚧 **OpenLDAP**
+
+## Getting Started
+
+### Prerequisites
+
 - Python 3.13+
 - `uv` package manager
-- 389 Directory Server (local or container)
-- Optional: Ollama + Qwen3, Gemini CLI, Cursor, or Claude Code (any MCP-capable client)
+- 389 Directory Server or OpenLDAP
+- Optional: MCP client (Claude Code, Cursor, Gemini CLI, etc.)
 
-Python deps are defined in `pyproject.toml` / `requirements.txt`:
-- `mcp[cli] >= 1.6.0`
-- `lib389`
+### Quick Setup
 
-## Quick start
-
-### 1) Set up a 389 DS for local testing (Docker)
-You can use the provided scripts to create/start a container and seed example data.
-
-- Create and initialize a DS container with base entries:
-```bash
-./scripts/ds-create.sh --password TestPassword123 --base-dn dc=test,dc=com ds-test
-```
-- Or use the all-in-one dev workflow that also seeds users/groups and runs tests:
-```bash
-./scripts/dev-test.sh
-```
-Flags for `dev-test.sh` (env overrides supported): `--image`, `--name`, `--hostname`, `--password`, `--base-dn`, `--skip-seed`, `--no-clean`.
-
-To start an existing container only:
-```bash
-./scripts/ds-start.sh --password TestPassword123 ds-test
-```
-
-Note: When Docker maps container port 3389 dynamically, `dev-test.sh` resolves the host port and exports `LDAP_URL` accordingly.
-
-### 2) Configure Python env
+**1. Install dependencies:**
 ```bash
 uv venv
 uv pip install -r requirements.txt
 ```
 
-### 3) Export LDAP environment variables
-DirKeeper reads its LDAP config from env vars:
+**2. Configure servers:**
+
+**Option A - Single Server (Environment Variables):**
 ```bash
-export LDAP_URL="ldap://localhost:3389"   # or your DS host/port
+export LDAP_URL="ldap://localhost:3389"
 export LDAP_BASE_DN="dc=test,dc=com"
 export LDAP_BIND_DN="cn=Directory Manager"
 export LDAP_BIND_PASSWORD="TestPassword123"
 ```
 
-### 4) Run the MCP server
+**Option B - Multiple Servers (JSON Config):**
+```json
+{
+  "servers": [
+    {
+      "name": "prod-ds1",
+      "ldap_url": "ldap://ds1.example.com:389",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=Directory Manager",
+      "bind_password": "secret",
+      "provider_type": "389ds"
+    }
+  ]
+}
+```
+
+```bash
+export LDAP_SERVERS_CONFIG="./servers.json"
+```
+
+**3. Run the server:**
 ```bash
 uv run server.py
 ```
 
-## Using DirKeeper
+### Testing with 389 DS Container
 
-You can call the tools from any MCP client. Examples below.
+```bash
+# All-in-one: create container, seed data, run tests
+./scripts/dev-test.sh
 
-### MCP CLI (example)
-Assuming an MCP CLI that can launch servers via config, create a `server_config.json` like:
-```json
-{
-  "mcpServers": {
-    "dirkeeper": {
-      "command": "/full/path/to/uv",
-      "args": [
-        "--directory",
-        "/full/path/to/DirKeeper/",
-        "run",
-        "server.py"
-      ],
-      "env": {
-        "LDAP_URL": "ldap://localhost:3389",
-        "LDAP_BASE_DN": "dc=test,dc=com",
-        "LDAP_BIND_DN": "cn=Directory Manager",
-        "LDAP_BIND_PASSWORD": "TestPassword123"
-      }
-    }
-  }
-}
+# Or manually
+./scripts/ds-create.sh --password TestPassword123 --base-dn dc=test,dc=com ds-test
 ```
-Run prompts with your provider/model of choice (example uses Ollama + Qwen3):
+
+## Example Usage
+
+### Health Check Example
+
 ```bash
 uv run mcp-cli cmd \
   --provider=ollama \
   --model=qwen3 \
-  --server dirkeeper \
-  --prompt "show me all users"
+  --server ldap-assistant \
+  --prompt "Check the health of all servers"
 ```
-Other prompts you can try:
+
+### User Management Examples
+
 ```bash
-uv run mcp-cli cmd --provider=ollama --model=qwen3 --server dirkeeper --prompt "list all groups"
-uv run mcp-cli cmd --provider=ollama --model=qwen3 --server dirkeeper --prompt "which accounts are locked?"
-uv run mcp-cli cmd --provider=ollama --model=qwen3 --server dirkeeper --prompt "find users in the Engineering department"
+# List locked accounts
+uv run mcp-cli cmd --server ldap-assistant \
+  --prompt "show me all locked users"
+
+# Find specific users
+uv run mcp-cli cmd --server ldap-assistant \
+  --prompt "find users in the Engineering department"
+
+# Get user details
+uv run mcp-cli cmd --server ldap-assistant \
+  --prompt "show me details for user jdoe"
 ```
 
-### Gemini CLI (client config)
-Create `~/.gemini/settings.json`:
+## MCP Tools Reference
+
+### Health & Diagnostics
+- **`first_look()`** - Quick health overview across all configured servers
+- **`replication_status(server_name)`** - Check all replication agreements for lag/failures
+- **`performance_summary(server_name)`** - Identify performance bottlenecks
+- **`indexing_analysis(server_name, attribute?, backend?)`** - Detect indexing issues
+- **`aci_audit(server_name, base_dn?)`** - Validate access control configurations
+
+### User Management
+- **`list_all_users(limit=50)`** - Enumerate all users
+- **`search_users_by_name(name, limit=50)`** - Search by name/email
+- **`get_user_details(username)`** - Get full user details
+- **`list_active_users(limit=50)`** - List active/unlocked users
+- **`list_locked_users(limit=50)`** - List locked users
+- **`search_users_by_attribute(attr, value, limit=50)`** - Search by any attribute
+
+### Group Management
+- **`list_all_groups(limit=50)`** - Enumerate groups
+
+### Monitoring
+- **`run_monitor(backend="", suffix="")`** - Get server/backend monitor data
+
+### Advanced
+- **`ldap_search(base_dn, scope, filter, ...)`** - Full LDAP search control
+
+### Resources
+- **`config://config-all`** - All cn=config attributes
+- **`config://config-attribute/{attr}`** - Single cn=config attribute
+
+### Prompts
+- **`Tool Navigator`** - Guides tool selection for directory tasks
+
+## Architecture
+
+The project uses a **modular provider architecture**:
+
+```
+ldap-assistant-mcp/
+├── src/
+│   ├── lib/              # Shared utilities (all providers)
+│   ├── providers/        # LDAP provider implementations
+│   │   ├── dirsrv_mcp/   # 389 DS provider
+│   │   └── openldap_mcp/ # OpenLDAP provider
+│   └── config/           # Configuration management
+├── server.py             # MCP server entry point
+└── tests/                # Test suite
+```
+
+## Client Configuration
+
+### Claude Code
+```bash
+claude mcp add ldap-assistant \
+  --env LDAP_BIND_PASSWORD=Password \
+  -- uv run server.py
+```
+
+### MCP CLI
 ```json
 {
   "mcpServers": {
-    "dirkeeper": {
-      "command": "/full/path/to/uv",
-      "args": ["run", "server.py"],
+    "ldap-assistant": {
+      "command": "/path/to/uv",
+      "args": ["--directory", "/path/to/ldap-assistant-mcp", "run", "server.py"],
       "env": {
-        "LDAP_URL": "ldap://localhost:389",
-        "LDAP_BASE_DN": "dc=example,dc=com",
-        "LDAP_BIND_DN": "cn=Directory Manager",
-        "LDAP_BIND_PASSWORD": "Password"
-      },
-      "cwd": "/full/path/to/DirKeeper/"
-    }
-  }
-}
-```
-
-### Cursor (client config)
-Create `.cursor/mcp.json` in your project:
-```json
-{
-  "mcpServers": {
-    "dirkeeper": {
-      "command": "/full/path/to/uv",
-      "args": ["run", "/full/path/to/DirKeeper/server.py"],
-      "env": {
-        "LDAP_URL": "ldap://localhost:389",
-        "LDAP_BASE_DN": "dc=example,dc=com",
-        "LDAP_BIND_DN": "cn=Directory Manager",
-        "LDAP_BIND_PASSWORD": "Password"
+        "LDAP_SERVERS_CONFIG": "/path/to/servers.json"
       }
     }
   }
 }
 ```
 
-### Claude Code (client config)
-From the DirKeeper directory:
-```bash
-claude mcp add dirkeeper \
-  --env LDAP_BIND_PASSWORD=Password \
-  -- uv run server.py
-```
+## Use Cases
 
-## Roadmap (Q4 2025)
-- **Community Tech Preview**: Package a usable preview focused on real admin pain points.
-- **Troubleshooting focus**: assist with replication conflicts, performance degradation, and "why isn’t this working?" workflows.
-- **Guided operations**: leverage prompt templates to steer tool usage and investigations.
+### Support Engineers
+- ✅ Rapid root cause analysis during incidents
+- ✅ Quick health scans across customer topologies
+- 🚧 Identify replication failures (wireframes ready)
+- 🚧 Performance bottleneck analysis (wireframes ready)
+- 🚧 Get immediate remediation guidance
 
-## Running tests
-The dev script can prepare DS and run pytest in one go:
+### LDAP Administrators
+- ✅ Proactive monitoring of production services
+- ✅ Catch issues before they become outages
+- 🚧 Performance tuning with metrics (wireframes ready)
+- 🚧 Access control security audits (wireframes ready)
+- 🚧 Routine health checks with reports
+
+### Advanced Users
+- ✅ Self-service health checks
+- ✅ Guided troubleshooting
+- 🚧 Automated health reports
+
+## Development & Testing
+
+### Running Tests
 ```bash
+# All-in-one: container + tests
 ./scripts/dev-test.sh
-```
-Or run them manually once DS and env are ready:
-```bash
+
+# Manual testing
+export LDAP_URL="ldap://localhost:3389"
+export LDAP_BASE_DN="dc=test,dc=com"
+export LDAP_BIND_DN="cn=Directory Manager"
+export LDAP_BIND_PASSWORD="TestPassword123"
 uv run pytest tests/ -v -s
 ```
 
-## Project status and limitations
-- Experimental; APIs and behavior may change
-- Local DS and client required; MCP STDIO transport
-- Read-only operations; no user modification yet
-- Focused on discovery (users/groups/status/details/monitor/config resources)
+### Project Structure
+- `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers)
+- `src/providers/dirsrv_mcp/` - 389 DS implementation
+  - `connection.py` - Multi-server connection management
+  - `tools/` - User, group, monitoring, search tools
+  - `health/` - Health diagnostics
+    - `first_look.py` - Quick health overview (implemented)
+    - `diagnostics.py` - Advanced diagnostic tools (wireframes)
+- `src/config/` - Configuration loader
+- `server.py` - MCP server entry point
+- `tests/` - Test suite
+
+## Limitations & Constraints
+
+**Current State:**
+- ⚠️ **Experimental** - APIs subject to change
+- ⚠️ **Not production-ready** - Designed for local/testing/support scenarios
+- ⚠️ **Read-only** - No write operations yet (planned)
+- ⚠️ **Advanced diagnostics in development** - Replication, performance, indexing, ACI tools  have wireframes ready
+- ⚠️ **Plain text passwords** - Use restrictive file permissions on config files
+- ⚠️ **STDIO transport only** - No HTTP/SSE support yet
+
+**Design Decisions:**
+- Single-shot connections (no persistent connection pooling per tool call)
+- JSON configuration for multi-server setups
+- Provider-based architecture for platform-specific implementations
 
 ## References
+
 - [Model Context Protocol](https://modelcontextprotocol.io/introduction)
-- [389 Directory Server docs](https://www.port389.org/docs/389ds/documentation.html)
-- [MCP Python SDK on PyPI](https://pypi.org/project/mcp/)
+- [389 Directory Server](https://www.port389.org/docs/389ds/documentation.html)
+- [MCP Python SDK](https://pypi.org/project/mcp/)
 - [mcp-cli (example CLI)](https://github.com/chrishayuk/mcp-cli)
+
+---
+
+**Note:** This is an experimental project under active development. Features and APIs are subject to change. We recommend using it in local/testing environments until it reaches a stable release.
