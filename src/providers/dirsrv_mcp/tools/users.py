@@ -180,9 +180,10 @@ def list_all_users(limit: int = 50, server_name: str = "default") -> Dict[str, A
         logger.error(f"Error listing users: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass
 
@@ -260,9 +261,10 @@ def search_users_by_name(name: str, limit: int = 50, server_name: str = "default
         logger.error(f"Error searching users by name '{name}': {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass
 
@@ -312,9 +314,10 @@ def get_user_details(username: str, server_name: str = "default") -> Dict[str, A
         logger.error(f"Error getting user details for '{username}': {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass
 
@@ -386,9 +389,10 @@ def list_active_users(limit: int = 50, server_name: str = "default") -> Dict[str
         logger.error(f"Error listing active users: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass
 
@@ -460,9 +464,10 @@ def list_locked_users(limit: int = 50, server_name: str = "default") -> Dict[str
         logger.error(f"Error listing locked users: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass
 
@@ -540,8 +545,9 @@ def search_users_by_attribute(attribute: str, value: str, limit: int = 50, serve
         logger.error(f"Error searching users by attribute {attribute}={value}: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass

@@ -1,7 +1,7 @@
 #!/bin/bash -e
 
 # Script to create 389 Directory Server containers for MCP testing
-# Adapted for DirKeeper MCP Server testing
+# Adapted for LDAP Assistent MCP Server testing
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_NAME=$(basename "$SCRIPT_PATH")

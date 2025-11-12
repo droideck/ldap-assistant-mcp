@@ -1,11 +1,11 @@
 [project]
-name = "dirkeeper"
+name = "ldap-assistant-mcp"
 version = "0.1.0"
 description = "An MCP Server for 389 Directory Server interactions"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "fastmcp>=2.10.1",
     "lib389",
 ]
 

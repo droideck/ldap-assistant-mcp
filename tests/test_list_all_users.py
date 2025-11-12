@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import list_all_users
+from src.providers.dirsrv_mcp.tools import list_all_users
 
 
 def test_list_all_users(mock_env, expected_test_users):
     """Test that list_all_users returns all users from the directory."""
-    # Call the tool
-    result = list_all_users(limit=50)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Call the tool - now returns dict directly
+    response_data = list_all_users(limit=50)
 
     # Verify response structure
     assert response_data["type"] == "user_list"

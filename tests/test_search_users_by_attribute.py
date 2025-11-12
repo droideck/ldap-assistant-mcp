@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import search_users_by_attribute
+from src.providers.dirsrv_mcp.tools import search_users_by_attribute
 
 
 def test_search_users_by_attribute(mock_env):
     """Test that search_users_by_attribute can find users by specific attributes."""
-    # Search for users with employeeType = Contractor
-    result = search_users_by_attribute(attribute="employeeType", value="Contractor", limit=50)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Search for users with employeeType = Contractor - now returns dict directly
+    response_data = search_users_by_attribute(attribute="employeeType", value="Contractor", limit=50)
 
     # Verify response structure
     assert response_data["type"] == "attribute_search"

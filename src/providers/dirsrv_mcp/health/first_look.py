@@ -75,6 +75,7 @@ def first_look() -> Dict[str, Any]:
 
     # Check each server
     for server_name in server_names:
+        ds = None
         try:
             config = manager.get_config(server_name)
             logger.info(f"Checking server: {server_name} ({config.ldap_url})")
@@ -118,6 +119,13 @@ def first_look() -> Dict[str, Any]:
                     server=server_name
                 )
             )
+        finally:
+            # Clean up connection
+            if ds is not None:
+                try:
+                    ds.close()
+                except:
+                    pass
 
     # Count findings by severity
     severity_counts = {

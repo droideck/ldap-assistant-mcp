@@ -54,8 +54,9 @@ def run_monitor(backend: str = "", suffix: str = "", server_name: str = "default
         logger.error(f"Error accessing the monitor on {server_name}: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass

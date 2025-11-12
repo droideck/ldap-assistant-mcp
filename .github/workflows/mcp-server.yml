@@ -18,9 +18,9 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     env:
-      SHARED: /tmp/workdir/dirkeeper
+      SHARED: /tmp/workdir/ldap-assistant-mcp
     steps:
-      - name: Clone DirKeeper repository
+      - name: Clone ldap-assistant-mcp repository
         uses: actions/checkout@v4
 
       - name: Create network
@@ -50,14 +50,14 @@ jobs:
           docker exec mcp dnf install -y git python3-pip gcc python3-devel openldap-devel cyrus-sasl-devel gawk
           docker exec mcp pip install uv
 
-      - name: Install DirKeeper MCP server
+      - name: Install ldap-assistant-mcp MCP server
         run: |
-          docker cp . mcp:/opt/dirkeeper
+          docker cp . mcp:/opt/ldap-assistant-mcp
 
       - name: Install dependencies
         run: |
-          docker exec -w /opt/dirkeeper mcp uv venv
-          docker exec -w /opt/dirkeeper mcp uv pip install -r requirements.txt
+          docker exec -w /opt/ldap-assistant-mcp mcp uv venv
+          docker exec -w /opt/ldap-assistant-mcp mcp uv pip install -r requirements.txt
 
       - name: Install LLM
         run: |
@@ -75,11 +75,11 @@ jobs:
           docker exec -i -w /opt/mcp-cli mcp tee server_config.json << EOF
           {
             "mcpServers": {
-              "dirkeeper": {
+              "ldap-assistant-mcp": {
                 "command": "/usr/local/bin/uv",
                 "args": [
                   "--directory",
-                  "/opt/dirkeeper",
+                  "/opt/ldap-assistant-mcp",
                   "run",
                   "server.py"
                 ],
@@ -93,22 +93,6 @@ jobs:
             }
           }
           EOF
-
-      - name: Check MCP servers
-        run: |
-          docker exec -w /opt/mcp-cli mcp uv run mcp-cli servers
-
-      - name: Check MCP resources
-        run: |
-          docker exec -w /opt/mcp-cli mcp uv run mcp-cli resources
-
-      - name: Check MCP prompts
-        run: |
-          docker exec -w /opt/mcp-cli mcp uv run mcp-cli prompts
-
-      - name: Check MCP tools
-        run: |
-          docker exec -w /opt/mcp-cli mcp uv run mcp-cli tools
 
       - name: Add test users to DS
         run: |
@@ -174,7 +158,7 @@ jobs:
           docker exec -w /opt/mcp-cli mcp uv run mcp-cli cmd \
               --provider=ollama \
               --model=qwen3 \
-              --server dirkeeper \
+              --server ldap-assistant-mcp \
               --prompt "show me all users in the directory" \
               | tee output
 

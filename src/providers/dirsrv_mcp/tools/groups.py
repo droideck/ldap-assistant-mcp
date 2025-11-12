@@ -74,8 +74,9 @@ def list_all_groups(limit: int = 50, server_name: str = "default") -> Dict[str, 
         logger.error(f"Error listing groups: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass

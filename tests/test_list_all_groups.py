@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import list_all_groups
+from src.providers.dirsrv_mcp.tools import list_all_groups
 
 
 def test_list_all_groups(mock_env, expected_test_groups):
     """Test that list_all_groups returns all groups from the directory."""
-    # Call the tool
-    result = list_all_groups(limit=50)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Call the tool - now returns dict directly
+    response_data = list_all_groups(limit=50)
 
     # Verify response structure
     assert response_data["type"] == "group_list"
@@ -46,15 +39,8 @@ def test_list_all_groups(mock_env, expected_test_groups):
 
 def test_list_all_groups_with_limit(mock_env):
     """Test that list_all_groups respects the limit parameter."""
-    # Test with a small limit
-    result = list_all_groups(limit=5)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Test with a small limit - now returns dict directly
+    response_data = list_all_groups(limit=5)
 
     # Verify response structure
     assert response_data["type"] == "group_list"
@@ -66,15 +52,8 @@ def test_list_all_groups_with_limit(mock_env):
 
 def test_list_all_groups_default_limit(mock_env):
     """Test that list_all_groups uses default limit when none specified."""
-    # Call without specifying limit
-    result = list_all_groups()
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Call without specifying limit - now returns dict directly
+    response_data = list_all_groups()
 
     # Verify default limit is applied
     assert response_data["limit_applied"] == 50

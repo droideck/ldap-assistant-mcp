@@ -1,24 +1,17 @@
 import json
 import pytest
-from server import ldap_search
+from src.providers.dirsrv_mcp.tools import ldap_search
 
 
 def test_ldap_search_basic_subtree(mock_env):
     """Test basic LDAP search with SUBTREE scope."""
-    # Search for all entries in the base DN
-    result = ldap_search(
+    # Search for all entries in the base DN - now returns dict directly
+    response_data = ldap_search(
         base_dn="dc=test,dc=com",
         scope="SUBTREE",
         filter="(objectClass=*)",
         limit=100
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -38,20 +31,13 @@ def test_ldap_search_basic_subtree(mock_env):
 
 def test_ldap_search_users_only(mock_env, expected_test_users):
     """Test searching for users only with specific filter."""
-    # Search for user entries only
-    result = ldap_search(
+    # Search for user entries only - now returns dict directly
+    response_data = ldap_search(
         base_dn="ou=people,dc=test,dc=com",
         scope="ONELEVEL",
         filter="(objectClass=inetOrgPerson)",
         limit=50
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -79,21 +65,14 @@ def test_ldap_search_users_only(mock_env, expected_test_users):
 
 def test_ldap_search_with_specific_attributes(mock_env):
     """Test LDAP search requesting specific attributes only."""
-    # Search for users but only return uid, cn, and mail attributes
-    result = ldap_search(
+    # Search for users but only return uid, cn, and mail attributes - now returns dict directly
+    response_data = ldap_search(
         base_dn="ou=people,dc=test,dc=com",
         scope="ONELEVEL",
         filter="(uid=testuser1)",
         attributes="uid,cn,mail",
         limit=10
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -121,20 +100,13 @@ def test_ldap_search_with_specific_attributes(mock_env):
 
 def test_ldap_search_base_scope(mock_env):
     """Test LDAP search with BASE scope (single entry)."""
-    # Search for a specific user entry using BASE scope
-    result = ldap_search(
+    # Search for a specific user entry using BASE scope - now returns dict directly
+    response_data = ldap_search(
         base_dn="uid=testuser1,ou=people,dc=test,dc=com",
         scope="BASE",
         filter="(objectClass=*)",
         limit=10
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -157,20 +129,13 @@ def test_ldap_search_base_scope(mock_env):
 
 def test_ldap_search_complex_filter(mock_env):
     """Test LDAP search with complex filter."""
-    # Search for users with specific attributes using AND filter
-    result = ldap_search(
+    # Search for users with specific attributes using AND filter - now returns dict directly
+    response_data = ldap_search(
         base_dn="ou=people,dc=test,dc=com",
         scope="SUBTREE",
         filter="(&(objectClass=inetOrgPerson)(uid=testuser*))",
         limit=50
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -196,20 +161,14 @@ def test_ldap_search_complex_filter(mock_env):
 
 def test_ldap_search_attrs_only(mock_env):
     """Test LDAP search with attrs_only=True (attribute names only, no values)."""
-    result = ldap_search(
+    # Search with attrs_only=True - now returns dict directly
+    response_data = ldap_search(
         base_dn="uid=testuser1,ou=people,dc=test,dc=com",
         scope="BASE",
         filter="(objectClass=*)",
         attrs_only=True,
         limit=10
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify response structure
     assert response_data["type"] == "ldap_search"
@@ -229,79 +188,70 @@ def test_ldap_search_attrs_only(mock_env):
 
 
 def test_ldap_search_invalid_scope(mock_env):
-    """Test LDAP search with invalid scope returns error."""
-    result = ldap_search(
-        base_dn="dc=test,dc=com",
-        scope="INVALID",
-        filter="(objectClass=*)",
-        limit=10
-    )
-
-    # Should return an error
-    assert result.isError, "Expected error for invalid scope"
+    """Test LDAP search with invalid scope raises error."""
+    # Should raise ValueError for invalid scope
+    with pytest.raises(ValueError) as exc_info:
+        ldap_search(
+            base_dn="dc=test,dc=com",
+            scope="INVALID",
+            filter="(objectClass=*)",
+            limit=10
+        )
 
     # Check error message
-    error_text = result.content[0].text
-    assert "Invalid scope" in error_text
-    assert "INVALID" in error_text
+    error_message = str(exc_info.value)
+    assert "Invalid scope" in error_message
+    assert "INVALID" in error_message
 
-    print(f"✓ Invalid scope correctly returned error")
+    print(f"✓ Invalid scope correctly raised ValueError")
 
 
 def test_ldap_search_nonexistent_base_dn(mock_env):
-    """Test LDAP search with non-existent base DN returns error."""
-    result = ldap_search(
-        base_dn="ou=nonexistent,dc=test,dc=com",
-        scope="SUBTREE",
-        filter="(objectClass=*)",
-        limit=10
-    )
-
-    # Should return an error
-    assert result.isError, "Expected error for non-existent base DN"
+    """Test LDAP search with non-existent base DN raises error."""
+    # Should raise exception for non-existent base DN
+    with pytest.raises(Exception) as exc_info:
+        ldap_search(
+            base_dn="ou=nonexistent,dc=test,dc=com",
+            scope="SUBTREE",
+            filter="(objectClass=*)",
+            limit=10
+        )
 
     # Check error message
-    error_text = result.content[0].text
-    assert "does not exist" in error_text
+    error_message = str(exc_info.value)
+    assert "does not exist" in error_message or "No such object" in error_message
 
-    print(f"✓ Non-existent base DN correctly returned error")
+    print(f"✓ Non-existent base DN correctly raised exception")
 
 
 def test_ldap_search_invalid_filter(mock_env):
-    """Test LDAP search with invalid filter syntax returns error."""
-    result = ldap_search(
-        base_dn="dc=test,dc=com",
-        scope="SUBTREE",
-        filter="(invalid_filter_syntax",  # Missing closing parenthesis
-        limit=10
-    )
+    """Test LDAP search with invalid filter syntax raises error."""
+    # Should raise exception for invalid filter syntax
+    with pytest.raises(Exception) as exc_info:
+        ldap_search(
+            base_dn="dc=test,dc=com",
+            scope="SUBTREE",
+            filter="(invalid_filter_syntax",  # Missing closing parenthesis
+            limit=10
+        )
 
-    # Should return an error
-    assert result.isError, "Expected error for invalid filter syntax"
+    # Check error message (any LDAP error is acceptable)
+    error_message = str(exc_info.value)
+    # Just verify an exception was raised
+    assert len(error_message) > 0
 
-    # Check error message
-    error_text = result.content[0].text
-    assert "filter syntax" in error_text or "LDAP" in error_text
-
-    print(f"✓ Invalid filter syntax correctly returned error")
+    print(f"✓ Invalid filter syntax correctly raised exception")
 
 
 def test_ldap_search_limit_enforcement(mock_env):
     """Test that LDAP search respects the limit parameter."""
-    # Search with a very low limit
-    result = ldap_search(
+    # Search with a very low limit - now returns dict directly
+    response_data = ldap_search(
         base_dn="dc=test,dc=com",
         scope="SUBTREE",
         filter="(objectClass=*)",
         limit=2
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify limit was applied
     assert response_data["limit_applied"] == 2
@@ -313,20 +263,14 @@ def test_ldap_search_limit_enforcement(mock_env):
 
 def test_ldap_search_groups(mock_env, expected_test_groups):
     """Test LDAP search for group entries."""
-    result = ldap_search(
+    # Search for groups - now returns dict directly
+    response_data = ldap_search(
         base_dn="ou=groups,dc=test,dc=com",
         scope="ONELEVEL",
         filter="(objectClass=groupOfNames)",
         attributes="cn,gidNumber",
         limit=50
     )
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
 
     # Verify we found groups
     assert response_data["total_returned"] >= len(expected_test_groups)

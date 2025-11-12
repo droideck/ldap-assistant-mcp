@@ -3,11 +3,11 @@ import sys
 import os
 from unittest.mock import patch
 
-# Add the parent directory to the path so we can import server.py
+# Add the parent directory to the path so we can import modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import the tools from server.py
-from server import (
+# Import the underlying tool implementations (not the FastMCP-wrapped versions)
+from src.providers.dirsrv_mcp.tools import (
     list_all_users,
     list_all_groups,
     search_users_by_name,
@@ -16,6 +16,7 @@ from server import (
     list_locked_users,
     search_users_by_attribute,
     ldap_search,
+    run_monitor,
 )
 
 @pytest.fixture

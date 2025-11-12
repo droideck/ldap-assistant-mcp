@@ -156,8 +156,9 @@ def ldap_search(
         logger.error(f"Unexpected error during LDAP search on {server_name}: {str(e)}")
         raise
     finally:
-        if ds:
+        # Clean up connection
+        if ds is not None:
             try:
-                ds.unbind_s()
+                ds.close()
             except:
                 pass

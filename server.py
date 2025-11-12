@@ -10,9 +10,9 @@ import os
 import json
 import logging
 from typing import Optional
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.prompts import base
-from mcp.types import CallToolResult, TextContent
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError, ResourceError
+from fastmcp.prompts import PromptMessage
 from lib389.config import Config
 
 # Import our modular components
@@ -30,7 +30,6 @@ from src.providers.dirsrv_mcp.tools import (
 )
 from src.providers.dirsrv_mcp.health import first_look as _first_look
 from src.providers.dirsrv_mcp.connection import get_connection
-from src.lib.result_formatter import format_tool_result
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -49,14 +48,17 @@ except Exception as e:
     logger.info("Will use single-server mode with environment variables")
 
 
-@mcp.prompt(title="Tool Navigator")
-def tool_navigator(goal: str) -> list[base.Message]:
-    """Guide users through available tools and their usage."""
+@mcp.prompt()
+def tool_navigator(goal: str) -> list[PromptMessage]:
+    """Guide users through available tools and their usage for directory tasks."""
     return [
-        base.UserMessage("Directory task:"),
-        base.UserMessage(goal),
-        base.AssistantMessage(
-            (
+        PromptMessage(
+            role="user",
+            content="Directory task: " + goal
+        ),
+        PromptMessage(
+            role="assistant",
+            content=(
                 "Use the available MCP tools to accomplish the task. Prefer specialized tools first, "
                 "falling back to ldap_search for advanced queries.\n\n"
                 "**Health & Diagnostics:**\n"
@@ -83,7 +85,7 @@ def tool_navigator(goal: str) -> list[base.Message]:
 # ============================================================================
 
 @mcp.tool()
-def first_look() -> CallToolResult:
+def first_look() -> dict:
     """
     Quick health overview across all configured LDAP servers.
 
@@ -111,17 +113,11 @@ def first_look() -> CallToolResult:
         >>> # Returns summary like "CRITICAL: 2 critical issues found across 5 servers"
     """
     try:
-        result = _first_look()
-        return format_tool_result("first_look", result)
+        return _first_look()
     except Exception as e:
         error_message = f"Error during first_look health check: {str(e)}"
         logger.error(error_message)
-        return format_tool_result(
-            "first_look_error",
-            {},
-            is_error=True,
-            error_message=error_message
-        )
+        raise ToolError(error_message)
 
 
 # ============================================================================
@@ -129,7 +125,7 @@ def first_look() -> CallToolResult:
 # ============================================================================
 
 @mcp.tool()
-def list_all_users(limit: int = 50) -> CallToolResult:
+def list_all_users(limit: int = 50) -> dict:
     """
     List all users in the directory.
 
@@ -140,21 +136,15 @@ def list_all_users(limit: int = 50) -> CallToolResult:
         JSON containing all user entries with computed status
     """
     try:
-        result = _list_all_users(limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _list_all_users(limit=limit)
     except Exception as e:
         error_message = f"Error listing users: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 @mcp.tool()
-def search_users_by_name(name: str, limit: int = 50) -> CallToolResult:
+def search_users_by_name(name: str, limit: int = 50) -> dict:
     """
     Search for users by name (uid, cn, givenName, sn, or displayName).
 
@@ -166,21 +156,15 @@ def search_users_by_name(name: str, limit: int = 50) -> CallToolResult:
         JSON containing matching user entries
     """
     try:
-        result = _search_users_by_name(name=name, limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _search_users_by_name(name=name, limit=limit)
     except Exception as e:
         error_message = f"Error searching users by name '{name}': {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 @mcp.tool()
-def get_user_details(username: str) -> CallToolResult:
+def get_user_details(username: str) -> dict:
     """
     Get detailed information about a specific user.
 
@@ -191,21 +175,15 @@ def get_user_details(username: str) -> CallToolResult:
         JSON containing detailed user information
     """
     try:
-        result = _get_user_details(username=username)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _get_user_details(username=username)
     except Exception as e:
         error_message = f"Error getting user details for '{username}': {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 @mcp.tool()
-def list_active_users(limit: int = 50) -> CallToolResult:
+def list_active_users(limit: int = 50) -> dict:
     """
     List all active (unlocked) users in the directory.
 
@@ -216,21 +194,15 @@ def list_active_users(limit: int = 50) -> CallToolResult:
         JSON containing active user entries
     """
     try:
-        result = _list_active_users(limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _list_active_users(limit=limit)
     except Exception as e:
         error_message = f"Error listing active users: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 @mcp.tool()
-def list_locked_users(limit: int = 50) -> CallToolResult:
+def list_locked_users(limit: int = 50) -> dict:
     """
     List all locked users in the directory.
 
@@ -241,21 +213,15 @@ def list_locked_users(limit: int = 50) -> CallToolResult:
         JSON containing locked user entries
     """
     try:
-        result = _list_locked_users(limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _list_locked_users(limit=limit)
     except Exception as e:
         error_message = f"Error listing locked users: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 @mcp.tool()
-def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> CallToolResult:
+def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> dict:
     """
     Search for users by a specific attribute value.
 
@@ -268,17 +234,11 @@ def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> Ca
         JSON containing matching user entries
     """
     try:
-        result = _search_users_by_attribute(attribute=attribute, value=value, limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _search_users_by_attribute(attribute=attribute, value=value, limit=limit)
     except Exception as e:
         error_message = f"Error searching users by attribute {attribute}={value}: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 # ============================================================================
@@ -286,7 +246,7 @@ def search_users_by_attribute(attribute: str, value: str, limit: int = 50) -> Ca
 # ============================================================================
 
 @mcp.tool()
-def list_all_groups(limit: int = 50) -> CallToolResult:
+def list_all_groups(limit: int = 50) -> dict:
     """
     List all groups in the directory.
 
@@ -297,17 +257,11 @@ def list_all_groups(limit: int = 50) -> CallToolResult:
         JSON containing all group entries
     """
     try:
-        result = _list_all_groups(limit=limit)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _list_all_groups(limit=limit)
     except Exception as e:
         error_message = f"Error listing groups: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 # ============================================================================
@@ -315,7 +269,7 @@ def list_all_groups(limit: int = 50) -> CallToolResult:
 # ============================================================================
 
 @mcp.tool()
-def run_monitor(backend: str = "", suffix: str = "") -> CallToolResult:
+def run_monitor(backend: str = "", suffix: str = "") -> dict:
     """
     Get the Directory Server's monitor information.
 
@@ -329,17 +283,11 @@ def run_monitor(backend: str = "", suffix: str = "") -> CallToolResult:
         JSON object containing the server's monitor information
     """
     try:
-        result = _run_monitor(backend=backend, suffix=suffix)
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
+        return _run_monitor(backend=backend, suffix=suffix)
     except Exception as e:
         error_message = f"Error accessing the monitor: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 # ============================================================================
@@ -354,7 +302,7 @@ def ldap_search(
     attributes: Optional[str] = None,
     attrs_only: bool = False,
     limit: int = 100
-) -> CallToolResult:
+) -> dict:
     """
     Perform a general LDAP search with full control over search parameters.
 
@@ -381,7 +329,7 @@ def ldap_search(
         JSON containing the search results with full entry details
     """
     try:
-        result = _ldap_search(
+        return _ldap_search(
             base_dn=base_dn,
             scope=scope,
             filter=filter,
@@ -389,24 +337,15 @@ def ldap_search(
             attrs_only=attrs_only,
             limit=limit
         )
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-        )
     except ValueError as e:
         # Handle validation errors (like invalid scope)
         error_message = str(e)
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
     except Exception as e:
         error_message = f"Unexpected error during LDAP search: {str(e)}"
         logger.error(error_message)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=error_message)]
-        )
+        raise ToolError(error_message)
 
 
 # ============================================================================
@@ -422,12 +361,8 @@ def get_cn_config_all_attributes() -> str:
         config_entry = Config(ds)
         return config_entry.get_all_attrs_json()
     except Exception as e:
-        error_payload = {
-            "type": "cn_config_attribute_error",
-            "attribute": "*",
-            "error": str(e),
-        }
-        return json.dumps(error_payload, indent=2)
+        logger.error(f"Error getting cn=config attributes: {str(e)}")
+        raise ResourceError(f"Failed to retrieve cn=config attributes: {str(e)}")
     finally:
         try:
             if ds is not None:
@@ -437,7 +372,7 @@ def get_cn_config_all_attributes() -> str:
 
 
 @mcp.resource("config://config-attribute/{attribute}")
-def get_cn_config_attribute(attribute: str) -> str:
+def get_cn_config_attribute(attribute: str) -> dict:
     """Get a specific attribute from cn=config as JSON."""
     ds = None
     try:
@@ -457,21 +392,16 @@ def get_cn_config_attribute(attribute: str) -> str:
         except Exception:
             single_value = None
 
-        response = {
+        return {
             "type": "cn_config_attribute",
             "attribute": attr_name,
             "values": values_list if isinstance(values_list, list) else ([] if values_list is None else [str(values_list)]),
             "value": single_value,
         }
-        return json.dumps(response, indent=2)
 
     except Exception as e:
-        error_payload = {
-            "type": "cn_config_attribute_error",
-            "attribute": attribute,
-            "error": str(e),
-        }
-        return json.dumps(error_payload, indent=2)
+        logger.error(f"Error getting cn=config attribute '{attribute}': {str(e)}")
+        raise ResourceError(f"Failed to retrieve cn=config attribute '{attribute}': {str(e)}")
     finally:
         try:
             if ds is not None:

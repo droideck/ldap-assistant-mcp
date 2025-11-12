@@ -18,7 +18,7 @@ jobs:
     name: Pytest Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Clone DirKeeper repository
+      - name: Clone ldap-assistant-mcp repository
         uses: actions/checkout@v4
 
       - name: Set up Python

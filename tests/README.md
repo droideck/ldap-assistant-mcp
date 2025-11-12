@@ -1,6 +1,6 @@
-# DirKeeper Tests
+# LDAP Assistent MCP Tests
 
-This directory contains pytest-based unit tests for DirKeeper's MCP server tools. These tests run against a real 389 Directory Server instance in a container to verify the stable parts of DirKeeper functionality.
+This directory contains pytest-based unit tests for LDAP Assistent's MCP server tools. These tests run against a real 389 Directory Server instance in a container to verify the stable parts of LDAP Assistent MCP functionality.
 
 ## Test Structure
 

@@ -1,6 +1,6 @@
 import json
 import pytest
-from server import run_monitor
+from src.providers.dirsrv_mcp.tools import run_monitor
 
 
 def check_out(response_data, arg: str = ""):
@@ -28,54 +28,30 @@ def check_out(response_data, arg: str = ""):
 
 
 def test_monitor(mock_env):
-    """Test that list_all_users returns all users from the directory."""
+    """Test that run_monitor returns monitor data from the directory."""
 
     #
-    # Call the tool (no backend/suffix)
+    # Call the tool (no backend/suffix) - now returns dict directly
     #
-    result = run_monitor()
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {
-        result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    response_data = run_monitor()
 
     # Verify response structure
     check_out(response_data)
     print("✓ Found expected monitor data")
 
     #
-    # Call the tool (backend)
+    # Call the tool (backend) - now returns dict directly
     #
-    result = run_monitor(backend="userroot")
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {
-        result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    response_data = run_monitor(backend="userroot")
 
     # Verify response structure
     check_out(response_data, "backend")
     print("✓ Found expected monitor data for backend")
 
     #
-    # Call the tool (no backend/suffix)
+    # Call the tool (suffix) - now returns dict directly
     #
-    result = run_monitor(suffix="dc=test,dc=com")
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {
-        result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    response_data = run_monitor(suffix="dc=test,dc=com")
 
     # Verify response structure
     check_out(response_data, "backend")

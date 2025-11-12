@@ -1,1 +1,1 @@
-# Tests package for DirKeeper
+# Tests package for LDAP Assistent MCP

@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import search_users_by_name
+from src.providers.dirsrv_mcp.tools import search_users_by_name
 
 
 def test_search_users_by_name(mock_env):
     """Test that search_users_by_name can find users by name."""
-    # Search for testuser1
-    result = search_users_by_name(name="testuser1", limit=50)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Search for testuser1 - now returns dict directly
+    response_data = search_users_by_name(name="testuser1", limit=50)
 
     # Verify response structure
     assert response_data["type"] == "user_search"

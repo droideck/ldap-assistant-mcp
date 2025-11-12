@@ -24,7 +24,7 @@ class ServerConfig:
         """
         Create a ServerConfig from environment variables.
 
-        This provides backward compatibility with the original DirKeeper
+        This provides backward compatibility with the original LDAP Assistent MCP
         environment-based configuration.
 
         Args:
@@ -81,17 +81,13 @@ class ConnectionManager:
             KeyError: If server_name is not configured
             Exception: If connection fails
         """
-        # Return existing connection if available
-        if server_name in self._connections:
-            return self._connections[server_name]
-
         # Get server config
         if server_name not in self._configs:
             raise KeyError(f"Server '{server_name}' not configured")
 
         config = self._configs[server_name]
 
-        # Create new connection
+        # Create new connection every time (lib389 connections can't be reliably reused)
         logger.info(f"Connecting to {config.name} at {config.ldap_url}")
         ds = DirSrv(verbose=False)
 
@@ -104,8 +100,6 @@ class ConnectionManager:
             ds.open()
             logger.info(f"Successfully connected to {config.name}")
 
-            # Store connection
-            self._connections[server_name] = ds
             return ds
 
         except Exception as e:

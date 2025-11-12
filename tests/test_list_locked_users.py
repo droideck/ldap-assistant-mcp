@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import list_locked_users
+from src.providers.dirsrv_mcp.tools import list_locked_users
 
 
 def test_list_locked_users(mock_env):
     """Test that list_locked_users returns only locked users."""
-    # Call the tool
-    result = list_locked_users(limit=50)
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Call the tool - now returns dict directly
+    response_data = list_locked_users(limit=50)
 
     # Verify response structure
     assert response_data["type"] == "locked_users"

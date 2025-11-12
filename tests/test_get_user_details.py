@@ -1,19 +1,12 @@
 import json
 import pytest
-from server import get_user_details
+from src.providers.dirsrv_mcp.tools import get_user_details
 
 
 def test_get_user_details(mock_env):
     """Test that get_user_details returns detailed information for a specific user."""
-    # Get details for testuser1
-    result = get_user_details(username="testuser1")
-
-    # Verify the result is not an error
-    assert not result.isError, f"Tool returned error: {result.content[0].text if result.content else 'No content'}"
-
-    # Parse the JSON response
-    response_text = result.content[0].text
-    response_data = json.loads(response_text)
+    # Get details for testuser1 - now returns dict directly
+    response_data = get_user_details(username="testuser1")
 
     # Verify response structure
     assert response_data["type"] == "user_details"
