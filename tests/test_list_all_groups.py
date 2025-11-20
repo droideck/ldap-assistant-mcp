@@ -1,12 +1,15 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import list_all_groups
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_list_all_groups(mock_env, expected_test_groups):
+async def test_list_all_groups(dirsrv_server, expected_test_groups):
     """Test that list_all_groups returns all groups from the directory."""
-    # Call the tool - now returns dict directly
-    response_data = list_all_groups(limit=50)
+
+    response = await call_tool(dirsrv_server, "list_all_groups", limit=50)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "group_list"
@@ -37,10 +40,11 @@ def test_list_all_groups(mock_env, expected_test_groups):
         print("✓ No groups found - this is acceptable if no groups are configured")
 
 
-def test_list_all_groups_with_limit(mock_env):
+async def test_list_all_groups_with_limit(dirsrv_server):
     """Test that list_all_groups respects the limit parameter."""
-    # Test with a small limit - now returns dict directly
-    response_data = list_all_groups(limit=5)
+
+    response = await call_tool(dirsrv_server, "list_all_groups", limit=5)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "group_list"
@@ -50,10 +54,11 @@ def test_list_all_groups_with_limit(mock_env):
     print(f"✓ Limit respected: returned {len(response_data['items'])} groups (max 5)")
 
 
-def test_list_all_groups_default_limit(mock_env):
+async def test_list_all_groups_default_limit(dirsrv_server):
     """Test that list_all_groups uses default limit when none specified."""
-    # Call without specifying limit - now returns dict directly
-    response_data = list_all_groups()
+
+    response = await call_tool(dirsrv_server, "list_all_groups")
+    response_data = response.data
 
     # Verify default limit is applied
     assert response_data["limit_applied"] == 50

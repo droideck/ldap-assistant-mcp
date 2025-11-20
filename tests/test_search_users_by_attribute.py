@@ -1,12 +1,21 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import search_users_by_attribute
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_search_users_by_attribute(mock_env):
+async def test_search_users_by_attribute(dirsrv_server):
     """Test that search_users_by_attribute can find users by specific attributes."""
-    # Search for users with employeeType = Contractor - now returns dict directly
-    response_data = search_users_by_attribute(attribute="employeeType", value="Contractor", limit=50)
+
+    response = await call_tool(
+        dirsrv_server,
+        "search_users_by_attribute",
+        attribute="employeeType",
+        value="Contractor",
+        limit=50,
+    )
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "attribute_search"

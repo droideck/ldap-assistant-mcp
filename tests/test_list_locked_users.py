@@ -1,18 +1,21 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import list_locked_users
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_list_locked_users(mock_env):
+async def test_list_locked_users(dirsrv_server):
     """Test that list_locked_users returns only locked users."""
-    # Call the tool - now returns dict directly
-    response_data = list_locked_users(limit=50)
+
+    response = await call_tool(dirsrv_server, "list_locked_users", limit=50)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "locked_users"
     assert "items" in response_data
     assert "locked_users_found" in response_data
-    assert "total_processed" in response_data
+    assert response_data["locked_users_found"] == len(response_data["items"])
 
     # Extract user IDs and verify they are all locked
     found_users = []

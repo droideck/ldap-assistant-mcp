@@ -22,7 +22,7 @@ Instead of manually checking servers, ask:
 ### What's Implemented ✅
 
 **Architecture & Foundation:**
-- ✅ Modular provider system (`src/providers/dirsrv_mcp/`, `src/providers/openldap_mcp/`)
+- ✅ Modular server layout (`src/ldap_assistant_mcp/`, `src/dirsrv_mcp/`, `src/openldap_mcp/`)
 - ✅ Multi-server connection management (concurrent server support)
 - ✅ JSON-based multi-server configuration
 - ✅ Shared utilities library
@@ -108,9 +108,13 @@ export LDAP_BIND_PASSWORD="TestPassword123"
 export LDAP_SERVERS_CONFIG="./servers.json"
 ```
 
-**3. Run the server:**
+**3. Run the server (DirSrv by default):**
 ```bash
+# DirSrv
 uv run server.py
+
+# Explicit provider choice (e.g., OpenLDAP)
+uv run server.py openldap --hostname ldap.example.com --bind-dn "cn=admin,dc=example,dc=com"
 ```
 
 ### Testing with 389 DS Container
@@ -186,17 +190,18 @@ uv run mcp-cli cmd --server ldap-assistant \
 
 ## Architecture
 
-The project uses a **modular provider architecture**:
+The project uses a **modular server architecture**:
 
 ```
 ldap-assistant-mcp/
 ├── src/
-│   ├── lib/              # Shared utilities (all providers)
-│   ├── providers/        # LDAP provider implementations
-│   │   ├── dirsrv_mcp/   # 389 DS provider
-│   │   └── openldap_mcp/ # OpenLDAP provider
-│   └── config/           # Configuration management
-├── server.py             # MCP server entry point
+│   ├── ldap_assistant_mcp/  # Base LDAP Assistant server + config dataclasses
+│   ├── dirsrv_mcp/          # 389 DS implementation
+│   ├── openldap_mcp/        # OpenLDAP implementation
+│   ├── lib/                 # Shared utilities
+│   └── config/              # Configuration management
+├── src/main.py              # CLI entry point
+├── server.py                # Legacy shim → src/main.py
 └── tests/                # Test suite
 ```
 
@@ -261,15 +266,13 @@ uv run pytest tests/ -v -s
 ```
 
 ### Project Structure
+- `src/ldap_assistant_mcp/` - Base FastMCP server + shared config objects
+- `src/dirsrv_mcp/` - 389 DS implementation (connection manager, tools, health)
+- `src/openldap_mcp/` - OpenLDAP implementation
 - `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers)
-- `src/providers/dirsrv_mcp/` - 389 DS implementation
-  - `connection.py` - Multi-server connection management
-  - `tools/` - User, group, monitoring, search tools
-  - `health/` - Health diagnostics
-    - `first_look.py` - Quick health overview (implemented)
-    - `diagnostics.py` - Advanced diagnostic tools (wireframes)
 - `src/config/` - Configuration loader
-- `server.py` - MCP server entry point
+- `src/main.py` - Argparse CLI (provider selection, overrides)
+- `server.py` - Legacy shim to `src/main.py`
 - `tests/` - Test suite
 
 ## Limitations & Constraints

@@ -1,12 +1,15 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import search_users_by_name
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_search_users_by_name(mock_env):
+async def test_search_users_by_name(dirsrv_server):
     """Test that search_users_by_name can find users by name."""
-    # Search for testuser1 - now returns dict directly
-    response_data = search_users_by_name(name="testuser1", limit=50)
+
+    response = await call_tool(dirsrv_server, "search_users_by_name", name="testuser1", limit=50)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "user_search"

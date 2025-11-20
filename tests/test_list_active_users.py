@@ -1,18 +1,21 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import list_active_users
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_list_active_users(mock_env):
+async def test_list_active_users(dirsrv_server):
     """Test that list_active_users returns only active users."""
-    # Call the tool - now returns dict directly
-    response_data = list_active_users(limit=50)
+
+    response = await call_tool(dirsrv_server, "list_active_users", limit=50)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "active_users"
     assert "items" in response_data
     assert "active_users_found" in response_data
-    assert "total_processed" in response_data
+    assert response_data["active_users_found"] == len(response_data["items"])
 
     # Verify we got some active users
     assert response_data["active_users_found"] > 0

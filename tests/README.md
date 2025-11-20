@@ -1,6 +1,6 @@
 # LDAP Assistent MCP Tests
 
-This directory contains pytest-based unit tests for LDAP Assistent's MCP server tools. These tests run against a real 389 Directory Server instance in a container to verify the stable parts of LDAP Assistent MCP functionality.
+This directory contains pytest-based unit tests for LDAP Assistent's MCP server tools. These tests run against a real 389 Directory Server instance in a container to verify the stable parts of LDAP Assistent MCP functionality while exercising the public FastMCP interface.
 
 ## Test Structure
 
@@ -15,12 +15,14 @@ This directory contains pytest-based unit tests for LDAP Assistent's MCP server 
 
 ## Test Approach
 
-These tests focus on:
-- LDAP operations and connectivity
-- Tool functionality and response structure
-- Data validation and error handling
+All tests instantiate `DirSrvMCP` and call tools through the official FastMCP `Client`, mirroring how downstream clients interact with the server. Each test:
 
-The tests treat the LLM as a mocked black-box and focus on the stable, deterministic parts of the system (LDAP queries, data processing, JSON response structure).
+- Builds a temporary MCP server instance using `LDAPServerConfig.from_env()`
+- Opens an in-memory FastMCP client (`async with Client(server) as client`)
+- Invokes a single tool with `await client.call_tool("tool_name", {...})`
+- Asserts on the structured data returned via `result.data`
+
+This pattern keeps the tests fast, deterministic, and faithful to production usage. Individual tests remain focused on a single behavior (tool success, validation failure, etc.) while still exercising the network/protocol layer.
 
 ## Running Tests
 

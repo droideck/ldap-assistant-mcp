@@ -1,12 +1,15 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import get_user_details
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_get_user_details(mock_env):
+async def test_get_user_details(dirsrv_server):
     """Test that get_user_details returns detailed information for a specific user."""
-    # Get details for testuser1 - now returns dict directly
-    response_data = get_user_details(username="testuser1")
+
+    response = await call_tool(dirsrv_server, "get_user_details", username="testuser1")
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "user_details"
@@ -34,4 +37,4 @@ def test_get_user_details(mock_env):
     assert "computed_status" in attrs
     assert "simple_status" in attrs["computed_status"]
 
-    print(f"✓ Successfully retrieved details for testuser1")
+    print("✓ Successfully retrieved details for testuser1")

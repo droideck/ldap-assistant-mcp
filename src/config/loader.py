@@ -5,7 +5,10 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
-from src.providers.dirsrv_mcp.connection import ServerConfig, ConnectionManager
+from urllib.parse import urlparse
+
+from src.dirsrv_mcp.connection import ConnectionManager, get_connection_manager
+from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ServerListConfig:
     """Configuration for multiple LDAP servers."""
-    servers: List[ServerConfig] = field(default_factory=list)
+    servers: List[LDAPServerConfig] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -21,11 +24,14 @@ class ServerListConfig:
             "servers": [
                 {
                     "name": s.name,
-                    "ldap_url": s.ldap_url,
-                    "base_dn": s.base_dn,
+                    "hostname": s.hostname,
+                    "port": s.port,
+                    "use_ssl": s.use_ssl,
                     "bind_dn": s.bind_dn,
                     "bind_password": s.bind_password,
-                    "provider_type": s.provider_type
+                    "base_dn": s.base_dn,
+                    "auth_method": s.auth_method.value,
+                    "provider_type": s.provider_type,
                 }
                 for s in self.servers
             ]
@@ -36,14 +42,7 @@ class ServerListConfig:
         """Create from dictionary representation."""
         servers = []
         for server_data in data.get("servers", []):
-            servers.append(ServerConfig(
-                name=server_data["name"],
-                ldap_url=server_data["ldap_url"],
-                base_dn=server_data["base_dn"],
-                bind_dn=server_data["bind_dn"],
-                bind_password=server_data["bind_password"],
-                provider_type=server_data.get("provider_type", "389ds")
-            ))
+            servers.append(_server_config_from_dict(server_data))
         return cls(servers=servers)
 
 
@@ -103,8 +102,10 @@ def load_config(
         return _load_from_file(env_config_path)
 
     # Fallback to legacy single-server environment variables
-    logger.info("No multi-server config found, using legacy environment variables for single server")
-    default_server = ServerConfig.from_env(name="default")
+    logger.info(
+        "No multi-server config found, using legacy environment variables for single server"
+    )
+    default_server = LDAPServerConfig.from_env(name="default")
     return ServerListConfig(servers=[default_server])
 
 
@@ -152,12 +153,11 @@ def initialize_connection_manager(
         ConnectionManager initialized with all servers from config
     """
     if manager is None:
-        from src.providers.dirsrv_mcp.connection import get_connection_manager
         manager = get_connection_manager()
 
     for server_config in config.servers:
         manager.add_server(server_config)
-        logger.info(f"Registered server: {server_config.name}")
+        logger.info("Registered server: %s", server_config.name)
 
     return manager
 
@@ -173,11 +173,60 @@ def save_config(config: ServerListConfig, file_path: str) -> None:
     Note:
         Passwords are saved in plain text. Ensure file permissions are restrictive.
     """
-    logger.warning(f"Saving configuration to {file_path} (passwords in plain text)")
+    logger.warning("Saving configuration to %s (passwords in plain text)", file_path)
 
     with open(file_path, 'w') as f:
         json.dump(config.to_dict(), f, indent=2)
 
     # Set restrictive permissions (owner read/write only)
     os.chmod(file_path, 0o600)
-    logger.info(f"Configuration saved to {file_path} with mode 0600")
+    logger.info("Configuration saved to %s with mode 0600", file_path)
+
+
+def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
+    """Convert a dictionary entry into an LDAPServerConfig."""
+    hostname = data.get("hostname")
+    port = data.get("port")
+    use_ssl = data.get("use_ssl")
+
+    if not hostname and data.get("ldap_url"):
+        parsed = urlparse(data["ldap_url"])
+        hostname = parsed.hostname or "localhost"
+        inferred_ssl = parsed.scheme.lower() == "ldaps"
+        use_ssl = inferred_ssl if use_ssl is None else use_ssl
+        if port is None:
+            port = parsed.port or (636 if inferred_ssl else 389)
+
+    if hostname is None:
+        raise KeyError("Server definition must include either hostname or ldap_url")
+
+    ssl_bool = _coerce_bool(use_ssl)
+    if port is None:
+        port = 636 if ssl_bool else 389
+
+    auth_value = data.get("auth_method", LDAPAuthMethod.SIMPLE.value)
+    auth_method = (
+        auth_value
+        if isinstance(auth_value, LDAPAuthMethod)
+        else LDAPAuthMethod(str(auth_value).lower())
+    )
+
+    return LDAPServerConfig(
+        name=data.get("name", hostname),
+        hostname=hostname,
+        port=int(port),
+        use_ssl=ssl_bool,
+        bind_dn=data.get("bind_dn"),
+        bind_password=data.get("bind_password"),
+        base_dn=data.get("base_dn"),
+        auth_method=auth_method,
+        provider_type=data.get("provider_type", "389ds"),
+    )
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)

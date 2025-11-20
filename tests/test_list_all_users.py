@@ -1,12 +1,15 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import list_all_users
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
-def test_list_all_users(mock_env, expected_test_users):
-    """Test that list_all_users returns all users from the directory."""
-    # Call the tool - now returns dict directly
-    response_data = list_all_users(limit=50)
+async def test_list_all_users(dirsrv_server, expected_test_users):
+    """Test that list_all_users returns all users from the directory via FastMCP."""
+
+    response = await call_tool(dirsrv_server, "list_all_users", limit=50)
+    response_data = response.data
 
     # Verify response structure
     assert response_data["type"] == "user_list"

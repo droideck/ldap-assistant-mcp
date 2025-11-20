@@ -1,6 +1,8 @@
-import json
 import pytest
-from src.providers.dirsrv_mcp.tools import run_monitor
+
+from tests.helpers import call_tool
+
+pytestmark = pytest.mark.asyncio
 
 
 def check_out(response_data, arg: str = ""):
@@ -27,31 +29,25 @@ def check_out(response_data, arg: str = ""):
         assert False
 
 
-def test_monitor(mock_env):
+async def test_monitor(dirsrv_server):
     """Test that run_monitor returns monitor data from the directory."""
 
-    #
-    # Call the tool (no backend/suffix) - now returns dict directly
-    #
-    response_data = run_monitor()
+    response = await call_tool(dirsrv_server, "run_monitor")
+    response_data = response.data
 
     # Verify response structure
     check_out(response_data)
     print("✓ Found expected monitor data")
 
-    #
-    # Call the tool (backend) - now returns dict directly
-    #
-    response_data = run_monitor(backend="userroot")
+    response = await call_tool(dirsrv_server, "run_monitor", backend="userroot")
+    response_data = response.data
 
     # Verify response structure
     check_out(response_data, "backend")
     print("✓ Found expected monitor data for backend")
 
-    #
-    # Call the tool (suffix) - now returns dict directly
-    #
-    response_data = run_monitor(suffix="dc=test,dc=com")
+    response = await call_tool(dirsrv_server, "run_monitor", suffix="dc=test,dc=com")
+    response_data = response.data
 
     # Verify response structure
     check_out(response_data, "backend")

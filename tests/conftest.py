@@ -1,37 +1,40 @@
-import pytest
-import sys
 import os
 from unittest.mock import patch
 
-# Add the parent directory to the path so we can import modules
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-# Import the underlying tool implementations (not the FastMCP-wrapped versions)
-from src.providers.dirsrv_mcp.tools import (
-    list_all_users,
-    list_all_groups,
-    search_users_by_name,
-    get_user_details,
-    list_active_users,
-    list_locked_users,
-    search_users_by_attribute,
-    ldap_search,
-    run_monitor,
-)
+from src.dirsrv_mcp.server import DirSrvMCP
+from src.ldap_assistant_mcp.server import LDAPServerConfig
 
 @pytest.fixture
 def mock_env():
-    """Mock environment variables for testing."""
-    # Use environment variables if available, otherwise use defaults
+    """Ensure the LDAP connection environment variables are always defined."""
     env_vars = {
-        'LDAP_URL': os.environ.get('LDAP_URL', 'ldap://localhost:3389'),
-        'LDAP_BASE_DN': os.environ.get('LDAP_BASE_DN', 'dc=test,dc=com'),
-        'LDAP_BIND_DN': os.environ.get('LDAP_BIND_DN', 'cn=Directory Manager'),
-        'LDAP_BIND_PASSWORD': os.environ.get('LDAP_BIND_PASSWORD', 'TestPassword123')
+        "LDAP_URL": os.environ.get("LDAP_URL", "ldap://localhost:3389"),
+        "LDAP_BASE_DN": os.environ.get("LDAP_BASE_DN", "dc=test,dc=com"),
+        "LDAP_BIND_DN": os.environ.get("LDAP_BIND_DN", "cn=Directory Manager"),
+        "LDAP_BIND_PASSWORD": os.environ.get("LDAP_BIND_PASSWORD", "TestPassword123"),
     }
 
     with patch.dict(os.environ, env_vars):
-        yield
+        yield env_vars
+
+
+@pytest.fixture
+def dirsrv_server_config(mock_env):
+    """Return the LDAP server configuration used by DirSrvMCP."""
+
+    return LDAPServerConfig.from_env()
+
+
+@pytest.fixture
+def dirsrv_server(dirsrv_server_config):
+    """Instantiate a DirSrvMCP backed by the configured 389 DS instance."""
+
+    return DirSrvMCP(
+        servers=[dirsrv_server_config],
+        include_env_fallback=False,
+    )
 
 @pytest.fixture
 def expected_test_users():
