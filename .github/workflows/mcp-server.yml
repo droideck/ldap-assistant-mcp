@@ -157,7 +157,7 @@ jobs:
         run: |
           docker exec -w /opt/mcp-cli mcp uv run mcp-cli cmd \
               --provider=ollama \
-              --model=qwen3 \
+              --model=qwen3:latest \
               --server ldap-assistant-mcp \
               --prompt "show me all users in the directory" \
               | tee output

@@ -134,7 +134,7 @@ supported for security reasons; do not use HTTP overrides in `fastmcp run`.
 ```bash
 uv run mcp-cli cmd \
   --provider=ollama \
-  --model=qwen3 \
+  --model=qwen3:latest \
   --server ldap-assistant \
   --prompt "Check the health of all servers"
 ```
