@@ -131,29 +131,16 @@ supported for security reasons; do not use HTTP overrides in `fastmcp run`.
 
 ### Health Check Example
 
-```bash
-uv run mcp-cli cmd \
-  --provider=ollama \
-  --model=qwen3 \
-  --server ldap-assistant \
-  --prompt "Check the health of all servers"
-```
+Connect any MCP-compatible client (Claude Desktop, Cursor, Gemini, etc.) to your running `fastmcp` server and ask:
+- "Check the health of all servers"
+- "Give me a performance summary for ds-prod1"
 
 ### User Management Examples
 
-```bash
-# List locked accounts
-uv run mcp-cli cmd --server ldap-assistant \
-  --prompt "show me all locked users"
-
-# Find specific users
-uv run mcp-cli cmd --server ldap-assistant \
-  --prompt "find users in the Engineering department"
-
-# Get user details
-uv run mcp-cli cmd --server ldap-assistant \
-  --prompt "show me details for user jdoe"
-```
+Ask the assistant to:
+- "Show me all locked users"
+- "Find users in the Engineering department"
+- "Show me details for user jdoe"
 
 ## MCP Tools Reference
 
@@ -317,7 +304,6 @@ uv run pytest tests/ -v -s
 - [Model Context Protocol](https://modelcontextprotocol.io/introduction)
 - [389 Directory Server](https://www.port389.org/docs/389ds/documentation.html)
 - [MCP Python SDK](https://pypi.org/project/mcp/)
-- [mcp-cli (example CLI)](https://github.com/chrishayuk/mcp-cli)
 
 ---
 
