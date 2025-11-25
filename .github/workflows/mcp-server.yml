@@ -64,7 +64,7 @@ jobs:
           curl -fsSL https://ollama.com/install.sh | docker exec -i mcp sh
           docker exec -d mcp ollama serve
           sleep 10
-          docker exec mcp ollama pull qwen3
+          docker exec mcp ollama pull qwen3:latest
 
       - name: Install MCP CLI
         run: |
