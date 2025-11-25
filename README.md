@@ -108,14 +108,14 @@ export LDAP_BIND_PASSWORD="TestPassword123"
 export LDAP_SERVERS_CONFIG="./servers.json"
 ```
 
-**3. Run the server (DirSrv by default):**
+**3. Run the server (auto-detects `fastmcp.json`, STDIO only):**
 ```bash
-# DirSrv
-uv run server.py
-
-# Explicit provider choice (e.g., OpenLDAP)
-uv run server.py openldap --hostname ldap.example.com --bind-dn "cn=admin,dc=example,dc=com"
+fastmcp run --skip-env
 ```
+
+Set `LDAP_PROVIDER=dirsrv|openldap` to switch backends (defaults to `dirsrv`). Provide
+`LDAP_SERVERS_CONFIG=/path/servers.json` for multi-server 389 DS setups. For now, only STDIO transport is
+supported for security reasons; do not use HTTP overrides in `fastmcp run`.
 
 ### Testing with 389 DS Container
 
@@ -200,33 +200,55 @@ ldap-assistant-mcp/
 │   ├── openldap_mcp/        # OpenLDAP implementation
 │   ├── lib/                 # Shared utilities
 │   └── config/              # Configuration management
-├── src/main.py              # CLI entry point
-├── server.py                # Legacy shim → src/main.py
-└── tests/                # Test suite
+├── src/main.py              # FastMCP entry point + server factory
+├── fastmcp.json             # Declarative runtime config for fastmcp CLI
+└── tests/                   # Test suite
 ```
 
 ## Client Configuration
 
-### Claude Code
-```bash
-claude mcp add ldap-assistant \
-  --env LDAP_BIND_PASSWORD=Password \
-  -- uv run server.py
-```
+Point every MCP client at the FastMCP CLI so it can load `fastmcp.json`. Example for Claude Desktop:
 
-### MCP CLI
 ```json
 {
   "mcpServers": {
-    "ldap-assistant": {
-      "command": "/path/to/uv",
-      "args": ["--directory", "/path/to/ldap-assistant-mcp", "run", "server.py"],
+    "dirsrv-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "fastmcp",
+        "--with",
+        "fastmcp",
+        "--with",
+        "lib389",
+        "fastmcp",
+        "run",
+        "/Users/droideck/Documents/GitHub/ldap-assistant-mcp/src/main.py:create_server"
+      ],
       "env": {
-        "LDAP_SERVERS_CONFIG": "/path/to/servers.json"
-      }
+        "LDAP_URL": "ldap://localhost:3389",
+        "LDAP_BASE_DN": "dc=example,dc=com",
+        "LDAP_BIND_DN": "cn=directory manager",
+        "LDAP_BIND_PASSWORD": "Secret.123",
+        "LDAP_INSTANCE": "localhost"
+      },
+      "transport": "stdio",
+      "type": null,
+      "cwd": null,
+      "timeout": null,
+      "description": null,
+      "icon": null,
+      "authentication": null
     }
   }
 }
+```
+
+The above configuration can be generated with the next command (for more, see [docs](https://gofastmcp.com/deployment/server-configuration#development-configuration)):
+
+```bash
+fastmcp install claude-desktop fastmcp.json
 ```
 
 ## Use Cases
@@ -271,8 +293,8 @@ uv run pytest tests/ -v -s
 - `src/openldap_mcp/` - OpenLDAP implementation
 - `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers)
 - `src/config/` - Configuration loader
-- `src/main.py` - Argparse CLI (provider selection, overrides)
-- `server.py` - Legacy shim to `src/main.py`
+- `src/main.py` - FastMCP-ready server factory
+- `fastmcp.json` - Declarative runtime configuration for FastMCP CLI
 - `tests/` - Test suite
 
 ## Limitations & Constraints

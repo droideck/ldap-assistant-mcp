@@ -1,100 +1,94 @@
 from __future__ import annotations
 
-import argparse
-import logging
 import os
-from typing import Dict, Type
+from dataclasses import dataclass
+from pathlib import Path
+import sys
+from typing import Dict, Iterable, Optional, Type
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    # Allow running this module directly without installing the package.
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dirsrv_mcp.server import DirSrvMCP
-from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPAuthMethod, LDAPServerConfig
+from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPServerConfig
 from src.openldap_mcp.server import OpenLDAPMCP
 
-SERVER_REGISTRY: Dict[str, Type[LDAPAssistantMCP]] = {
-    "dirsrv": DirSrvMCP,
-    "openldap": OpenLDAPMCP,
+
+@dataclass(frozen=True)
+class ServerDefinition:
+    """Metadata describing an MCP server implementation."""
+
+    cls: Type[LDAPAssistantMCP]
+    supports_config_path: bool = False
+    description: str = ""
+
+
+SERVER_REGISTRY: Dict[str, ServerDefinition] = {
+    "dirsrv": ServerDefinition(
+        cls=DirSrvMCP,
+        supports_config_path=True,
+        description="389 Directory Server",
+    ),
+    "openldap": ServerDefinition(
+        cls=OpenLDAPMCP,
+        supports_config_path=False,
+        description="OpenLDAP Server",
+    ),
 }
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="LDAP Assistant MCP entry point.")
-    parser.add_argument(
-        "server",
-        choices=SERVER_REGISTRY.keys(),
-        nargs="?",
-        default="dirsrv",
-        help="Which server implementation to run (default: dirsrv)",
-    )
-    parser.add_argument("--hostname", help="LDAP hostname or IP address")
-    parser.add_argument("--port", type=int, help="LDAP port (defaults to 389/636)")
-    parser.add_argument("--use-ssl", action="store_true", help="Use LDAPS/StartTLS")
-    parser.add_argument("--bind-dn", help="Bind DN for authentication")
-    parser.add_argument("--bind-password", help="Bind password")
-    parser.add_argument("--base-dn", help="Base DN for directory operations")
-    parser.add_argument(
-        "--auth-method",
-        choices=[method.value for method in LDAPAuthMethod],
-        default=LDAPAuthMethod.SIMPLE.value,
-        help="Authentication method to use",
-    )
-    parser.add_argument("--server-name", help="Identifier for the server entry", default="cli")
-    parser.add_argument("--config", help="Path to multi-server JSON config (DirSrv only)")
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "http"],
-        default="stdio",
-        help="Transport to use when running the server",
-    )
-    parser.add_argument("--listen-host", default="127.0.0.1", help="HTTP host when using http transport")
-    parser.add_argument(
-        "--listen-port", type=int, default=8000, help="HTTP port when using http transport"
-    )
-    parser.add_argument(
-        "--log-level",
-        default=os.environ.get("LOG_LEVEL", "INFO"),
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
-    )
-    return parser.parse_args()
+DEFAULT_PROVIDER = "dirsrv"
+PROVIDER_ENV_VAR = "LDAP_PROVIDER"
 
 
-def build_cli_server_config(args: argparse.Namespace) -> LDAPServerConfig | None:
-    if not args.hostname:
-        return None
+def create_server(
+    *,
+    provider: Optional[str] = None,
+    config_path: Optional[str] = None,
+    servers: Optional[Iterable[LDAPServerConfig]] = None,
+    include_env_fallback: bool = True,
+    **kwargs,
+) -> LDAPAssistantMCP:
+    """
+    Build an MCP server using registry metadata.
 
-    port = args.port
-    if port is None:
-        port = 636 if args.use_ssl else 389
+    This helper is the canonical entry point for fastmcp.json.
+    """
 
-    return LDAPServerConfig(
-        name=args.server_name or "cli",
-        hostname=args.hostname,
-        port=port,
-        use_ssl=args.use_ssl,
-        bind_dn=args.bind_dn,
-        bind_password=args.bind_password,
-        base_dn=args.base_dn,
-        auth_method=LDAPAuthMethod(args.auth_method),
-        provider_type=args.server,
-    )
+    _, definition = _resolve_provider(provider)
+    init_kwargs = dict(kwargs)
+
+    if servers:
+        init_kwargs["servers"] = list(servers)
+
+    if definition.supports_config_path:
+        resolved_config_path = (
+            config_path if config_path is not None else os.environ.get("LDAP_SERVERS_CONFIG")
+        )
+        init_kwargs["config_path"] = resolved_config_path
+
+    init_kwargs.setdefault("include_env_fallback", include_env_fallback)
+
+    return definition.cls(**init_kwargs)  # type: ignore[call-arg]
+
+
+def _resolve_provider(
+    provider: Optional[str],
+) -> tuple[str, ServerDefinition]:
+    requested = (provider or os.environ.get(PROVIDER_ENV_VAR) or DEFAULT_PROVIDER).lower()
+    definition = SERVER_REGISTRY.get(requested)
+    if not definition:
+        valid = ", ".join(sorted(SERVER_REGISTRY))
+        raise ValueError(f"Unknown LDAP MCP provider '{requested}'. Valid options: {valid}.")
+    return requested, definition
 
 
 def main() -> None:
-    args = parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    """Simple entry point for `python -m src.main` (uses defaults/env)."""
 
-    connection_override = build_cli_server_config(args)
-
-    server_class = SERVER_REGISTRY[args.server]
-    server_kwargs = {"config_path": args.config} if args.server == "dirsrv" else {}
-
-    if connection_override:
-        server_kwargs["servers"] = [connection_override]
-
-    server = server_class(**server_kwargs)  # type: ignore[arg-type]
-
-    if args.transport == "http":
-        server.run(transport="http", host=args.listen_host, port=args.listen_port)
-    else:
-        server.run()
+    server = create_server()
+    server.run()
 
 
 if __name__ == "__main__":

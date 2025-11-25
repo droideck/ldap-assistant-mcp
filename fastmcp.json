@@ -1,0 +1,20 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "src/main.py",
+    "entrypoint": "create_server"
+  },
+  "environment": {
+    "type": "uv",
+    "python": "3.13",
+    "dependencies": [
+      "fastmcp",
+      "lib389"
+    ]
+  },
+  "deployment": {
+    "transport": "stdio",
+    "log_level": "INFO"
+  }
+}
+

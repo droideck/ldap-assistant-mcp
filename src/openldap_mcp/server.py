@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, Optional
 
 import ldap
 from fastmcp.exceptions import ToolError
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    # Allow running this module directly without installing the package.
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPAuthMethod, LDAPServerConfig
 

@@ -1,0 +1,13 @@
+{
+  "servers": [
+    {
+      "name": "localhost",
+      "ldap_url": "ldap://localhost:3389",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=directory manager",
+      "bind_password": "Secret.123",
+      "provider_type": "389ds"
+    }
+  ]
+}
+

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "src/main.py",
+    "entrypoint": "create_server"
+  },
+  "environment": {
+    "type": "uv",
+    "python": "3.13",
+    "dependencies": [
+      "fastmcp[dev]",
+      "lib389"
+    ]
+  },
+  "deployment": {
+    "transport": "stdio",
+    "log_level": "INFO",
+    "env": {
+      "LDAP_URL": "ldap://localhost:3389",
+      "LDAP_BASE_DN": "dc=example,dc=com",
+      "LDAP_BIND_DN": "cn=directory manager",
+      "LDAP_BIND_PASSWORD": "Secret.123",
+      "LDAP_INSTANCE": "localhost"
+    }
+  }
+}
+

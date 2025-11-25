@@ -1,3 +1,5 @@
 /__pycache__
 .python-version
 *.pyc
+/src/*.egg-info
+**/.DS_Store

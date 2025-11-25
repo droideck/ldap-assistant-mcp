@@ -5,6 +5,8 @@ import json
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import ldap
@@ -16,6 +18,11 @@ from lib389.idm.account import Accounts
 from lib389.idm.group import Groups
 from lib389.idm.user import nsUserAccounts
 from lib389.monitor import Monitor
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    # Ensure imports like `src.*` work when this file is executed directly.
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.loader import load_config
 from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
