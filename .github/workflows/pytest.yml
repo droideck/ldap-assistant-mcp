@@ -198,8 +198,8 @@ jobs:
           LDAP_BIND_DN: "cn=Directory Manager"
           LDAP_BIND_PASSWORD: "TestPassword123"
         run: |
-          # Run the tests
-          uv run pytest tests/ -v -s
+          # Run the tests (testpaths configured in pyproject.toml)
+          uv run pytest -v -s
 
       - name: Debug environment
         if: failure()
