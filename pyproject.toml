@@ -8,3 +8,17 @@ dependencies = [
     "fastmcp>=2.10.1",
     "lib389>=3.1.3",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src/dirsrv_mcp/tests", "src/openldap_mcp/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"

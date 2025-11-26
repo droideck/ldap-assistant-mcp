@@ -303,7 +303,7 @@ uv run pytest tests/ -v -s
 
 - [Model Context Protocol](https://modelcontextprotocol.io/introduction)
 - [389 Directory Server](https://www.port389.org/docs/389ds/documentation.html)
-- [MCP Python SDK](https://pypi.org/project/mcp/)
+- [FastMCP 2.0](https://gofastmcp.com)
 
 ---
 
