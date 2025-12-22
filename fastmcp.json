@@ -15,6 +15,9 @@
   "deployment": {
     "transport": "stdio",
     "log_level": "INFO"
+  },
+  "env": {
+    "LDAP_SERVERS_CONFIG": "./servers.json"
   }
 }
 

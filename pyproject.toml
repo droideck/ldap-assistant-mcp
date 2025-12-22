@@ -3,7 +3,7 @@ name = "ldap-assistant-mcp"
 version = "0.1.0"
 description = "An MCP Server for 389 Directory Server interactions"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastmcp>=2.10.1",
     "lib389>=3.1.3",

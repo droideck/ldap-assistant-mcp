@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.config.loader import load_config
 from src.dirsrv_mcp.server import DirSrvMCP
 from src.ldap_assistant_mcp.server import LDAPServerConfig
 
@@ -24,7 +25,7 @@ def mock_env():
     These can be overridden by setting real environment variables before running tests.
     """
     env_vars = {
-        "LDAP_URL": os.environ.get("LDAP_URL", "ldap://localhost:3389"),
+        "LDAP_URL": os.environ.get("LDAP_URL", "ldap://localhost:33891"),
         "LDAP_BASE_DN": os.environ.get("LDAP_BASE_DN", "dc=test,dc=com"),
         "LDAP_BIND_DN": os.environ.get("LDAP_BIND_DN", "cn=Directory Manager"),
         "LDAP_BIND_PASSWORD": os.environ.get("LDAP_BIND_PASSWORD", "TestPassword123"),
@@ -51,6 +52,39 @@ def dirsrv_server(server_config) -> DirSrvMCP:
         servers=[server_config],
         include_env_fallback=False,
     )
+
+
+@pytest.fixture
+def multiserver_config():
+    """Load multi-server configuration from tests-servers.json or environment.
+
+    Returns None if no multi-server config is available.
+    """
+    config_path = os.environ.get("LDAP_SERVERS_CONFIG")
+    if config_path and os.path.exists(config_path):
+        return load_config(config_file=config_path)
+    return None
+
+
+@pytest.fixture
+def dirsrv_multiserver(multiserver_config) -> DirSrvMCP:
+    """Create a DirSrvMCP instance with multiple servers configured.
+
+    Skips tests if multi-server config is not available.
+    """
+    if multiserver_config is None:
+        pytest.skip("Multi-server config not available (set LDAP_SERVERS_CONFIG)")
+
+    return DirSrvMCP(
+        servers=multiserver_config.servers,
+        include_env_fallback=False,
+    )
+
+
+@pytest.fixture
+def test_server_names() -> list[str]:
+    """Expected test server names."""
+    return ["ds-test-1", "ds-test-2", "ds-test-3"]
 
 
 @pytest.fixture
