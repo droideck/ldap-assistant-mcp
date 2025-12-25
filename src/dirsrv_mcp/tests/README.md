@@ -1,6 +1,6 @@
 # 389 Directory Server MCP Tests
 
-This directory contains pytest-based tests for the 389 Directory Server MCP tools. These tests follow FastMCP testing best practices and run against a real 389 Directory Server instance.
+This directory contains pytest-based tests for the 389 Directory Server MCP tools. These tests follow FastMCP testing best practices and run against real 389 Directory Server instances.
 
 ## Test Structure
 
@@ -10,7 +10,8 @@ tests/
 ├── test_users.py        # User management tool tests
 ├── test_groups.py       # Group management tool tests
 ├── test_monitoring.py   # Monitoring tool tests
-└── test_search.py       # LDAP search tool tests
+├── test_search.py       # LDAP search tool tests
+└── test_multiserver.py  # Multi-server testing
 ```
 
 ## Testing Patterns
@@ -46,11 +47,24 @@ Test names and assertions make the verified behavior obvious.
 
 ## Running Tests
 
-Tests are automatically run in CI via the pytest workflow. To run locally:
+### Quick Start (Recommended)
+
+Use the test script to set up containers and run tests:
 
 ```bash
-# Ensure you have a DS instance running with appropriate test data
-export LDAP_URL="ldap://localhost:3389"
+# Set up 3 test containers and run pytest
+./scripts/ds-test.sh
+
+# Or set up containers only (for manual test runs)
+./scripts/ds-test.sh --no-pytest
+```
+
+### Manual Testing
+
+If you already have DS instances running:
+
+```bash
+export LDAP_URL="ldap://localhost:33891"
 export LDAP_BASE_DN="dc=test,dc=com"
 export LDAP_BIND_DN="cn=Directory Manager"
 export LDAP_BIND_PASSWORD="TestPassword123"
@@ -65,19 +79,27 @@ uv run pytest src/dirsrv_mcp/tests/test_users.py -v
 uv run pytest src/dirsrv_mcp/tests/ --cov=src.dirsrv_mcp
 ```
 
+### Multi-Server Testing
+
+For multi-server tests, set `LDAP_SERVERS_CONFIG`:
+
+```bash
+export LDAP_SERVERS_CONFIG="./tests-servers.json"
+uv run pytest src/dirsrv_mcp/tests/test_multiserver.py -v
+```
+
 ## Test Data Requirements
 
 The tests expect the following data in the directory:
 
 **Users** (in `ou=people,dc=test,dc=com`):
 - `testuser1` - Active user with mail attribute
-- `testuser2` - Active user
-- `lockeduser` - Locked user account
+- `testuser2` - Active user with departmentNumber
+- `lockeduser` - Locked user account (nsAccountLock=true)
 - `contractor` - Active user with `employeeType=Contractor`
 
 **Groups** (in `ou=groups,dc=test,dc=com`):
 - `testgroup1`
 - `testgroup2`
 
-See `scripts/ds-create.sh` for test data setup.
-
+See `scripts/ds-test.sh` for test data setup.

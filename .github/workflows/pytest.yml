@@ -36,154 +36,9 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Set up DS container
+      - name: Set up test containers
         run: |
-          scripts/ds-create.sh \
-              --image=${{ env.DS_IMAGE }} \
-              --hostname=localhost \
-              --password=TestPassword123 \
-              --base-dn=dc=test,dc=com \
-              ds-test
-
-      - name: Get DS port mapping
-        id: ds-port
-        run: |
-          # Get the mapped port for DS LDAP (3389)
-          DS_PORT=$(docker port ds-test 3389/tcp | cut -d: -f2)
-          echo "DS_PORT=$DS_PORT" >> $GITHUB_OUTPUT
-          echo "DS mapped to port: $DS_PORT"
-
-      - name: Add test data to DS
-        run: |
-          # Wait for DS to be ready
-          sleep 15
-
-          docker exec -i ds-test ldapadd \
-              -H ldap://localhost:3389 \
-              -D "cn=Directory Manager" \
-              -w TestPassword123 \
-              -x << EOF
-          dn: uid=testuser1,ou=people,dc=test,dc=com
-          objectClass: top
-          objectClass: person
-          objectClass: organizationalPerson
-          objectClass: inetOrgPerson
-          objectClass: nsPerson
-          objectClass: nsAccount
-          objectClass: nsOrgPerson
-          objectClass: posixAccount
-          uid: testuser1
-          cn: Test User 1
-          sn: User
-          givenName: Test
-          displayName: Test User 1
-          mail: testuser1@test.com
-          uidNumber: 1001
-          gidNumber: 1001
-          homeDirectory: /home/testuser1
-
-          dn: uid=testuser2,ou=people,dc=test,dc=com
-          objectClass: top
-          objectClass: person
-          objectClass: organizationalPerson
-          objectClass: inetOrgPerson
-          objectClass: nsPerson
-          objectClass: nsAccount
-          objectClass: nsOrgPerson
-          objectClass: posixAccount
-          uid: testuser2
-          cn: Test User 2
-          sn: User
-          givenName: Test
-          displayName: Test User 2
-          mail: testuser2@test.com
-          uidNumber: 1002
-          gidNumber: 1002
-          homeDirectory: /home/testuser2
-          departmentNumber: Engineering
-
-          dn: uid=lockeduser,ou=people,dc=test,dc=com
-          objectClass: top
-          objectClass: person
-          objectClass: organizationalPerson
-          objectClass: inetOrgPerson
-          objectClass: nsPerson
-          objectClass: nsAccount
-          objectClass: nsOrgPerson
-          objectClass: posixAccount
-          uid: lockeduser
-          cn: Locked User
-          sn: User
-          givenName: Locked
-          displayName: Locked User
-          mail: lockeduser@test.com
-          uidNumber: 1003
-          gidNumber: 1003
-          homeDirectory: /home/lockeduser
-          nsAccountLock: true
-
-          dn: uid=contractor,ou=people,dc=test,dc=com
-          objectClass: top
-          objectClass: person
-          objectClass: organizationalPerson
-          objectClass: inetOrgPerson
-          objectClass: nsPerson
-          objectClass: nsAccount
-          objectClass: nsOrgPerson
-          objectClass: posixAccount
-          uid: contractor
-          cn: Contractor User
-          sn: User
-          givenName: Contractor
-          displayName: Contractor User
-          mail: contractor@test.com
-          uidNumber: 1004
-          gidNumber: 1004
-          homeDirectory: /home/contractor
-          employeeType: Contractor
-
-          dn: cn=testgroup1,ou=groups,dc=test,dc=com
-          objectClass: top
-          objectClass: groupOfNames
-          objectClass: posixGroup
-          objectClass: nsMemberOf
-          cn: testgroup1
-          gidNumber: 5000
-
-          dn: cn=testgroup2,ou=groups,dc=test,dc=com
-          objectClass: top
-          objectClass: groupOfNames
-          objectClass: posixGroup
-          objectClass: nsMemberOf
-          cn: testgroup2
-          gidNumber: 5001
-          EOF
-
-      - name: Verify test user data was added
-        run: |
-          echo "Verifying test user data was added..."
-          docker exec ds-test ldapsearch \
-              -H ldap://localhost:3389 \
-              -D "cn=Directory Manager" \
-              -w TestPassword123 \
-              -x \
-              -b "ou=people,dc=test,dc=com" \
-              -s sub \
-              "(uid=testuser*)" \
-              dn uid cn mail
-
-      - name: Verify test group data was added
-        run: |
-          echo "Verifying test group data was added..."
-          docker exec ds-test ldapsearch \
-              -H ldap://localhost:3389 \
-              -D "cn=Directory Manager" \
-              -w TestPassword123 \
-              -x \
-              -b "ou=groups,dc=test,dc=com" \
-              -s sub \
-              "(cn=testgroup*)" \
-              dn gidNumber
+          scripts/ds-test.sh --no-pytest --image "$DS_IMAGE"
 
       - name: Install dependencies
         run: |
@@ -193,12 +48,12 @@ jobs:
 
       - name: Run pytest
         env:
-          LDAP_URL: "ldap://localhost:${{ steps.ds-port.outputs.DS_PORT }}"
+          LDAP_SERVERS_CONFIG: ${{ github.workspace }}/tests-servers.json
+          LDAP_URL: "ldap://localhost:33891"
           LDAP_BASE_DN: "dc=test,dc=com"
           LDAP_BIND_DN: "cn=Directory Manager"
           LDAP_BIND_PASSWORD: "TestPassword123"
         run: |
-          # Run the tests (testpaths configured in pyproject.toml)
           uv run pytest -v -s
 
       - name: Debug environment
@@ -208,10 +63,14 @@ jobs:
           docker ps -a
 
           echo "=== DS container logs ==="
-          docker logs ds-test || true
+          docker logs ds-test-1 || true
+          docker logs ds-test-2 || true
+          docker logs ds-test-3 || true
 
           echo "=== DS health check ==="
-          docker exec ds-test dsconf localhost monitor server || true
+          docker exec ds-test-1 dsconf localhost monitor server || true
 
-          echo "=== Check DS port ==="
-          docker port ds-test || true
+          echo "=== Check DS ports ==="
+          docker port ds-test-1 || true
+          docker port ds-test-2 || true
+          docker port ds-test-3 || true

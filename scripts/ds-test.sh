@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-# Script to create test containers and run pytest
+# Script to create test containers and optionally run pytest
 # Creates 3 DS instances for multi-server testing
 
 set -euo pipefail
@@ -32,6 +32,7 @@ Options:
   --base-dn <dn>           Base DN (default: "$DS_BASE_DN")
   --skip-seed              Skip adding example test data
   --no-clean               Skip removing existing containers
+  --no-pytest              Skip running pytest (useful for CI)
   -h, --help               Show this help
 
 Creates ${#TEST_SERVERS[@]} test containers:
@@ -43,11 +44,19 @@ All containers use:
   Base DN:   $DS_BASE_DN
   Bind DN:   cn=Directory Manager
   Password:  $DS_PASSWORD
+
+Environment variables exported (for running pytest separately):
+  LDAP_SERVERS_CONFIG  Path to tests-servers.json
+  LDAP_URL             First server URL (single-server compat)
+  LDAP_BASE_DN         Base DN
+  LDAP_BIND_DN         Bind DN
+  LDAP_BIND_PASSWORD   Bind password
 EOF
 }
 
 SKIP_SEED=false
 CLEAN=true
+RUN_PYTEST=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +70,8 @@ while [[ $# -gt 0 ]]; do
       SKIP_SEED=true; shift ;;
     --no-clean)
       CLEAN=false; shift ;;
+    --no-pytest)
+      RUN_PYTEST=false; shift ;;
     -h|--help)
       print_usage; exit 0 ;;
     *)
@@ -70,9 +81,17 @@ done
 
 require_docker
 
+# Determine total steps based on options
+if [[ "$RUN_PYTEST" == true ]]; then
+  TOTAL_STEPS=8
+else
+  TOTAL_STEPS=6
+fi
+STEP=1
+
 # Step 1: Cleanup
 if [[ "$CLEAN" == true ]]; then
-  echo "[1/8] Cleaning existing test containers..."
+  echo "[$STEP/$TOTAL_STEPS] Cleaning existing test containers..."
   for server in "${TEST_SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port <<< "$server"
     docker rm -f "$name" 2>/dev/null || true
@@ -80,11 +99,12 @@ if [[ "$CLEAN" == true ]]; then
   done
   rm -f "$REPO_ROOT/tests-servers.json" 2>/dev/null || true
 else
-  echo "[1/8] Skipping cleanup (--no-clean)"
+  echo "[$STEP/$TOTAL_STEPS] Skipping cleanup (--no-clean)"
 fi
+STEP=$((STEP + 1))
 
 # Step 2: Create containers
-echo "[2/8] Creating ${#TEST_SERVERS[@]} test containers..."
+echo "[$STEP/$TOTAL_STEPS] Creating ${#TEST_SERVERS[@]} test containers..."
 
 for server in "${TEST_SERVERS[@]}"; do
   IFS=':' read -r name ldap_port ldaps_port <<< "$server"
@@ -121,9 +141,10 @@ for server in "${TEST_SERVERS[@]}"; do
     fi
   fi
 done
+STEP=$((STEP + 1))
 
 # Step 3: Generate test servers.json
-echo "[3/8] Generating tests-servers.json..."
+echo "[$STEP/$TOTAL_STEPS] Generating tests-servers.json..."
 cat > "$REPO_ROOT/tests-servers.json" <<EOF
 {
   "servers": [
@@ -155,10 +176,11 @@ cat > "$REPO_ROOT/tests-servers.json" <<EOF
 }
 EOF
 chmod 600 "$REPO_ROOT/tests-servers.json"
+STEP=$((STEP + 1))
 
 # Step 4: Seed test data
 if [[ "$SKIP_SEED" != true ]]; then
-  echo "[4/8] Seeding test data into all containers..."
+  echo "[$STEP/$TOTAL_STEPS] Seeding test data into all containers..."
 
   seed_test_data() {
     local name=$1
@@ -293,43 +315,49 @@ EOF
     suffix=$((suffix + 1))
   done
 else
-  echo "[4/8] Skipping seed (--skip-seed)"
+  echo "[$STEP/$TOTAL_STEPS] Skipping seed (--skip-seed)"
 fi
+STEP=$((STEP + 1))
 
 # Step 5: Verify
-echo "[5/8] Verifying test data..."
+echo "[$STEP/$TOTAL_STEPS] Verifying test data..."
 for server in "${TEST_SERVERS[@]}"; do
   IFS=':' read -r name ldap_port ldaps_port <<< "$server"
   count=$(docker exec "$name" ldapsearch -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -x -b "ou=people,$DS_BASE_DN" -s sub "(uid=*)" dn 2>/dev/null | grep -c "^dn:" || echo "0")
   echo "  $name: $count users found"
 done
+STEP=$((STEP + 1))
 
-# Step 6: Python environment
-echo "[6/8] Preparing Python environment..."
-if ! command -v uv >/dev/null 2>&1; then
-  echo "Installing uv..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$PATH"
-fi
-
-cd "$REPO_ROOT"
-uv venv
-uv pip install -r requirements.txt
-uv pip install pytest pytest-asyncio
-
-# Step 7: Run tests
-echo "[7/8] Running pytest..."
+# Export environment variables (useful for --no-pytest mode)
 export LDAP_SERVERS_CONFIG="$REPO_ROOT/tests-servers.json"
-# Also set single-server env vars for backward compatibility
 export LDAP_URL="ldap://localhost:33891"
 export LDAP_BASE_DN="$DS_BASE_DN"
 export LDAP_BIND_DN="cn=Directory Manager"
 export LDAP_BIND_PASSWORD="$DS_PASSWORD"
 
-uv run pytest -v -s
+if [[ "$RUN_PYTEST" == true ]]; then
+  # Step 6: Python environment
+  echo "[$STEP/$TOTAL_STEPS] Preparing Python environment..."
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
 
-# Step 8: Summary
-echo "[8/8] Done!"
+  cd "$REPO_ROOT"
+  uv venv
+  uv pip install -r requirements.txt
+  uv pip install pytest pytest-asyncio
+  STEP=$((STEP + 1))
+
+  # Step 7: Run tests
+  echo "[$STEP/$TOTAL_STEPS] Running pytest..."
+  uv run pytest -v -s
+  STEP=$((STEP + 1))
+fi
+
+# Final step: Summary
+echo "[$STEP/$TOTAL_STEPS] Done!"
 echo ""
 echo "Test containers:"
 for server in "${TEST_SERVERS[@]}"; do
@@ -338,4 +366,10 @@ for server in "${TEST_SERVERS[@]}"; do
 done
 echo ""
 echo "Configuration: tests-servers.json"
-echo "LDAP_SERVERS_CONFIG=$REPO_ROOT/tests-servers.json"
+echo ""
+echo "Environment variables for pytest:"
+echo "  export LDAP_SERVERS_CONFIG=\"$REPO_ROOT/tests-servers.json\""
+echo "  export LDAP_URL=\"ldap://localhost:33891\""
+echo "  export LDAP_BASE_DN=\"$DS_BASE_DN\""
+echo "  export LDAP_BIND_DN=\"cn=Directory Manager\""
+echo "  export LDAP_BIND_PASSWORD=\"$DS_PASSWORD\""
