@@ -1,65 +1,43 @@
 # LDAP Assistant MCP
 
-> **⚠️ Experimental Project - Active Development**
+> **Experimental Project - Active Development**
 > This is an experimental MCP server in early development. Current focus: building foundational architecture and health diagnostics for 389 Directory Server. Not production-ready.
 
-## Project Intent
+## Overview
 
-LDAP Assistant MCP aims to be a **multi-directory health and diagnostics assistant** that transforms how support engineers and LDAP administrators troubleshoot directory services.
-
-The assistant:
-- **Rapidly assesses** health across all configured LDAP servers
-- **Identifies root causes** with actionable findings (severity, impact, remediation)
-- **Guides troubleshooting** following "What's wrong?" → "Why?" → "How to fix?" workflow
+LDAP Assistant MCP is a **multi-directory health and diagnostics assistant** that transforms how support engineers and LDAP administrators troubleshoot directory services.
 
 Instead of manually checking servers, ask:
 - "What's wrong across all my servers?"
 - "Show me all locked users"
 - "Which servers have connection issues?"
 
-## Current Status
+The assistant:
+- **Rapidly assesses** health across all configured LDAP servers
+- **Identifies root causes** with actionable findings (severity, impact, remediation)
+- **Guides troubleshooting** following "What's wrong?" → "Why?" → "How to fix?" workflow
 
-### What's Implemented ✅
+## Capabilities
 
-**Architecture & Foundation:**
-- ✅ Modular server layout (`src/ldap_assistant_mcp/`, `src/dirsrv_mcp/`, `src/openldap_mcp/`)
-- ✅ Multi-server connection management (concurrent server support)
-- ✅ JSON-based multi-server configuration
-- ✅ Shared utilities library
-- ✅ MCP server with FastMCP
-
-**389 Directory Server Provider:**
-- ✅ Full implementation using lib389
-- ✅ Connection pooling and management
-- ✅ User account status computation with fallback logic
-
-**Health & Diagnostics:**
-- ✅ `first_look()` - Multi-server quick health overview
+### Health & Diagnostics
+- `first_look()` - Multi-server quick health overview
 - `replication_status()` - Replication agreement health and lag detection
 - `performance_summary()` - Thread/connection/cache metrics and bottlenecks
 - `indexing_analysis()` - Index configuration and unindexed search detection
 - `aci_audit()` - Access control validation and security checks
 
-**User Management Tools:**
-- ✅ `list_all_users()` - Enumerate all users
-- ✅ `search_users_by_name()` - Search by name/email
-- ✅ `get_user_details()` - Get full user details
-- ✅ `list_active_users()` - List only active/unlocked users
-- ✅ `list_locked_users()` - List only locked users
-- ✅ `search_users_by_attribute()` - Search by any attribute
+### User & Group Management
+- List, search, and inspect users
+- Filter by active/locked status
+- Search by any LDAP attribute
+- Enumerate groups
 
-**Group & Directory Tools:**
-- ✅ `list_all_groups()` - Enumerate groups
-- ✅ `ldap_search()` - Generic LDAP search with full control
-- ✅ `run_monitor()` - Server and backend monitoring
+### Monitoring & Advanced
+- Server and backend monitor data
+- Generic LDAP search with full control
+- Configuration resource access
 
-**MCP Resources:**
-- ✅ `config://config-all` - All cn=config attributes
-- ✅ `config://config-attribute/{attribute}` - Single cn=config attribute
-
-**Supported Platforms:**
-- ✅ **389 Directory Server**
-- 🚧 **OpenLDAP**
+**Tools documentation:** [389 DS](src/dirsrv_mcp/TOOLS.md) | [OpenLDAP](src/openldap_mcp/TOOLS.md)
 
 ## Quick Start
 
@@ -67,31 +45,27 @@ Instead of manually checking servers, ask:
 
 - Python 3.13+
 - `uv` package manager
-- 389 Directory Server or OpenLDAP
-- Docker
 - MCP client (Claude Desktop, Claude Code, Cursor, Gemini CLI, etc.)
+- Access to LDAP server(s) (389 Directory Server only, for now)
 
-### Step 1: Create Dev Environment
+### Step 1: Configure Your Servers
 
-Run the dev setup script to create 3 DS containers:
+Create a `servers.json` file with your LDAP server(s):
 
-```bash
-./scripts/ds-dev.sh create
+```json
+{
+  "servers": [
+    {
+      "name": "my-server",
+      "ldap_url": "ldap://ldap.example.com:389",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=Directory Manager",
+      "bind_password": "your-password",
+      "provider_type": "389ds"
+    }
+  ]
+}
 ```
-
-This creates:
-| Server | LDAP URL | LDAPS URL |
-|--------|----------|-----------|
-| ds-dev-1 | ldap://localhost:3389 | ldaps://localhost:3636 |
-| ds-dev-2 | ldap://localhost:3390 | ldaps://localhost:3637 |
-| ds-dev-3 | ldap://localhost:3391 | ldaps://localhost:3638 |
-
-All servers use:
-- **Base DN:** `dc=example,dc=com`
-- **Bind DN:** `cn=Directory Manager`
-- **Password:** `Secret.123`
-
-The script also generates `servers.json` with all server configurations.
 
 ### Step 2: Install to Claude Desktop
 
@@ -99,265 +73,55 @@ The script also generates `servers.json` with all server configurations.
 fastmcp install claude-desktop fastmcp.json
 ```
 
-This registers the MCP server with Claude Desktop. The `fastmcp.json` points to `servers.json` via `LDAP_SERVERS_CONFIG`.
-
 ### Step 3: Restart Claude Desktop
 
-Restart Claude Desktop to load the new MCP server. You should now see LDAP Assistant tools available.
+Restart to load the new MCP server. You should now see LDAP Assistant tools available.
 
 ### Verify Connection
 
 Ask Claude Desktop:
 - "Check the health of all servers"
-- "Show me all users on ds-dev-1"
+- "Show me all users"
 - "List all configured servers"
 
-### Container Management
+### No LDAP Server? Use the Dev Environment
 
-```bash
-./scripts/ds-dev.sh status   # Show container status
-./scripts/ds-dev.sh stop     # Stop all containers
-./scripts/ds-dev.sh start    # Start all containers
-./scripts/ds-dev.sh remove   # Remove containers and volumes
-```
+If you don't have an LDAP server to connect to, see the [Development Guide](docs/DEVELOPMENT.md) to spin up test containers with Docker.
 
-## Configuration
+## Supported Platforms
 
-### servers.json
-
-The `servers.json` file (generated by `ds-dev.sh`) defines all LDAP servers:
-
-```json
-{
-  "servers": [
-    {
-      "name": "ds-dev-1",
-      "ldap_url": "ldap://localhost:3389",
-      "base_dn": "dc=example,dc=com",
-      "bind_dn": "cn=Directory Manager",
-      "bind_password": "Secret.123",
-      "provider_type": "389ds"
-    },
-    {
-      "name": "ds-dev-2",
-      "ldap_url": "ldap://localhost:3390",
-      "base_dn": "dc=example,dc=com",
-      "bind_dn": "cn=Directory Manager",
-      "bind_password": "Secret.123",
-      "provider_type": "389ds"
-    },
-    {
-      "name": "ds-dev-3",
-      "ldap_url": "ldap://localhost:3391",
-      "base_dn": "dc=example,dc=com",
-      "bind_dn": "cn=Directory Manager",
-      "bind_password": "Secret.123",
-      "provider_type": "389ds"
-    }
-  ]
-}
-```
-
-### fastmcp.json
-
-The `fastmcp.json` configures the MCP server runtime:
-
-```json
-{
-  "source": {
-    "path": "src/main.py",
-    "entrypoint": "create_server"
-  },
-  "environment": {
-    "type": "uv",
-    "python": "3.13",
-    "dependencies": ["fastmcp", "lib389"]
-  },
-  "deployment": {
-    "transport": "stdio",
-    "log_level": "INFO"
-  },
-  "env": {
-    "LDAP_SERVERS_CONFIG": "./servers.json"
-  }
-}
-```
-
-### Single Server (Environment Variables)
-
-For a single server without `servers.json`:
-
-```bash
-export LDAP_URL="ldap://localhost:3389"
-export LDAP_BASE_DN="dc=example,dc=com"
-export LDAP_BIND_DN="cn=Directory Manager"
-export LDAP_BIND_PASSWORD="Secret.123"
-```
-
-### Running the Server Manually
-
-```bash
-fastmcp run --skip-env
-```
-
-Set `LDAP_PROVIDER=dirsrv|openldap` to switch backends (defaults to `dirsrv`). Provide
-`LDAP_SERVERS_CONFIG=/path/servers.json` for multi-server 389 DS setups. For now, only STDIO transport is
-supported for security reasons; do not use HTTP overrides in `fastmcp run`.
-
-## Testing
-
-The test suite uses a separate container to avoid conflicts with dev environment:
-
-```bash
-./scripts/dev-test.sh
-```
-
-Test environment uses:
-- Container: `ds-test`
-- Password: `TestPassword123`
-- Base DN: `dc=test,dc=com`
-- Port: dynamically mapped
-
-## Example Usage
-
-### Health Check Example
-
-Connect any MCP-compatible client (Claude Desktop, Cursor, Gemini, etc.) to your running `fastmcp` server and ask:
-- "Check the health of all servers"
-- "Give me a performance summary for ds-prod1"
-
-### User Management Examples
-
-Ask the assistant to:
-- "Show me all locked users"
-- "Find users in the Engineering department"
-- "Show me details for user jdoe"
-
-## MCP Tools Reference
-
-### Health & Diagnostics
-- **`first_look()`** - Quick health overview across all configured servers
-- **`replication_status(server_name)`** - Check all replication agreements for lag/failures
-- **`performance_summary(server_name)`** - Identify performance bottlenecks
-- **`indexing_analysis(server_name, attribute?, backend?)`** - Detect indexing issues
-- **`aci_audit(server_name, base_dn?)`** - Validate access control configurations
-
-### User Management
-- **`list_all_users(limit=50)`** - Enumerate all users
-- **`search_users_by_name(name, limit=50)`** - Search by name/email
-- **`get_user_details(username)`** - Get full user details
-- **`list_active_users(limit=50)`** - List active/unlocked users
-- **`list_locked_users(limit=50)`** - List locked users
-- **`search_users_by_attribute(attr, value, limit=50)`** - Search by any attribute
-
-### Group Management
-- **`list_all_groups(limit=50)`** - Enumerate groups
-
-### Monitoring
-- **`run_monitor(backend="", suffix="")`** - Get server/backend monitor data
-
-### Advanced
-- **`ldap_search(base_dn, scope, filter, ...)`** - Full LDAP search control
-
-### Resources
-- **`config://config-all`** - All cn=config attributes
-- **`config://config-attribute/{attr}`** - Single cn=config attribute
-
-### Prompts
-- **`Tool Navigator`** - Guides tool selection for directory tasks
-
-## Architecture
-
-The project uses a **modular server architecture**:
-
-```
-ldap-assistant-mcp/
-├── src/
-│   ├── ldap_assistant_mcp/  # Base LDAP Assistant server + config dataclasses
-│   ├── dirsrv_mcp/          # 389 DS implementation
-│   ├── openldap_mcp/        # OpenLDAP implementation
-│   ├── lib/                 # Shared utilities
-│   └── config/              # Configuration management
-├── src/main.py              # FastMCP entry point + server factory
-├── fastmcp.json             # Declarative runtime config for fastmcp CLI
-└── tests/                   # Test suite
-```
-
-## Client Configuration
-
-Use `fastmcp install` to register the MCP server with Claude Desktop:
-
-```bash
-fastmcp install claude-desktop fastmcp.json
-```
-
-This generates configuration in Claude Desktop's config file. The generated config will include:
-- Path to the MCP server entrypoint
-- Environment variables from `fastmcp.json` (including `LDAP_SERVERS_CONFIG`)
-- Required dependencies (fastmcp, lib389)
-
-For more details, see [FastMCP docs](https://gofastmcp.com/deployment/server-configuration#development-configuration).
+- **389 Directory Server** - Full support
+- **OpenLDAP** - In development
 
 ## Use Cases
 
 ### Support Engineers
-- ✅ Rapid root cause analysis during incidents
-- ✅ Quick health scans across customer topologies
-- 🚧 Identify replication failures (wireframes ready)
-- 🚧 Performance bottleneck analysis (wireframes ready)
-- 🚧 Get immediate remediation guidance
+- Rapid root cause analysis during incidents
+- Quick health scans across customer topologies
+- Immediate remediation guidance
 
 ### LDAP Administrators
-- ✅ Proactive monitoring of production services
-- ✅ Catch issues before they become outages
-- 🚧 Performance tuning with metrics (wireframes ready)
-- 🚧 Access control security audits (wireframes ready)
-- 🚧 Routine health checks with reports
+- Proactive monitoring of production services
+- Performance tuning with metrics
+- Access control security audits
 
-### Advanced Users
-- ✅ Self-service health checks
-- ✅ Guided troubleshooting
-- 🚧 Automated health reports
+## Limitations
 
-## Development & Testing
+- **Experimental** - APIs subject to change
+- **Not production-ready** - Designed for local/testing/support scenarios
+- **Read-only** - No write operations yet
+- **Plain text passwords** - Use restrictive file permissions on config files
+- **STDIO transport only** - No HTTP/SSE support yet
 
-### Running Tests
-```bash
-# All-in-one: container + tests
-./scripts/dev-test.sh
+## Documentation
 
-# Manual testing
-export LDAP_URL="ldap://localhost:3389"
-export LDAP_BASE_DN="dc=test,dc=com"
-export LDAP_BIND_DN="cn=Directory Manager"
-export LDAP_BIND_PASSWORD="TestPassword123"
-uv run pytest tests/ -v -s
-```
-
-### Project Structure
-- `src/ldap_assistant_mcp/` - Base FastMCP server + shared config objects
-- `src/dirsrv_mcp/` - 389 DS implementation (connection manager, tools, health)
-- `src/openldap_mcp/` - OpenLDAP implementation
-- `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers)
-- `src/config/` - Configuration loader
-- `src/main.py` - FastMCP-ready server factory
-- `fastmcp.json` - Declarative runtime configuration for FastMCP CLI
-- `tests/` - Test suite
-
-## Limitations & Constraints
-
-**Current State:**
-- ⚠️ **Experimental** - APIs subject to change
-- ⚠️ **Not production-ready** - Designed for local/testing/support scenarios
-- ⚠️ **Read-only** - No write operations yet (planned)
-- ⚠️ **Advanced diagnostics in development** - Replication, performance, indexing, ACI tools  have wireframes ready
-- ⚠️ **Plain text passwords** - Use restrictive file permissions on config files
-- ⚠️ **STDIO transport only** - No HTTP/SSE support yet
-
-**Design Decisions:**
-- Single-shot connections (no persistent connection pooling per tool call)
-- JSON configuration for multi-server setups
-- Provider-based architecture for platform-specific implementations
+| Document | Description |
+|----------|-------------|
+| [Development Guide](docs/DEVELOPMENT.md) | Dev environment setup, configuration, architecture |
+| [Testing Guide](docs/TESTING.md) | Running and writing tests |
+| [Contributing Guide](docs/CONTRIBUTING.md) | How to contribute |
+| [389 DS Tools](src/dirsrv_mcp/TOOLS.md) | 389 Directory Server tools reference |
+| [OpenLDAP Tools](src/openldap_mcp/TOOLS.md) | OpenLDAP tools reference (in development) |
 
 ## References
 
@@ -367,4 +131,4 @@ uv run pytest tests/ -v -s
 
 ---
 
-**Note:** This is an experimental project under active development. Features and APIs are subject to change. We recommend using it in local/testing environments until it reaches a stable release.
+**Note:** This is an experimental project under active development. Features and APIs are subject to change.
