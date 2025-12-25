@@ -8,10 +8,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
+# Source common functions
+source "$SCRIPT_DIR/ds-common.sh"
+
 # Dev environment defaults
 DS_PASSWORD="Secret.123"
 DS_BASE_DN="dc=example,dc=com"
-DS_IMAGE="quay.io/389ds/dirsrv"
 
 # Server definitions: name:ldap_port:ldaps_port
 SERVERS=(
@@ -47,68 +49,6 @@ After running 'create':
   2. Install to Claude Desktop:
      fastmcp install claude-desktop fastmcp.json
 EOF
-}
-
-wait_for_ds() {
-  local name=$1
-  local port=$2
-  local max_attempts=30
-  local attempt=1
-
-  echo "  Waiting for $name to be ready..."
-  while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
-
-wait_for_auth() {
-  local name=$1
-  local max_attempts=10
-  local attempt=1
-
-  echo "  Waiting for Directory Manager auth..."
-  while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" > /dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
-
-create_backend() {
-  local name=$1
-
-  echo "  Creating backend and suffix for $name..."
-  # Create backend with suffix - this ensures dc=example,dc=com exists
-  docker exec "$name" dsconf localhost backend create \
-    --suffix="$DS_BASE_DN" \
-    --be-name=userroot \
-    --create-entries \
-    --create-suffix 2>/dev/null || true
-
-  # Verify suffix exists, create manually if needed
-  if ! docker exec "$name" ldapsearch -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -b "$DS_BASE_DN" -s base > /dev/null 2>&1; then
-    echo "  Creating base suffix manually..."
-    # Extract dc value from base DN
-    DC_VALUE=$(echo "$DS_BASE_DN" | sed -n 's/dc=\([^,]*\).*/\1/p')
-    docker exec -i "$name" ldapadd \
-      -H ldap://localhost:3389 \
-      -D "cn=Directory Manager" \
-      -w "$DS_PASSWORD" \
-      -x <<EOF
-dn: $DS_BASE_DN
-objectClass: top
-objectClass: domain
-dc: $DC_VALUE
-EOF
-  fi
 }
 
 add_sample_users() {
@@ -154,36 +94,27 @@ create_server() {
     return 0
   fi
 
-  # Create volume
-  docker volume create "${name}-data" > /dev/null
-
-  # Create and start container
-  docker run -d \
-    --name "$name" \
-    --hostname localhost \
-    -v "${name}-data:/data" \
-    -e DS_DM_PASSWORD="$DS_PASSWORD" \
-    -e DS_SUFFIX_NAME="$DS_BASE_DN" \
-    -e DS_CREATE_SUFFIX_ENTRY=True \
-    -p ${ldap_port}:3389 \
-    -p ${ldaps_port}:3636 \
-    "$DS_IMAGE" > /dev/null
+  # Create container
+  create_ds_container "$name" "$ldap_port" "$ldaps_port" "$DS_PASSWORD" "$DS_BASE_DN"
 
   # Wait for DS
-  if ! wait_for_ds "$name" "$ldap_port"; then
+  if ! wait_for_ds "$name"; then
     echo "  ERROR: $name failed to start"
     return 1
   fi
 
   # Wait for auth
   sleep 3
-  if ! wait_for_auth "$name"; then
+  if ! wait_for_auth "$name" "$DS_PASSWORD"; then
     echo "  ERROR: $name auth failed"
     return 1
   fi
 
   # Create backend and suffix
-  create_backend "$name"
+  create_backend "$name" "$DS_BASE_DN"
+
+  # Create base OUs
+  create_base_ous "$name" "$DS_BASE_DN" "$DS_PASSWORD"
 
   # Add sample data
   add_sample_users "$name" "$suffix"
@@ -230,6 +161,8 @@ EOF
 }
 
 create_all() {
+  require_docker
+
   echo "Creating ${#SERVERS[@]} dev DS containers..."
   echo ""
 
@@ -289,8 +222,7 @@ remove_all() {
   echo "Removing all dev containers and volumes..."
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port <<< "$server"
-    docker rm -f "$name" 2>/dev/null && echo "  Removed $name" || true
-    docker volume rm "${name}-data" 2>/dev/null || true
+    remove_ds_container "$name"
   done
   rm -f "$REPO_ROOT/servers.json" && echo "  Removed servers.json" || true
 }

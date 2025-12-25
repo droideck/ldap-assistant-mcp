@@ -1,9 +1,17 @@
 #!/bin/bash -e
 
+# Script to create test containers and run pytest
+# Creates 3 DS instances for multi-server testing
+
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
+# Source common functions
+source "$SCRIPT_DIR/ds-common.sh"
+
 # Test environment defaults
-DS_IMAGE=${DS_IMAGE:-quay.io/389ds/dirsrv}
 DS_PASSWORD=${DS_PASSWORD:-TestPassword123}
 DS_BASE_DN=${DS_BASE_DN:-dc=test,dc=com}
 
@@ -16,7 +24,7 @@ TEST_SERVERS=(
 
 print_usage() {
   cat <<EOF
-Usage: scripts/dev-test.sh [options]
+Usage: scripts/ds-test.sh [options]
 
 Options:
   --image <image>          Directory Server image (default: "$DS_IMAGE")
@@ -60,17 +68,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Error: required command not found: $1" >&2
-    exit 1
-  fi
-}
-
-require_cmd docker
-
-SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+require_docker
 
 # Step 1: Cleanup
 if [[ "$CLEAN" == true ]]; then
@@ -88,109 +86,40 @@ fi
 # Step 2: Create containers
 echo "[2/8] Creating ${#TEST_SERVERS[@]} test containers..."
 
-wait_for_ds() {
-  local name=$1
-  local max_attempts=30
-  local attempt=1
-  while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
-
-wait_for_auth() {
-  local name=$1
-  local max_attempts=10
-  local attempt=1
-  while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" > /dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
-
-create_backend() {
-  local name=$1
-  docker exec "$name" dsconf localhost backend create \
-    --suffix="$DS_BASE_DN" \
-    --be-name=userroot \
-    --create-entries \
-    --create-suffix 2>/dev/null || true
-}
-
-create_base_ous() {
-  local name=$1
-  docker exec -i "$name" ldapadd \
-    -H ldap://localhost:3389 \
-    -D "cn=Directory Manager" \
-    -w "$DS_PASSWORD" \
-    -x <<EOF || true
-dn: ou=people,$DS_BASE_DN
-objectClass: top
-objectClass: organizationalUnit
-ou: people
-
-dn: ou=groups,$DS_BASE_DN
-objectClass: top
-objectClass: organizationalUnit
-ou: groups
-EOF
-}
-
 for server in "${TEST_SERVERS[@]}"; do
   IFS=':' read -r name ldap_port ldaps_port <<< "$server"
 
   echo "  Creating $name (LDAP: $ldap_port)..."
 
-  # Skip if already exists
+  # Create container using common function
+  create_ds_container "$name" "$ldap_port" "$ldaps_port" "$DS_PASSWORD" "$DS_BASE_DN"
+
+  # Skip waiting if container already existed
   if docker inspect "$name" >/dev/null 2>&1; then
-    echo "    Container exists, starting..."
-    docker start "$name" >/dev/null
-    continue
+    status=$(docker inspect -f '{{.State.Status}}' "$name")
+    if [[ "$status" == "running" ]]; then
+      # Wait for DS
+      if ! wait_for_ds "$name"; then
+        echo "    ERROR: $name failed to start"
+        exit 1
+      fi
+
+      # Wait for auth
+      sleep 3
+      if ! wait_for_auth "$name" "$DS_PASSWORD"; then
+        echo "    ERROR: $name auth failed"
+        exit 1
+      fi
+
+      # Create backend
+      create_backend "$name" "$DS_BASE_DN"
+
+      # Create OUs
+      create_base_ous "$name" "$DS_BASE_DN" "$DS_PASSWORD"
+
+      echo "    $name is ready"
+    fi
   fi
-
-  # Create volume
-  docker volume create "${name}-data" > /dev/null
-
-  # Create and start container
-  docker run -d \
-    --name "$name" \
-    --hostname localhost \
-    -v "${name}-data:/data" \
-    -e DS_DM_PASSWORD="$DS_PASSWORD" \
-    -e DS_SUFFIX_NAME="$DS_BASE_DN" \
-    -e DS_CREATE_SUFFIX_ENTRY=True \
-    -p ${ldap_port}:3389 \
-    -p ${ldaps_port}:3636 \
-    "$DS_IMAGE" > /dev/null
-
-  # Wait for DS
-  if ! wait_for_ds "$name"; then
-    echo "    ERROR: $name failed to start"
-    exit 1
-  fi
-
-  # Wait for auth
-  sleep 3
-  if ! wait_for_auth "$name"; then
-    echo "    ERROR: $name auth failed"
-    exit 1
-  fi
-
-  # Create backend
-  create_backend "$name"
-
-  # Create OUs
-  create_base_ous "$name"
-
-  echo "    $name is ready"
 done
 
 # Step 3: Generate test servers.json
