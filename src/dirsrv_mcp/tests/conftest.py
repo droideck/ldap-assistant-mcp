@@ -15,7 +15,7 @@ import pytest
 
 from src.config.loader import load_config
 from src.dirsrv_mcp.server import DirSrvMCP
-from src.ldap_assistant_mcp.server import LDAPServerConfig
+from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig
 
 
 @pytest.fixture
@@ -105,4 +105,25 @@ def expected_test_groups() -> list[str]:
         "testgroup1",
         "testgroup2",
     ]
+
+
+@pytest.fixture
+def anonymous_server_config(mock_env) -> LDAPServerConfig:
+    """Create a server config for anonymous access testing."""
+    return LDAPServerConfig(
+        name="anon-test",
+        hostname="localhost",
+        port=int(os.environ.get("LDAP_URL", "ldap://localhost:33891").split(":")[-1]),
+        base_dn=os.environ.get("LDAP_BASE_DN", "dc=test,dc=com"),
+        auth_method=LDAPAuthMethod.ANONYMOUS,
+    )
+
+
+@pytest.fixture
+def dirsrv_anonymous_server(anonymous_server_config) -> DirSrvMCP:
+    """Create a DirSrvMCP instance configured for anonymous access."""
+    return DirSrvMCP(
+        servers=[anonymous_server_config],
+        include_env_fallback=False,
+    )
 

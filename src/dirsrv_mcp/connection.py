@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Union
 
+import ldap
 from lib389 import DirSrv
 
 from src.ldap_assistant_mcp.server import LDAPServerConfig
@@ -31,6 +32,7 @@ class ServerConfig:
     bind_dn: str
     bind_password: str
     provider_type: str = "389ds"
+    auth_method: str = "simple"
 
     @classmethod
     def from_env(cls, name: str = "default") -> ServerConfig:
@@ -66,19 +68,35 @@ class ConnectionManager:
         """Register a server configuration."""
 
         if isinstance(config, LDAPServerConfig):
+            auth_method = config.auth_method.value
+
+            # For anonymous auth, use empty credentials
+            if auth_method == "anonymous":
+                bind_dn = ""
+                bind_password = ""
+            else:
+                bind_dn = config.bind_dn or "cn=Directory Manager"
+                bind_password = config.bind_password or ""
+
             server_config = ServerConfig(
                 name=config.name,
                 ldap_url=config.ldap_url,
                 base_dn=config.base_dn or "dc=example,dc=com",
-                bind_dn=config.bind_dn or "cn=Directory Manager",
-                bind_password=config.bind_password or "",
+                bind_dn=bind_dn,
+                bind_password=bind_password,
                 provider_type="389ds",
+                auth_method=auth_method,
             )
         else:
             server_config = config
 
         self._configs[server_config.name] = server_config
-        logger.info("Added DirSrv server '%s' (%s)", server_config.name, server_config.ldap_url)
+        logger.info(
+            "Added DirSrv server '%s' (%s, auth=%s)",
+            server_config.name,
+            server_config.ldap_url,
+            server_config.auth_method,
+        )
 
     def get_server_names(self) -> List[str]:
         """Return configured server names."""
@@ -96,15 +114,45 @@ class ConnectionManager:
         """Create and return a connection to the requested server."""
 
         config = self.get_config(server_name)
-        logger.info("Connecting to %s at %s", server_name, config.ldap_url)
+        logger.info(
+            "Connecting to %s at %s (auth=%s)",
+            server_name,
+            config.ldap_url,
+            config.auth_method,
+        )
 
         ds = DirSrv(verbose=False)
-        ds.remote_simple_allocate(
-            config.ldap_url,
-            config.bind_dn,
-            config.bind_password,
-        )
-        ds.open()
+
+        if config.auth_method == "anonymous":
+            # Anonymous bind: use empty credentials
+            ds.remote_simple_allocate(config.ldap_url, "", "")
+            logger.debug("Using anonymous bind for %s", server_name)
+        else:
+            ds.remote_simple_allocate(
+                config.ldap_url,
+                config.bind_dn,
+                config.bind_password,
+            )
+
+        try:
+            ds.open()
+        except ldap.INAPPROPRIATE_AUTH as exc:
+            if config.auth_method == "anonymous":
+                raise ConnectionError(
+                    f"Anonymous access denied by server '{server_name}'. "
+                    "The server may have anonymous access disabled "
+                    "(nsslapd-allow-anonymous-access=off)."
+                ) from exc
+            raise
+        except ldap.UNWILLING_TO_PERFORM as exc:
+            if config.auth_method == "anonymous":
+                raise ConnectionError(
+                    f"Server '{server_name}' refused anonymous bind. "
+                    "Anonymous access may be restricted to rootdse only "
+                    "(nsslapd-allow-anonymous-access=rootdse)."
+                ) from exc
+            raise
+
         return ds
 
 

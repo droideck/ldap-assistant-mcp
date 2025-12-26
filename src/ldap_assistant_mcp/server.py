@@ -15,6 +15,7 @@ class LDAPAuthMethod(str, Enum):
     """Supported LDAP authentication mechanisms."""
 
     SIMPLE = "simple"
+    ANONYMOUS = "anonymous"
     SASL_GSSAPI = "sasl_gssapi"
     SASL_DIGEST_MD5 = "sasl_digest_md5"
     SASL_EXTERNAL = "sasl_external"
@@ -99,12 +100,18 @@ class LDAPServerConfig:
             use_ssl = str(use_ssl_env).lower() in {"1", "true", "yes", "on"}
             port = int(port_env) if port_env else (636 if use_ssl else 389)
 
-        bind_dn = os.environ.get("LDAP_BIND_DN", "cn=Directory Manager")
-        bind_password = os.environ.get("LDAP_BIND_PASSWORD", "Password123")
         base_dn = os.environ.get("LDAP_BASE_DN", "dc=example,dc=com")
         auth_method = LDAPAuthMethod(
             os.environ.get("LDAP_AUTH_METHOD", LDAPAuthMethod.SIMPLE.value).lower()
         )
+
+        # For anonymous auth, don't use default credentials
+        if auth_method == LDAPAuthMethod.ANONYMOUS:
+            bind_dn = None
+            bind_password = None
+        else:
+            bind_dn = os.environ.get("LDAP_BIND_DN", "cn=Directory Manager")
+            bind_password = os.environ.get("LDAP_BIND_PASSWORD", "Password123")
         provider_type = os.environ.get("LDAP_PROVIDER", "generic")
 
         return cls(
