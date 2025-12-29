@@ -20,22 +20,26 @@ class ServerListConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
-        return {
-            "servers": [
-                {
-                    "name": s.name,
-                    "hostname": s.hostname,
-                    "port": s.port,
-                    "use_ssl": s.use_ssl,
-                    "bind_dn": s.bind_dn,
-                    "bind_password": s.bind_password,
-                    "base_dn": s.base_dn,
-                    "auth_method": s.auth_method.value,
-                    "provider_type": s.provider_type,
-                }
-                for s in self.servers
-            ]
-        }
+        server_list = []
+        for s in self.servers:
+            server_dict = {
+                "name": s.name,
+                "hostname": s.hostname,
+                "port": s.port,
+                "use_ssl": s.use_ssl,
+                "bind_dn": s.bind_dn,
+                "bind_password": s.bind_password,
+                "base_dn": s.base_dn,
+                "auth_method": s.auth_method.value,
+                "provider_type": s.provider_type,
+            }
+            # Only include local fields if configured
+            if s.is_local:
+                server_dict["is_local"] = s.is_local
+                if s.serverid:
+                    server_dict["serverid"] = s.serverid
+            server_list.append(server_dict)
+        return {"servers": server_list}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ServerListConfig":
@@ -67,11 +71,25 @@ def load_config(
                 "base_dn": "dc=example,dc=com",
                 "bind_dn": "cn=Directory Manager",
                 "bind_password": "secret",
-                "provider_type": "389ds"
+                "provider_type": "389ds",
+                "is_local": false
+            },
+            {
+                "name": "local-ds1",
+                "ldap_url": "ldap://localhost:389",
+                "base_dn": "dc=example,dc=com",
+                "bind_dn": "cn=Directory Manager",
+                "bind_password": "secret",
+                "provider_type": "389ds",
+                "is_local": true,
+                "serverid": "standalone"
             },
             ...
         ]
     }
+
+    Note: For local instances (is_local=true), the serverid field is required.
+    This enables access to server log files, config files, and other local resources.
 
     Args:
         config_file: Optional path to JSON config file
@@ -211,6 +229,18 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         else LDAPAuthMethod(str(auth_value).lower())
     )
 
+    # Local instance support
+    is_local = _coerce_bool(data.get("is_local", False))
+    serverid = data.get("serverid")
+
+    # Validate: if is_local is True, serverid should be provided
+    if is_local and not serverid:
+        logger.warning(
+            "Server '%s' has is_local=true but no serverid. "
+            "Local features (log access, filesystem checks) will not work.",
+            data.get("name", hostname),
+        )
+
     return LDAPServerConfig(
         name=data.get("name", hostname),
         hostname=hostname,
@@ -221,6 +251,8 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         base_dn=data.get("base_dn"),
         auth_method=auth_method,
         provider_type=data.get("provider_type", "389ds"),
+        is_local=is_local,
+        serverid=serverid,
     )
 
 
