@@ -89,7 +89,6 @@ if [[ "$CLEAN" == true ]]; then
     docker rm -f "$name" 2>/dev/null || true
     docker volume rm "${name}-data" 2>/dev/null || true
   done
-  rm -f "$REPO_ROOT/tests-local-servers.json" 2>/dev/null || true
 else
   echo "[$STEP/$TOTAL_STEPS] Skipping cleanup (--no-clean)"
 fi
@@ -148,39 +147,39 @@ for server in "${LOCAL_TEST_SERVERS[@]}"; do
 done
 STEP=$((STEP + 1))
 
-# Step 3: Generate local test config
+# Step 3: Generate local test config inside container
 # Note: For tests running inside the container:
 # - ldap_url uses localhost:3389 (internal port)
 # - is_local=true enables local instance access
 # - serverid="localhost" matches the DS instance name
-echo "[$STEP/$TOTAL_STEPS] Generating tests-local-servers.json..."
+# - Config is written to /tmp inside container (since /mcp is read-only)
+echo "[$STEP/$TOTAL_STEPS] Generating tests-local-servers.json inside container..."
 
-cat > "$REPO_ROOT/tests-local-servers.json" <<EOF
+docker exec ds-local-1 bash -c "cat > /tmp/tests-local-servers.json << EOF
 {
-  "servers": [
+  \"servers\": [
     {
-      "name": "ds-local-1",
-      "ldap_url": "ldap://localhost:3389",
-      "base_dn": "$DS_BASE_DN",
-      "bind_dn": "cn=Directory Manager",
-      "bind_password": "$DS_PASSWORD",
-      "provider_type": "389ds",
-      "is_local": true,
-      "serverid": "localhost"
+      \"name\": \"ds-local-1\",
+      \"ldap_url\": \"ldap://localhost:3389\",
+      \"base_dn\": \"$DS_BASE_DN\",
+      \"bind_dn\": \"cn=Directory Manager\",
+      \"bind_password\": \"$DS_PASSWORD\",
+      \"provider_type\": \"389ds\",
+      \"is_local\": true,
+      \"serverid\": \"localhost\"
     },
     {
-      "name": "ds-local-2",
-      "ldap_url": "ldap://ds-local-2:3389",
-      "base_dn": "$DS_BASE_DN",
-      "bind_dn": "cn=Directory Manager",
-      "bind_password": "$DS_PASSWORD",
-      "provider_type": "389ds",
-      "is_local": false
+      \"name\": \"ds-local-2\",
+      \"ldap_url\": \"ldap://ds-local-2:3389\",
+      \"base_dn\": \"$DS_BASE_DN\",
+      \"bind_dn\": \"cn=Directory Manager\",
+      \"bind_password\": \"$DS_PASSWORD\",
+      \"provider_type\": \"389ds\",
+      \"is_local\": false
     }
   ]
 }
-EOF
-chmod 600 "$REPO_ROOT/tests-local-servers.json"
+EOF"
 STEP=$((STEP + 1))
 
 # Step 4: Seed test data
@@ -263,7 +262,7 @@ if [[ "$RUN_PYTEST" == true ]]; then
   echo "[$STEP/$TOTAL_STEPS] Running local connection tests inside container..."
 
   docker exec \
-    -e LDAP_SERVERS_CONFIG=/mcp/tests-local-servers.json \
+    -e LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json \
     -e LDAP_URL="ldap://localhost:3389" \
     -e LDAP_BASE_DN="$DS_BASE_DN" \
     -e LDAP_BIND_DN="cn=Directory Manager" \
@@ -287,12 +286,12 @@ for server in "${LOCAL_TEST_SERVERS[@]}"; do
   echo "  $name: ldap://localhost:$ldap_port (external) / ldap://localhost:3389 (internal)"
 done
 echo ""
-echo "Configuration: tests-local-servers.json"
+echo "Configuration: /tmp/tests-local-servers.json (inside container)"
 echo ""
 echo "To run tests manually inside the container:"
 echo "  docker exec -it ds-local-1 bash"
 echo "  cd /mcp"
-echo "  export LDAP_SERVERS_CONFIG=/mcp/tests-local-servers.json"
+echo "  export LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json"
 echo "  export LDAP_IS_LOCAL=true"
 echo "  export LDAP_SERVERID=localhost"
 echo "  python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py -v -s"

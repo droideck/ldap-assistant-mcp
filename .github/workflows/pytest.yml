@@ -147,8 +147,8 @@ jobs:
 
       - name: Generate local test config inside container
         run: |
-          # Create config file inside the container
-          docker exec ds-local-ci bash -c 'cat > /mcp/tests-local-servers.json << EOF
+          # Create config file in /tmp (since /mcp is read-only)
+          docker exec ds-local-ci bash -c 'cat > /tmp/tests-local-servers.json << EOF
           {
             "servers": [
               {
@@ -178,7 +178,7 @@ jobs:
       - name: Run local connection tests
         run: |
           docker exec \
-            -e LDAP_SERVERS_CONFIG=/mcp/tests-local-servers.json \
+            -e LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json \
             -e LDAP_URL="ldap://localhost:3389" \
             -e LDAP_PORT="3389" \
             -e LDAP_BASE_DN="dc=test,dc=com" \
@@ -287,7 +287,8 @@ jobs:
 
       - name: Generate multi-server config
         run: |
-          docker exec ds-multi-local bash -c 'cat > /mcp/tests-multi-local-servers.json << EOF
+          # Create config file in /tmp (since /mcp is read-only)
+          docker exec ds-multi-local bash -c 'cat > /tmp/tests-multi-local-servers.json << EOF
           {
             "servers": [
               {
@@ -325,7 +326,7 @@ jobs:
       - name: Run multi-server configuration tests
         run: |
           docker exec \
-            -e LDAP_SERVERS_CONFIG=/mcp/tests-multi-local-servers.json \
+            -e LDAP_SERVERS_CONFIG=/tmp/tests-multi-local-servers.json \
             -e LDAP_IS_LOCAL="true" \
             -e LDAP_SERVERID="localhost" \
             ds-multi-local bash -c "
