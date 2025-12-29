@@ -29,9 +29,15 @@ class LDAPServerConfig:
     - Access to server log files (access, error, audit logs)
     - File system checks (permissions, disk space for server paths)
     - DSE.ldif access for offline configuration inspection
-    - LDAPI socket connections (if available)
+    - LDAPI socket connections (if use_ldapi=True)
 
     Remote instances only support LDAP protocol operations.
+
+    LDAPI (Unix socket) connections:
+    - Set is_local=True, serverid=<instance>, and use_ldapi=True
+    - Uses SASL EXTERNAL authentication (no password needed)
+    - Authenticates based on Unix socket peer credentials
+    - Requires the process to run as root or the dirsrv user
     """
 
     name: str
@@ -46,6 +52,8 @@ class LDAPServerConfig:
     # Local instance support
     is_local: bool = False
     serverid: Optional[str] = None
+    # LDAPI socket connection (requires is_local=True and serverid)
+    use_ldapi: bool = False
 
     @property
     def ldap_url(self) -> str:
@@ -72,6 +80,8 @@ class LDAPServerConfig:
             result["is_local"] = self.is_local
             if self.serverid:
                 result["serverid"] = self.serverid
+            if self.use_ldapi:
+                result["use_ldapi"] = self.use_ldapi
         return result
 
     def copy_with(self, **overrides: Any) -> LDAPServerConfig:
@@ -138,6 +148,8 @@ class LDAPServerConfig:
         is_local_env = os.environ.get("LDAP_IS_LOCAL", "")
         is_local = str(is_local_env).lower() in {"1", "true", "yes", "on"}
         serverid = os.environ.get("LDAP_SERVERID")
+        use_ldapi_env = os.environ.get("LDAP_USE_LDAPI", "")
+        use_ldapi = str(use_ldapi_env).lower() in {"1", "true", "yes", "on"}
 
         return cls(
             name=name,
@@ -151,6 +163,7 @@ class LDAPServerConfig:
             provider_type=provider_type,
             is_local=is_local,
             serverid=serverid,
+            use_ldapi=use_ldapi,
         )
 
 
@@ -227,6 +240,7 @@ class LDAPAssistantMCP(FastMCP):
             }
             if config.is_local and config.serverid:
                 desc["serverid"] = config.serverid
+                desc["use_ldapi"] = config.use_ldapi
             descriptions.append(desc)
         return descriptions
 

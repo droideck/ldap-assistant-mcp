@@ -81,6 +81,7 @@ class TestLDAPServerConfigLocal:
         )
         assert config.is_local is False
         assert config.serverid is None
+        assert config.use_ldapi is False
 
     def test_local_fields_set(self):
         """Local fields should be settable."""
@@ -93,6 +94,20 @@ class TestLDAPServerConfigLocal:
         )
         assert config.is_local is True
         assert config.serverid == "standalone"
+
+    def test_ldapi_fields_set(self):
+        """LDAPI fields should be settable."""
+        config = LDAPServerConfig(
+            name="test",
+            hostname="localhost",
+            port=389,
+            is_local=True,
+            serverid="standalone",
+            use_ldapi=True,
+        )
+        assert config.is_local is True
+        assert config.serverid == "standalone"
+        assert config.use_ldapi is True
 
     def test_as_dict_includes_local_fields(self):
         """as_dict() should include local fields when is_local=True."""
@@ -107,6 +122,21 @@ class TestLDAPServerConfigLocal:
         assert d["is_local"] is True
         assert d["serverid"] == "myinstance"
 
+    def test_as_dict_includes_ldapi_fields(self):
+        """as_dict() should include use_ldapi when set."""
+        config = LDAPServerConfig(
+            name="test",
+            hostname="localhost",
+            port=389,
+            is_local=True,
+            serverid="myinstance",
+            use_ldapi=True,
+        )
+        d = config.as_dict()
+        assert d["is_local"] is True
+        assert d["serverid"] == "myinstance"
+        assert d["use_ldapi"] is True
+
     def test_as_dict_excludes_local_fields_when_false(self):
         """as_dict() should not include local fields when is_local=False."""
         config = LDAPServerConfig(
@@ -118,6 +148,7 @@ class TestLDAPServerConfigLocal:
         d = config.as_dict()
         assert "is_local" not in d
         assert "serverid" not in d
+        assert "use_ldapi" not in d
 
     def test_from_env_with_local_vars(self):
         """from_env() should read LDAP_IS_LOCAL and LDAP_SERVERID."""
@@ -129,6 +160,19 @@ class TestLDAPServerConfigLocal:
             config = LDAPServerConfig.from_env()
             assert config.is_local is True
             assert config.serverid == "testinstance"
+
+    def test_from_env_with_ldapi_vars(self):
+        """from_env() should read LDAP_USE_LDAPI."""
+        with patch.dict(os.environ, {
+            "LDAP_URL": "ldap://localhost:389",
+            "LDAP_IS_LOCAL": "true",
+            "LDAP_SERVERID": "testinstance",
+            "LDAP_USE_LDAPI": "true",
+        }):
+            config = LDAPServerConfig.from_env()
+            assert config.is_local is True
+            assert config.serverid == "testinstance"
+            assert config.use_ldapi is True
 
 
 class TestServerConfigLocal:
@@ -145,6 +189,7 @@ class TestServerConfigLocal:
         )
         assert config.is_local is False
         assert config.serverid is None
+        assert config.use_ldapi is False
 
     def test_local_fields_set(self):
         """Local fields should be settable."""
@@ -159,6 +204,22 @@ class TestServerConfigLocal:
         )
         assert config.is_local is True
         assert config.serverid == "standalone"
+
+    def test_ldapi_fields_set(self):
+        """LDAPI fields should be settable."""
+        config = ServerConfig(
+            name="test",
+            ldap_url="ldap://localhost:389",
+            base_dn="dc=test,dc=com",
+            bind_dn="cn=Directory Manager",
+            bind_password="secret",
+            is_local=True,
+            serverid="standalone",
+            use_ldapi=True,
+        )
+        assert config.is_local is True
+        assert config.serverid == "standalone"
+        assert config.use_ldapi is True
 
 
 class TestConfigLoaderLocal:
@@ -206,6 +267,38 @@ class TestConfigLoaderLocal:
         config = _server_config_from_dict(data)
         assert config.is_local is True
 
+    def test_server_config_from_dict_with_ldapi(self):
+        """_server_config_from_dict() should parse use_ldapi field."""
+        data = {
+            "name": "ldapi-test",
+            "ldap_url": "ldap://localhost:389",
+            "base_dn": "dc=test,dc=com",
+            "bind_dn": "cn=Directory Manager",
+            "bind_password": "secret",
+            "is_local": True,
+            "serverid": "myinstance",
+            "use_ldapi": True,
+        }
+        config = _server_config_from_dict(data)
+        assert config.is_local is True
+        assert config.serverid == "myinstance"
+        assert config.use_ldapi is True
+
+    def test_server_config_from_dict_ldapi_string_bool(self):
+        """_server_config_from_dict() should handle string boolean for use_ldapi."""
+        data = {
+            "name": "ldapi-test",
+            "ldap_url": "ldap://localhost:389",
+            "base_dn": "dc=test,dc=com",
+            "bind_dn": "cn=Directory Manager",
+            "bind_password": "secret",
+            "is_local": "true",
+            "serverid": "myinstance",
+            "use_ldapi": "yes",  # String instead of bool
+        }
+        config = _server_config_from_dict(data)
+        assert config.use_ldapi is True
+
 
 # ============================================================================
 # Unit tests for ConnectionManager
@@ -251,6 +344,27 @@ class TestConnectionManagerLocal:
         stored = cm.get_config("remote-test")
         assert stored.is_local is False
         assert stored.serverid is None
+
+    def test_add_ldapi_server(self):
+        """ConnectionManager should store LDAPI connection fields."""
+        cm = ConnectionManager()
+        config = LDAPServerConfig(
+            name="ldapi-test",
+            hostname="localhost",
+            port=389,
+            bind_dn="cn=Directory Manager",
+            bind_password="secret",
+            base_dn="dc=test,dc=com",
+            is_local=True,
+            serverid="standalone",
+            use_ldapi=True,
+        )
+        cm.add_server(config)
+
+        stored = cm.get_config("ldapi-test")
+        assert stored.is_local is True
+        assert stored.serverid == "standalone"
+        assert stored.use_ldapi is True
 
 
 # ============================================================================
@@ -455,3 +569,82 @@ class TestMixedLocalRemoteConfig:
         assert local_dict["is_local"] is True
         assert local_dict["serverid"] == "myinstance"
         assert "is_local" not in remote_dict  # Not included when False
+
+    def test_ldapi_config_to_dict(self):
+        """to_dict() should include use_ldapi when enabled."""
+        from src.config.loader import ServerListConfig
+
+        servers = [
+            LDAPServerConfig(
+                name="ldapi-server",
+                hostname="localhost",
+                port=389,
+                is_local=True,
+                serverid="myinstance",
+                use_ldapi=True
+            )
+        ]
+
+        config = ServerListConfig(servers=servers)
+        d = config.to_dict()
+
+        ldapi_dict = d["servers"][0]
+        assert ldapi_dict["is_local"] is True
+        assert ldapi_dict["serverid"] == "myinstance"
+        assert ldapi_dict["use_ldapi"] is True
+
+    def test_mixed_config_with_ldapi_from_dict(self):
+        """Should handle mixed config with LDAPI server from dict."""
+        from src.config.loader import ServerListConfig
+
+        data = {
+            "servers": [
+                {
+                    "name": "ldapi-server",
+                    "ldap_url": "ldap://localhost:389",
+                    "base_dn": "dc=local,dc=com",
+                    "bind_dn": "cn=Directory Manager",
+                    "bind_password": "secret",
+                    "is_local": True,
+                    "serverid": "localinstance",
+                    "use_ldapi": True
+                },
+                {
+                    "name": "tcp-server",
+                    "ldap_url": "ldap://localhost:389",
+                    "base_dn": "dc=local,dc=com",
+                    "bind_dn": "cn=Directory Manager",
+                    "bind_password": "secret",
+                    "is_local": True,
+                    "serverid": "localinstance",
+                    "use_ldapi": False
+                },
+                {
+                    "name": "remote-server",
+                    "ldap_url": "ldap://remote.example.com:389",
+                    "base_dn": "dc=remote,dc=com",
+                    "bind_dn": "cn=Directory Manager",
+                    "bind_password": "secret",
+                    "is_local": False
+                }
+            ]
+        }
+
+        config = ServerListConfig.from_dict(data)
+        assert len(config.servers) == 3
+
+        ldapi = next(s for s in config.servers if s.name == "ldapi-server")
+        tcp = next(s for s in config.servers if s.name == "tcp-server")
+        remote = next(s for s in config.servers if s.name == "remote-server")
+
+        assert ldapi.is_local is True
+        assert ldapi.serverid == "localinstance"
+        assert ldapi.use_ldapi is True
+
+        assert tcp.is_local is True
+        assert tcp.serverid == "localinstance"
+        assert tcp.use_ldapi is False
+
+        assert remote.is_local is False
+        assert remote.serverid is None
+        assert remote.use_ldapi is False

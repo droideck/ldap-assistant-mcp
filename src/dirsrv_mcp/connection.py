@@ -30,7 +30,13 @@ class ServerConfig:
     - Access to server log files (access, error, audit logs)
     - File system checks (permissions, disk space for server paths)
     - DSE.ldif access for offline configuration inspection
-    - LDAPI socket connections (if available)
+    - LDAPI socket connections (if use_ldapi=True)
+
+    LDAPI (Unix socket) connections:
+    - Set is_local=True, serverid=<instance>, and use_ldapi=True
+    - Uses SASL EXTERNAL authentication (no password needed)
+    - Authenticates based on Unix socket peer credentials
+    - Requires the process to run as root or the dirsrv user
 
     Remote instances only support LDAP protocol operations.
     """
@@ -45,6 +51,8 @@ class ServerConfig:
     # Local instance support
     is_local: bool = False
     serverid: Optional[str] = None
+    # LDAPI socket connection (requires is_local=True and serverid)
+    use_ldapi: bool = False
 
     @classmethod
     def from_env(cls, name: str = "default") -> ServerConfig:
@@ -100,6 +108,7 @@ class ConnectionManager:
                 auth_method=auth_method,
                 is_local=config.is_local,
                 serverid=config.serverid,
+                use_ldapi=config.use_ldapi,
             )
         else:
             server_config = config
@@ -107,7 +116,8 @@ class ConnectionManager:
         self._configs[server_config.name] = server_config
         local_info = ""
         if server_config.is_local:
-            local_info = f", local=True, serverid={server_config.serverid}"
+            ldapi_info = ", ldapi=True" if server_config.use_ldapi else ""
+            local_info = f", local=True, serverid={server_config.serverid}{ldapi_info}"
         logger.info(
             "Added DirSrv server '%s' (%s, auth=%s%s)",
             server_config.name,
@@ -134,6 +144,9 @@ class ConnectionManager:
         For local instances (is_local=True with serverid), uses local_simple_allocate()
         which enables access to server paths (logs, config files, etc.).
 
+        For LDAPI connections (use_ldapi=True), uses SASL EXTERNAL authentication
+        via Unix socket. No password is needed - auth is based on peer credentials.
+
         For remote instances, uses remote_simple_allocate() which only supports
         LDAP protocol operations.
         """
@@ -141,7 +154,8 @@ class ConnectionManager:
         config = self.get_config(server_name)
         local_info = ""
         if config.is_local:
-            local_info = f", local=True, serverid={config.serverid}"
+            ldapi_info = ", ldapi=True" if config.use_ldapi else ""
+            local_info = f", local=True, serverid={config.serverid}{ldapi_info}"
         logger.info(
             "Connecting to %s at %s (auth=%s%s)",
             server_name,
@@ -159,17 +173,33 @@ class ConnectionManager:
                     f"Local server '{server_name}' requires serverid to be set. "
                     "The serverid is the instance name (e.g., 'standalone')."
                 )
-            ds.local_simple_allocate(
-                serverid=config.serverid,
-                ldapuri=config.ldap_url,
-                binddn=config.bind_dn if config.auth_method != "anonymous" else None,
-                password=config.bind_password if config.auth_method != "anonymous" else None,
-            )
-            logger.debug(
-                "Using local_simple_allocate for %s (serverid=%s)",
-                server_name,
-                config.serverid,
-            )
+
+            if config.use_ldapi:
+                # LDAPI connection: no password needed, uses SASL EXTERNAL
+                ds.local_simple_allocate(
+                    serverid=config.serverid,
+                    ldapuri=None,  # Will use LDAPI socket
+                    binddn=config.bind_dn or "cn=Directory Manager",
+                    password=None,  # No password for LDAPI
+                )
+                logger.debug(
+                    "Using local_simple_allocate with LDAPI for %s (serverid=%s)",
+                    server_name,
+                    config.serverid,
+                )
+            else:
+                # Local with TCP connection
+                ds.local_simple_allocate(
+                    serverid=config.serverid,
+                    ldapuri=config.ldap_url,
+                    binddn=config.bind_dn if config.auth_method != "anonymous" else None,
+                    password=config.bind_password if config.auth_method != "anonymous" else None,
+                )
+                logger.debug(
+                    "Using local_simple_allocate for %s (serverid=%s)",
+                    server_name,
+                    config.serverid,
+                )
         elif config.auth_method == "anonymous":
             # Anonymous bind: use empty credentials
             ds.remote_simple_allocate(config.ldap_url, "", "")
@@ -182,7 +212,12 @@ class ConnectionManager:
             )
 
         try:
-            ds.open()
+            if config.use_ldapi and config.is_local:
+                # LDAPI uses SASL EXTERNAL authentication
+                ds.open(saslmethod='EXTERNAL')
+                logger.debug("Opened LDAPI connection with SASL EXTERNAL for %s", server_name)
+            else:
+                ds.open()
         except ldap.INAPPROPRIATE_AUTH as exc:
             if config.auth_method == "anonymous":
                 raise ConnectionError(

@@ -38,6 +38,8 @@ class ServerListConfig:
                 server_dict["is_local"] = s.is_local
                 if s.serverid:
                     server_dict["serverid"] = s.serverid
+                if s.use_ldapi:
+                    server_dict["use_ldapi"] = s.use_ldapi
             server_list.append(server_dict)
         return {"servers": server_list}
 
@@ -232,12 +234,21 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
     # Local instance support
     is_local = _coerce_bool(data.get("is_local", False))
     serverid = data.get("serverid")
+    use_ldapi = _coerce_bool(data.get("use_ldapi", False))
 
     # Validate: if is_local is True, serverid should be provided
     if is_local and not serverid:
         logger.warning(
             "Server '%s' has is_local=true but no serverid. "
             "Local features (log access, filesystem checks) will not work.",
+            data.get("name", hostname),
+        )
+
+    # Validate: if use_ldapi is True, is_local and serverid are required
+    if use_ldapi and (not is_local or not serverid):
+        logger.warning(
+            "Server '%s' has use_ldapi=true but is_local or serverid is not set. "
+            "LDAPI requires is_local=true and serverid to be configured.",
             data.get("name", hostname),
         )
 
@@ -253,6 +264,7 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         provider_type=data.get("provider_type", "389ds"),
         is_local=is_local,
         serverid=serverid,
+        use_ldapi=use_ldapi,
     )
 
 
