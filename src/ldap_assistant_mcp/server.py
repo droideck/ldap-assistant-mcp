@@ -23,7 +23,22 @@ class LDAPAuthMethod(str, Enum):
 
 @dataclass
 class LDAPServerConfig:
-    """Configuration for connecting to an LDAP directory."""
+    """Configuration for connecting to an LDAP directory.
+
+    For local instances (is_local=True), the serverid is required and enables:
+    - Access to server log files (access, error, audit logs)
+    - File system checks (permissions, disk space for server paths)
+    - DSE.ldif access for offline configuration inspection
+    - LDAPI socket connections (if use_ldapi=True)
+
+    Remote instances only support LDAP protocol operations.
+
+    LDAPI (Unix socket) connections:
+    - Set is_local=True, serverid=<instance>, and use_ldapi=True
+    - Uses SASL EXTERNAL authentication (no password needed)
+    - Authenticates based on Unix socket peer credentials
+    - Requires the process to run as root or the dirsrv user
+    """
 
     name: str
     hostname: str
@@ -34,6 +49,11 @@ class LDAPServerConfig:
     base_dn: Optional[str] = None
     auth_method: LDAPAuthMethod = LDAPAuthMethod.SIMPLE
     provider_type: str = "generic"
+    # Local instance support
+    is_local: bool = False
+    serverid: Optional[str] = None
+    # LDAPI socket connection (requires is_local=True and serverid)
+    use_ldapi: bool = False
 
     @property
     def ldap_url(self) -> str:
@@ -45,7 +65,7 @@ class LDAPServerConfig:
     def as_dict(self) -> Dict[str, Any]:
         """Serialize the configuration to a dict."""
 
-        return {
+        result = {
             "name": self.name,
             "hostname": self.hostname,
             "port": self.port,
@@ -55,6 +75,14 @@ class LDAPServerConfig:
             "auth_method": self.auth_method.value,
             "provider_type": self.provider_type,
         }
+        # Only include local fields if configured
+        if self.is_local:
+            result["is_local"] = self.is_local
+            if self.serverid:
+                result["serverid"] = self.serverid
+            if self.use_ldapi:
+                result["use_ldapi"] = self.use_ldapi
+        return result
 
     def copy_with(self, **overrides: Any) -> LDAPServerConfig:
         """Return a copy of this configuration with overrides applied."""
@@ -83,6 +111,8 @@ class LDAPServerConfig:
             LDAP_BIND_PASSWORD: Bind password
             LDAP_AUTH_METHOD: simple | sasl_gssapi | sasl_digest_md5 | sasl_external
             LDAP_PROVIDER: Optional provider hint (e.g., 389ds, openldap)
+            LDAP_IS_LOCAL: true/false - if true, enables local instance access
+            LDAP_SERVERID: Instance name (e.g., 'standalone') - required if is_local=true
         """
 
         url = os.environ.get("LDAP_URL")
@@ -114,6 +144,13 @@ class LDAPServerConfig:
             bind_password = os.environ.get("LDAP_BIND_PASSWORD", "Password123")
         provider_type = os.environ.get("LDAP_PROVIDER", "generic")
 
+        # Local instance configuration
+        is_local_env = os.environ.get("LDAP_IS_LOCAL", "")
+        is_local = str(is_local_env).lower() in {"1", "true", "yes", "on"}
+        serverid = os.environ.get("LDAP_SERVERID")
+        use_ldapi_env = os.environ.get("LDAP_USE_LDAPI", "")
+        use_ldapi = str(use_ldapi_env).lower() in {"1", "true", "yes", "on"}
+
         return cls(
             name=name,
             hostname=hostname,
@@ -124,6 +161,9 @@ class LDAPServerConfig:
             base_dn=base_dn,
             auth_method=auth_method,
             provider_type=provider_type,
+            is_local=is_local,
+            serverid=serverid,
+            use_ldapi=use_ldapi,
         )
 
 
@@ -187,18 +227,21 @@ class LDAPAssistantMCP(FastMCP):
 
         descriptions: List[Dict[str, Any]] = []
         for config in self.server_configs.values():
-            descriptions.append(
-                {
-                    "name": config.name,
-                    "hostname": config.hostname,
-                    "port": config.port,
-                    "use_ssl": config.use_ssl,
-                    "base_dn": config.base_dn,
-                    "auth_method": config.auth_method.value,
-                    "provider_type": config.provider_type,
-                    "is_default": config.name == getattr(self, "default_server", None),
-                }
-            )
+            desc = {
+                "name": config.name,
+                "hostname": config.hostname,
+                "port": config.port,
+                "use_ssl": config.use_ssl,
+                "base_dn": config.base_dn,
+                "auth_method": config.auth_method.value,
+                "provider_type": config.provider_type,
+                "is_default": config.name == getattr(self, "default_server", None),
+                "is_local": config.is_local,
+            }
+            if config.is_local and config.serverid:
+                desc["serverid"] = config.serverid
+                desc["use_ldapi"] = config.use_ldapi
+            descriptions.append(desc)
         return descriptions
 
     def apply_cli_overrides(

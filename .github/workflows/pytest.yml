@@ -14,6 +14,7 @@ env:
   DS_IMAGE: ${{ vars.DS_IMAGE || 'quay.io/389ds/dirsrv' }}
 
 jobs:
+  # Standard remote connection tests
   test:
     name: Pytest Tests
     runs-on: ubuntu-latest
@@ -54,7 +55,7 @@ jobs:
           LDAP_BIND_DN: "cn=Directory Manager"
           LDAP_BIND_PASSWORD: "TestPassword123"
         run: |
-          uv run pytest -v -s
+          uv run pytest -v -s --ignore=src/dirsrv_mcp/tests/test_local_connection.py
 
       - name: Debug environment
         if: failure()
@@ -74,3 +75,276 @@ jobs:
           docker port ds-test-1 || true
           docker port ds-test-2 || true
           docker port ds-test-3 || true
+
+  # Local connection tests - runs tests INSIDE the DS container
+  test-local:
+    name: Local Connection Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone ldap-assistant-mcp repository
+        uses: actions/checkout@v4
+
+      - name: Create local test container with MCP code
+        run: |
+          # Create volume for DS data
+          docker volume create ds-local-ci-data
+
+          # Create container with MCP code mounted
+          docker run -d \
+            --name ds-local-ci \
+            --hostname localhost \
+            -v ds-local-ci-data:/data \
+            -v ${{ github.workspace }}:/mcp:ro \
+            -e DS_DM_PASSWORD=TestPassword123 \
+            -e DS_SUFFIX_NAME=dc=test,dc=com \
+            -e DS_CREATE_SUFFIX_ENTRY=True \
+            -p 34891:3389 \
+            "$DS_IMAGE"
+
+          # Wait for DS to be ready
+          echo "Waiting for DS to start..."
+          for i in {1..30}; do
+            if docker exec ds-local-ci ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
+              echo "DS is ready"
+              break
+            fi
+            sleep 5
+          done
+
+          # Wait for auth
+          sleep 3
+          for i in {1..10}; do
+            if docker exec ds-local-ci ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w TestPassword123 > /dev/null 2>&1; then
+              echo "Auth is ready"
+              break
+            fi
+            sleep 5
+          done
+
+          # Create backend
+          docker exec ds-local-ci dsconf localhost backend create \
+            --suffix="dc=test,dc=com" \
+            --be-name=userroot \
+            --create-entries \
+            --create-suffix 2>/dev/null || true
+
+          # Create OUs
+          docker exec -i ds-local-ci ldapadd \
+            -H ldap://localhost:3389 \
+            -D "cn=Directory Manager" \
+            -w TestPassword123 \
+            -x <<EOF || true
+          dn: ou=people,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: people
+
+          dn: ou=groups,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: groups
+          EOF
+
+      - name: Generate local test config inside container
+        run: |
+          # Create config file in /tmp (since /mcp is read-only)
+          docker exec ds-local-ci bash -c 'cat > /tmp/tests-local-servers.json << EOF
+          {
+            "servers": [
+              {
+                "name": "local-test",
+                "ldap_url": "ldap://localhost:3389",
+                "base_dn": "dc=test,dc=com",
+                "bind_dn": "cn=Directory Manager",
+                "bind_password": "TestPassword123",
+                "provider_type": "389ds",
+                "is_local": true,
+                "serverid": "localhost"
+              }
+            ]
+          }
+          EOF'
+
+      - name: Install test dependencies in container
+        run: |
+          # The 389ds container is minimal - use ensurepip to bootstrap pip
+          docker exec ds-local-ci bash -c "
+            python3 -m ensurepip --upgrade 2>/dev/null || true
+            cd /mcp
+            python3 -m pip install --quiet pytest pytest-asyncio
+            python3 -m pip install --quiet -r requirements.txt
+          "
+
+      - name: Run local connection tests
+        run: |
+          docker exec \
+            -e LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json \
+            -e LDAP_URL="ldap://localhost:3389" \
+            -e LDAP_PORT="3389" \
+            -e LDAP_BASE_DN="dc=test,dc=com" \
+            -e LDAP_BIND_DN="cn=Directory Manager" \
+            -e LDAP_BIND_PASSWORD="TestPassword123" \
+            -e LDAP_IS_LOCAL="true" \
+            -e LDAP_SERVERID="localhost" \
+            ds-local-ci bash -c "
+              cd /mcp
+              python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py -v -s --tb=short
+            "
+
+      - name: Debug local test environment
+        if: failure()
+        run: |
+          echo "=== Docker containers ==="
+          docker ps -a
+
+          echo "=== DS container logs ==="
+          docker logs ds-local-ci || true
+
+          echo "=== DS instance info ==="
+          docker exec ds-local-ci dsconf localhost config get nsslapd-instancedir || true
+
+          echo "=== DS log directory ==="
+          docker exec ds-local-ci ls -la /var/log/dirsrv/ || true
+          docker exec ds-local-ci ls -la /var/log/dirsrv/slapd-localhost/ || true
+
+  # Multi-server local test (one local, one remote)
+  test-multi-local:
+    name: Multi-Server Local Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone ldap-assistant-mcp repository
+        uses: actions/checkout@v4
+
+      - name: Create two test containers
+        run: |
+          # Container 1: Local (will run tests inside)
+          docker volume create ds-multi-local-data
+          docker run -d \
+            --name ds-multi-local \
+            --hostname localhost \
+            -v ds-multi-local-data:/data \
+            -v ${{ github.workspace }}:/mcp:ro \
+            -e DS_DM_PASSWORD=TestPassword123 \
+            -e DS_SUFFIX_NAME=dc=test,dc=com \
+            -e DS_CREATE_SUFFIX_ENTRY=True \
+            -p 35891:3389 \
+            "$DS_IMAGE"
+
+          # Container 2: Remote (accessed via network)
+          docker volume create ds-multi-remote-data
+          docker run -d \
+            --name ds-multi-remote \
+            --hostname ds-multi-remote \
+            -v ds-multi-remote-data:/data \
+            -e DS_DM_PASSWORD=TestPassword123 \
+            -e DS_SUFFIX_NAME=dc=test,dc=com \
+            -e DS_CREATE_SUFFIX_ENTRY=True \
+            -p 35892:3389 \
+            "$DS_IMAGE"
+
+          # Link containers
+          docker network create test-net || true
+          docker network connect test-net ds-multi-local
+          docker network connect test-net ds-multi-remote
+
+          # Wait for both to be ready
+          echo "Waiting for DS containers..."
+          for container in ds-multi-local ds-multi-remote; do
+            for i in {1..30}; do
+              if docker exec $container ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
+                echo "$container is ready"
+                break
+              fi
+              sleep 5
+            done
+          done
+
+          # Setup backends
+          for container in ds-multi-local ds-multi-remote; do
+            sleep 3
+            docker exec $container dsconf localhost backend create \
+              --suffix="dc=test,dc=com" \
+              --be-name=userroot \
+              --create-entries \
+              --create-suffix 2>/dev/null || true
+
+            docker exec -i $container ldapadd \
+              -H ldap://localhost:3389 \
+              -D "cn=Directory Manager" \
+              -w TestPassword123 \
+              -x <<EOF || true
+          dn: ou=people,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: people
+
+          dn: ou=groups,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: groups
+          EOF
+          done
+
+      - name: Generate multi-server config
+        run: |
+          # Create config file in /tmp (since /mcp is read-only)
+          docker exec ds-multi-local bash -c 'cat > /tmp/tests-multi-local-servers.json << EOF
+          {
+            "servers": [
+              {
+                "name": "local-server",
+                "ldap_url": "ldap://localhost:3389",
+                "base_dn": "dc=test,dc=com",
+                "bind_dn": "cn=Directory Manager",
+                "bind_password": "TestPassword123",
+                "provider_type": "389ds",
+                "is_local": true,
+                "serverid": "localhost"
+              },
+              {
+                "name": "remote-server",
+                "ldap_url": "ldap://ds-multi-remote:3389",
+                "base_dn": "dc=test,dc=com",
+                "bind_dn": "cn=Directory Manager",
+                "bind_password": "TestPassword123",
+                "provider_type": "389ds",
+                "is_local": false
+              }
+            ]
+          }
+          EOF'
+
+      - name: Install test dependencies
+        run: |
+          docker exec ds-multi-local bash -c "
+            python3 -m ensurepip --upgrade 2>/dev/null || true
+            cd /mcp
+            python3 -m pip install --quiet pytest pytest-asyncio
+            python3 -m pip install --quiet -r requirements.txt
+          "
+
+      - name: Run multi-server configuration tests
+        run: |
+          docker exec \
+            -e LDAP_SERVERS_CONFIG=/tmp/tests-multi-local-servers.json \
+            -e LDAP_IS_LOCAL="true" \
+            -e LDAP_SERVERID="localhost" \
+            ds-multi-local bash -c "
+              cd /mcp
+              python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py::TestMixedLocalRemoteConfig -v -s --tb=short
+            "
+
+      - name: Debug multi-server environment
+        if: failure()
+        run: |
+          echo "=== Docker containers ==="
+          docker ps -a
+
+          echo "=== Local container logs ==="
+          docker logs ds-multi-local || true
+
+          echo "=== Remote container logs ==="
+          docker logs ds-multi-remote || true
+
+          echo "=== Network connectivity ==="
+          docker exec ds-multi-local ping -c 1 ds-multi-remote || true
