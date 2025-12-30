@@ -1,0 +1,943 @@
+"""Replication diagnostic tools for 389 Directory Server.
+
+This module provides comprehensive replication monitoring and diagnostic capabilities
+including status checks, topology mapping, lag analysis, and conflict detection.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from lib389._constants import ReplicaRole
+from lib389.conflicts import ConflictEntries, GlueEntries
+from lib389.replica import Replicas, RUV
+
+from src.lib.result_formatter import Severity, format_finding
+
+if TYPE_CHECKING:
+    from src.dirsrv_mcp.server import DirSrvMCP
+
+
+def _role_to_string(role: ReplicaRole) -> str:
+    """Convert ReplicaRole enum to readable string."""
+    role_map = {
+        ReplicaRole.SUPPLIER: "supplier",
+        ReplicaRole.HUB: "hub",
+        ReplicaRole.CONSUMER: "consumer",
+    }
+    return role_map.get(role, "unknown")
+
+
+def _parse_ruv_for_display(ruv: RUV) -> Dict[str, Any]:
+    """Parse RUV object into displayable format with interpretation."""
+    try:
+        ruv_data = ruv.format_ruv()
+        return {
+            "data_generation": ruv_data.get("data_generation"),
+            "replicas": ruv_data.get("ruvs", []),
+            "replica_count": len(ruv_data.get("ruvs", [])),
+        }
+    except Exception as e:
+        return {"error": str(e), "replicas": [], "replica_count": 0}
+
+
+def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
+    """Extract detailed information from a replication agreement."""
+    try:
+        agmt_data = {
+            "name": agmt.get_attr_val_utf8("cn"),
+            "consumer_host": agmt.get_attr_val_utf8("nsDS5ReplicaHost"),
+            "consumer_port": agmt.get_attr_val_utf8("nsDS5ReplicaPort"),
+            "suffix": agmt.get_attr_val_utf8("nsDS5ReplicaRoot"),
+            "transport": agmt.get_attr_val_utf8("nsDS5ReplicaTransportInfo"),
+            "bind_method": agmt.get_attr_val_utf8("nsDS5ReplicaBindMethod"),
+            "enabled": agmt.get_attr_val_utf8("nsds5ReplicaEnabled"),
+        }
+
+        # Get status information
+        try:
+            status_json = agmt.get_agmt_status(return_json=True)
+            status = json.loads(status_json)
+            agmt_data["status"] = status
+        except Exception as e:
+            agmt_data["status"] = {"error": str(e), "state": "unknown"}
+
+        # Get last update times
+        agmt_data["last_update_start"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStart")
+        agmt_data["last_update_end"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateEnd")
+        agmt_data["last_update_status"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStatus")
+        agmt_data["changes_sent"] = agmt.get_attr_val_utf8("nsds5replicaChangesSentSinceStartup")
+
+        return agmt_data
+    except Exception as e:
+        mcp.logger.warning("Error getting agreement details: %s", e)
+        return {"error": str(e)}
+
+
+def register_replication_tools(mcp: DirSrvMCP) -> None:
+    """Register replication diagnostic tools with the MCP server."""
+
+    @mcp.tool()
+    def get_replication_status(server_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get comprehensive replication status for a server.
+
+        Returns detailed information about replica configuration, role,
+        RUV (Replication Update Vector), and all replication agreements.
+
+        Args:
+            server_name: Target server name. Uses default if not specified.
+
+        Returns:
+            Comprehensive replication status including:
+            - Replica role (supplier/hub/consumer)
+            - Replica ID
+            - RUV with CSN analysis
+            - All agreements with their current status
+            - Findings for any issues detected
+        """
+        target = server_name or mcp.default_server
+        if not target:
+            return {
+                "type": "replication_status",
+                "error": "No server configured",
+                "replicas": [],
+            }
+
+        ds = None
+        try:
+            ds = mcp.connection_manager.connect(target)
+            replicas_obj = Replicas(ds)
+            replicas_list = replicas_obj.list()
+
+            if not replicas_list:
+                return {
+                    "type": "replication_status",
+                    "server": target,
+                    "summary": "No replication configured",
+                    "replicas": [],
+                    "findings": [
+                        format_finding(
+                            title="No Replication Configured",
+                            severity=Severity.INFO,
+                            impact="This server is not participating in replication",
+                            details="No replica entries found in cn=mapping tree,cn=config",
+                            remediation="If replication is needed, configure it using dsconf or lib389",
+                            server=target,
+                        )
+                    ],
+                }
+
+            findings: List[Dict[str, Any]] = []
+            replicas_data = []
+
+            for replica in replicas_list:
+                try:
+                    suffix = replica.get_suffix()
+                    role = replica.get_role()
+                    rid = replica.get_rid()
+                    ruv = replica.get_ruv()
+
+                    replica_info = {
+                        "suffix": suffix,
+                        "role": _role_to_string(role),
+                        "replica_id": rid,
+                        "ruv": _parse_ruv_for_display(ruv),
+                        "agreements": [],
+                    }
+
+                    # Check for empty RUV (uninitialized replica)
+                    ruv_data = ruv.format_ruv()
+                    if not ruv_data.get("ruvs"):
+                        findings.append(
+                            format_finding(
+                                title=f"Uninitialized Replica: {suffix}",
+                                severity=Severity.HIGH,
+                                impact="Replica has no RUV - replication is not working",
+                                details=f"The replica for suffix {suffix} has an empty RUV, indicating it has never been initialized",
+                                remediation="Initialize the replica from a supplier using dsconf replication init or similar",
+                                server=target,
+                                metadata={"suffix": suffix},
+                            )
+                        )
+
+                    # Get agreements and their status
+                    try:
+                        agmts = replica.get_agreements()
+                        for agmt in agmts.list():
+                            agmt_details = _get_agreement_details(agmt, mcp)
+                            replica_info["agreements"].append(agmt_details)
+
+                            # Check agreement status
+                            status = agmt_details.get("status", {})
+                            if status.get("state") == "red":
+                                findings.append(
+                                    format_finding(
+                                        title=f"Agreement Error: {agmt_details.get('name')}",
+                                        severity=Severity.CRITICAL,
+                                        impact=f"Replication to {agmt_details.get('consumer_host')}:{agmt_details.get('consumer_port')} is failing",
+                                        details=status.get("reason", "Unknown error"),
+                                        remediation="Check consumer connectivity, credentials, and server logs",
+                                        server=target,
+                                        metadata={"agreement": agmt_details.get("name"), "suffix": suffix},
+                                    )
+                                )
+                            elif status.get("state") == "amber":
+                                findings.append(
+                                    format_finding(
+                                        title=f"Agreement Warning: {agmt_details.get('name')}",
+                                        severity=Severity.MEDIUM,
+                                        impact=f"Replication to {agmt_details.get('consumer_host')} has warnings",
+                                        details=status.get("reason", "Unknown warning"),
+                                        remediation="Monitor the agreement and check server logs if issues persist",
+                                        server=target,
+                                        metadata={"agreement": agmt_details.get("name"), "suffix": suffix},
+                                    )
+                                )
+                            elif status.get("msg") == "Not in Synchronization":
+                                if "Replication still in progress" not in status.get("reason", ""):
+                                    findings.append(
+                                        format_finding(
+                                            title=f"Replication Lag: {agmt_details.get('name')}",
+                                            severity=Severity.MEDIUM,
+                                            impact=f"Consumer {agmt_details.get('consumer_host')} is behind",
+                                            details=f"Supplier CSN: {status.get('agmt_maxcsn')}, Consumer CSN: {status.get('con_maxcsn')}",
+                                            remediation="Check for network issues or heavy load on supplier/consumer",
+                                            server=target,
+                                            metadata={"agreement": agmt_details.get("name"), "suffix": suffix},
+                                        )
+                                    )
+
+                            # Check if agreement is disabled
+                            if agmt_details.get("enabled", "on").lower() == "off":
+                                findings.append(
+                                    format_finding(
+                                        title=f"Disabled Agreement: {agmt_details.get('name')}",
+                                        severity=Severity.MEDIUM,
+                                        impact=f"Replication to {agmt_details.get('consumer_host')} is disabled",
+                                        details="The replication agreement is configured but disabled",
+                                        remediation="Enable the agreement if replication should be active",
+                                        server=target,
+                                        metadata={"agreement": agmt_details.get("name"), "suffix": suffix},
+                                    )
+                                )
+
+                    except Exception as e:
+                        mcp.logger.warning("Error getting agreements for %s: %s", suffix, e)
+                        replica_info["agreements_error"] = str(e)
+
+                    # Get tombstone count
+                    try:
+                        tombstone_count = replica.get_tombstone_count()
+                        replica_info["tombstone_count"] = tombstone_count
+                        if tombstone_count > 10000:
+                            findings.append(
+                                format_finding(
+                                    title=f"High Tombstone Count: {suffix}",
+                                    severity=Severity.MEDIUM,
+                                    impact="Large number of tombstones may affect performance",
+                                    details=f"Found {tombstone_count} tombstones in {suffix}",
+                                    remediation="Consider running tombstone purge or reviewing purge settings",
+                                    server=target,
+                                    metadata={"suffix": suffix, "count": tombstone_count},
+                                )
+                            )
+                    except Exception:
+                        pass
+
+                    replicas_data.append(replica_info)
+
+                except Exception as e:
+                    mcp.logger.error("Error processing replica: %s", e)
+                    replicas_data.append({"error": str(e)})
+
+            # Generate summary
+            total_agreements = sum(len(r.get("agreements", [])) for r in replicas_data)
+            error_count = sum(1 for f in findings if f.get("severity") in ["critical", "high"])
+
+            if error_count > 0:
+                summary = f"ISSUES DETECTED: {error_count} critical/high issues found"
+            elif findings:
+                summary = f"WARNINGS: {len(findings)} issue(s) found across {len(replicas_data)} replica(s)"
+            else:
+                summary = f"HEALTHY: {len(replicas_data)} replica(s) with {total_agreements} agreement(s) operating normally"
+
+            return {
+                "type": "replication_status",
+                "server": target,
+                "summary": summary,
+                "replica_count": len(replicas_data),
+                "total_agreements": total_agreements,
+                "replicas": replicas_data,
+                "findings": findings,
+            }
+
+        except Exception as e:
+            mcp.logger.error("Error getting replication status: %s", e)
+            return {
+                "type": "replication_status",
+                "server": target,
+                "error": str(e),
+                "summary": f"FAILED: {e}",
+                "replicas": [],
+                "findings": [
+                    format_finding(
+                        title="Replication Status Check Failed",
+                        severity=Severity.HIGH,
+                        impact="Unable to retrieve replication information",
+                        details=str(e),
+                        remediation="Check server connectivity and permissions",
+                        server=target,
+                    )
+                ],
+            }
+        finally:
+            if ds:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+
+    @mcp.tool()
+    def get_replication_topology() -> Dict[str, Any]:
+        """Map the complete replication topology across all configured servers.
+
+        Queries all configured servers to build a comprehensive view of the
+        replication topology including agreements, roles, and connectivity.
+
+        Returns:
+            Topology map including:
+            - All servers and their roles
+            - Replication agreements between servers
+            - Topology graph representation
+            - Potential issues (single points of failure, orphaned replicas)
+        """
+        server_names = mcp.connection_manager.get_server_names()
+
+        if not server_names:
+            return {
+                "type": "replication_topology",
+                "error": "No servers configured",
+                "servers": [],
+            }
+
+        topology = {
+            "type": "replication_topology",
+            "servers": [],
+            "agreements": [],
+            "findings": [],
+            "suffixes": {},
+        }
+
+        servers_checked = []
+        servers_failed = []
+
+        for server_name in server_names:
+            ds = None
+            try:
+                ds = mcp.connection_manager.connect(server_name)
+                config = mcp.connection_manager.get_config(server_name)
+                servers_checked.append(server_name)
+
+                server_info = {
+                    "name": server_name,
+                    "url": config.ldap_url,
+                    "replicas": [],
+                }
+
+                replicas_obj = Replicas(ds)
+                replicas_list = replicas_obj.list()
+
+                for replica in replicas_list:
+                    try:
+                        suffix = replica.get_suffix()
+                        role = replica.get_role()
+                        rid = replica.get_rid()
+
+                        replica_data = {
+                            "suffix": suffix,
+                            "role": _role_to_string(role),
+                            "replica_id": rid,
+                        }
+                        server_info["replicas"].append(replica_data)
+
+                        # Track suffixes across topology
+                        if suffix not in topology["suffixes"]:
+                            topology["suffixes"][suffix] = {
+                                "suppliers": [],
+                                "hubs": [],
+                                "consumers": [],
+                            }
+
+                        role_str = _role_to_string(role)
+                        if role_str == "supplier":
+                            topology["suffixes"][suffix]["suppliers"].append(server_name)
+                        elif role_str == "hub":
+                            topology["suffixes"][suffix]["hubs"].append(server_name)
+                        elif role_str == "consumer":
+                            topology["suffixes"][suffix]["consumers"].append(server_name)
+
+                        # Get outbound agreements
+                        try:
+                            agmts = replica.get_agreements()
+                            for agmt in agmts.list():
+                                agreement_info = {
+                                    "source": server_name,
+                                    "target_host": agmt.get_attr_val_utf8("nsDS5ReplicaHost"),
+                                    "target_port": agmt.get_attr_val_utf8("nsDS5ReplicaPort"),
+                                    "suffix": suffix,
+                                    "name": agmt.get_attr_val_utf8("cn"),
+                                    "enabled": agmt.get_attr_val_utf8("nsds5ReplicaEnabled") or "on",
+                                }
+                                topology["agreements"].append(agreement_info)
+                        except Exception as e:
+                            mcp.logger.warning("Error getting agreements from %s: %s", server_name, e)
+
+                    except Exception as e:
+                        mcp.logger.warning("Error processing replica on %s: %s", server_name, e)
+
+                topology["servers"].append(server_info)
+
+            except Exception as e:
+                servers_failed.append(server_name)
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Failed to Query Server: {server_name}",
+                        severity=Severity.HIGH,
+                        impact="Cannot include this server in topology analysis",
+                        details=str(e),
+                        remediation="Check server connectivity and credentials",
+                        server=server_name,
+                    )
+                )
+            finally:
+                if ds:
+                    try:
+                        ds.close()
+                    except Exception:
+                        pass
+
+        # Analyze topology for issues
+        for suffix, roles in topology["suffixes"].items():
+            # Check for single supplier (no redundancy)
+            if len(roles["suppliers"]) == 1 and (roles["hubs"] or roles["consumers"]):
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Single Supplier for {suffix}",
+                        severity=Severity.MEDIUM,
+                        impact="No supplier redundancy - single point of failure for writes",
+                        details=f"Only {roles['suppliers'][0]} is a supplier for {suffix}",
+                        remediation="Consider adding another supplier for high availability",
+                        metadata={"suffix": suffix, "supplier": roles["suppliers"][0]},
+                    )
+                )
+
+            # Check for consumers with no suppliers
+            if roles["consumers"] and not roles["suppliers"]:
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Orphaned Consumers for {suffix}",
+                        severity=Severity.HIGH,
+                        impact="Consumer replicas exist but no suppliers are configured",
+                        details=f"Consumers {roles['consumers']} have no supplier for {suffix}",
+                        remediation="Configure a supplier or check if replication is misconfigured",
+                        metadata={"suffix": suffix, "consumers": roles["consumers"]},
+                    )
+                )
+
+        # Generate summary
+        total_replicas = sum(len(s.get("replicas", [])) for s in topology["servers"])
+        if topology["findings"]:
+            summary = f"ISSUES DETECTED: Topology has {len(topology['findings'])} potential issues"
+        else:
+            summary = f"HEALTHY: {len(servers_checked)} servers, {total_replicas} replicas, {len(topology['agreements'])} agreements"
+
+        topology["summary"] = summary
+        topology["servers_checked"] = servers_checked
+        topology["servers_failed"] = servers_failed
+
+        return topology
+
+    @mcp.tool()
+    def check_replication_lag(
+        suffix: Optional[str] = None,
+        server_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Analyze replication lag across agreements.
+
+        Compares CSN values between supplier and consumers to identify
+        replication delays and their severity.
+
+        Args:
+            suffix: Specific suffix to check. If not specified, checks all.
+            server_name: Target server name. Uses default if not specified.
+
+        Returns:
+            Lag analysis including:
+            - Per-agreement lag status
+            - CSN comparisons
+            - Severity assessment
+            - Recommendations
+        """
+        target = server_name or mcp.default_server
+        if not target:
+            return {
+                "type": "replication_lag",
+                "error": "No server configured",
+            }
+
+        ds = None
+        try:
+            ds = mcp.connection_manager.connect(target)
+            replicas_obj = Replicas(ds)
+            replicas_list = replicas_obj.list()
+
+            if not replicas_list:
+                return {
+                    "type": "replication_lag",
+                    "server": target,
+                    "summary": "No replication configured",
+                    "lag_data": [],
+                }
+
+            lag_data = []
+            findings = []
+            in_sync_count = 0
+            lagging_count = 0
+            error_count = 0
+
+            for replica in replicas_list:
+                try:
+                    rep_suffix = replica.get_suffix()
+                    if suffix and rep_suffix.lower() != suffix.lower():
+                        continue
+
+                    role = replica.get_role()
+                    if role == ReplicaRole.CONSUMER:
+                        # Consumers don't have outbound agreements
+                        continue
+
+                    agmts = replica.get_agreements()
+                    for agmt in agmts.list():
+                        agmt_name = agmt.get_attr_val_utf8("cn")
+                        consumer_host = agmt.get_attr_val_utf8("nsDS5ReplicaHost")
+                        consumer_port = agmt.get_attr_val_utf8("nsDS5ReplicaPort")
+
+                        lag_entry = {
+                            "suffix": rep_suffix,
+                            "agreement": agmt_name,
+                            "consumer": f"{consumer_host}:{consumer_port}",
+                        }
+
+                        try:
+                            status_json = agmt.get_agmt_status(return_json=True)
+                            status = json.loads(status_json)
+
+                            lag_entry["status"] = status.get("msg", "Unknown")
+                            lag_entry["supplier_csn"] = status.get("agmt_maxcsn", "Unknown")
+                            lag_entry["consumer_csn"] = status.get("con_maxcsn", "Unknown")
+                            lag_entry["state"] = status.get("state", "unknown")
+                            lag_entry["reason"] = status.get("reason", "")
+
+                            if status.get("msg") == "In Synchronization":
+                                lag_entry["lag_status"] = "in_sync"
+                                in_sync_count += 1
+                            elif "Replication still in progress" in status.get("reason", ""):
+                                lag_entry["lag_status"] = "syncing"
+                                in_sync_count += 1
+                            elif status.get("state") == "red":
+                                lag_entry["lag_status"] = "error"
+                                error_count += 1
+                                findings.append(
+                                    format_finding(
+                                        title=f"Replication Error: {agmt_name}",
+                                        severity=Severity.CRITICAL,
+                                        impact=f"Replication to {consumer_host} is failing",
+                                        details=status.get("reason", "Unknown error"),
+                                        remediation="Check consumer connectivity and server logs",
+                                        server=target,
+                                        metadata={"agreement": agmt_name, "suffix": rep_suffix},
+                                    )
+                                )
+                            else:
+                                lag_entry["lag_status"] = "lagging"
+                                lagging_count += 1
+
+                                # Try to determine lag severity
+                                supplier_csn = status.get("agmt_maxcsn", "")
+                                consumer_csn = status.get("con_maxcsn", "")
+                                if supplier_csn and consumer_csn and supplier_csn != "Unknown" and consumer_csn != "Unknown":
+                                    findings.append(
+                                        format_finding(
+                                            title=f"Replication Lag Detected: {agmt_name}",
+                                            severity=Severity.MEDIUM,
+                                            impact=f"Consumer {consumer_host} is behind supplier",
+                                            details=f"Supplier CSN: {supplier_csn}, Consumer CSN: {consumer_csn}",
+                                            remediation="Check network connectivity, consumer load, and changelog",
+                                            server=target,
+                                            metadata={"agreement": agmt_name, "suffix": rep_suffix},
+                                        )
+                                    )
+
+                        except Exception as e:
+                            lag_entry["status"] = "error"
+                            lag_entry["error"] = str(e)
+                            lag_entry["lag_status"] = "unknown"
+                            error_count += 1
+
+                        lag_data.append(lag_entry)
+
+                except Exception as e:
+                    mcp.logger.warning("Error checking lag for replica: %s", e)
+
+            # Generate summary
+            total = in_sync_count + lagging_count + error_count
+            if error_count > 0:
+                summary = f"CRITICAL: {error_count} agreement(s) in error state"
+            elif lagging_count > 0:
+                summary = f"WARNING: {lagging_count} of {total} agreement(s) showing lag"
+            elif total > 0:
+                summary = f"HEALTHY: All {in_sync_count} agreement(s) in sync"
+            else:
+                summary = "No outbound replication agreements found"
+
+            return {
+                "type": "replication_lag",
+                "server": target,
+                "suffix_filter": suffix,
+                "summary": summary,
+                "in_sync_count": in_sync_count,
+                "lagging_count": lagging_count,
+                "error_count": error_count,
+                "lag_data": lag_data,
+                "findings": findings,
+            }
+
+        except Exception as e:
+            mcp.logger.error("Error checking replication lag: %s", e)
+            return {
+                "type": "replication_lag",
+                "server": target,
+                "error": str(e),
+                "lag_data": [],
+            }
+        finally:
+            if ds:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+
+    @mcp.tool()
+    def list_replication_conflicts(
+        base_dn: Optional[str] = None,
+        server_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Find all replication conflict and glue entries.
+
+        Searches for entries with nsds5ReplConflict attribute and glue
+        objectclass which indicate replication conflicts that need resolution.
+
+        Args:
+            base_dn: Base DN to search for conflicts. If not specified,
+                     searches all replicated suffixes.
+            server_name: Target server name. Uses default if not specified.
+
+        Returns:
+            Conflict analysis including:
+            - List of conflict entries with details
+            - List of glue entries
+            - Resolution recommendations
+        """
+        target = server_name or mcp.default_server
+        if not target:
+            return {
+                "type": "replication_conflicts",
+                "error": "No server configured",
+            }
+
+        ds = None
+        try:
+            ds = mcp.connection_manager.connect(target)
+
+            # Determine which suffixes to check
+            suffixes_to_check = []
+            if base_dn:
+                suffixes_to_check.append(base_dn)
+            else:
+                # Get all replicated suffixes
+                replicas_obj = Replicas(ds)
+                for replica in replicas_obj.list():
+                    try:
+                        suffixes_to_check.append(replica.get_suffix())
+                    except Exception:
+                        pass
+
+            if not suffixes_to_check:
+                return {
+                    "type": "replication_conflicts",
+                    "server": target,
+                    "summary": "No replicated suffixes found",
+                    "conflicts": [],
+                    "glue_entries": [],
+                }
+
+            all_conflicts = []
+            all_glue = []
+            findings = []
+
+            for suffix in suffixes_to_check:
+                # Find conflict entries
+                try:
+                    conflicts = ConflictEntries(ds, suffix)
+                    for conflict in conflicts.list():
+                        try:
+                            conflict_data = {
+                                "dn": conflict.dn,
+                                "suffix": suffix,
+                                "conflict_attribute": conflict.get_attr_val_utf8("nsds5ReplConflict"),
+                                "objectclasses": conflict.get_attr_vals_utf8("objectClass"),
+                            }
+
+                            # Try to get the valid entry it conflicts with
+                            try:
+                                valid_entry = conflict.get_valid_entry()
+                                conflict_data["valid_entry_dn"] = valid_entry.dn
+                            except Exception:
+                                conflict_data["valid_entry_dn"] = "Unable to determine"
+
+                            all_conflicts.append(conflict_data)
+                        except Exception as e:
+                            all_conflicts.append({"dn": str(conflict.dn), "error": str(e)})
+
+                except Exception as e:
+                    mcp.logger.warning("Error searching conflicts in %s: %s", suffix, e)
+
+                # Find glue entries
+                try:
+                    glue_entries = GlueEntries(ds, suffix)
+                    for glue in glue_entries.list():
+                        try:
+                            glue_data = {
+                                "dn": glue.dn,
+                                "suffix": suffix,
+                                "objectclasses": glue.get_attr_vals_utf8("objectClass"),
+                            }
+                            all_glue.append(glue_data)
+                        except Exception as e:
+                            all_glue.append({"dn": str(glue.dn), "error": str(e)})
+
+                except Exception as e:
+                    mcp.logger.warning("Error searching glue entries in %s: %s", suffix, e)
+
+            # Generate findings
+            total_issues = len(all_conflicts) + len(all_glue)
+            if all_conflicts:
+                findings.append(
+                    format_finding(
+                        title=f"Replication Conflicts Found: {len(all_conflicts)}",
+                        severity=Severity.HIGH,
+                        impact="Conflict entries indicate replication issues that may cause data inconsistency",
+                        details=f"Found {len(all_conflicts)} conflict entries across {len(suffixes_to_check)} suffix(es)",
+                        remediation="Review conflict entries and resolve using dsconf or ldapmodify. Options: swap, convert, or delete",
+                        server=target,
+                        metadata={"count": len(all_conflicts)},
+                    )
+                )
+
+            if all_glue:
+                findings.append(
+                    format_finding(
+                        title=f"Glue Entries Found: {len(all_glue)}",
+                        severity=Severity.MEDIUM,
+                        impact="Glue entries are placeholders created during replication that may need attention",
+                        details=f"Found {len(all_glue)} glue entries across {len(suffixes_to_check)} suffix(es)",
+                        remediation="Review glue entries - they may be converted to real entries or deleted if orphaned",
+                        server=target,
+                        metadata={"count": len(all_glue)},
+                    )
+                )
+
+            # Generate summary
+            if total_issues == 0:
+                summary = f"HEALTHY: No conflicts found in {len(suffixes_to_check)} suffix(es)"
+            else:
+                summary = f"ISSUES FOUND: {len(all_conflicts)} conflicts, {len(all_glue)} glue entries"
+
+            return {
+                "type": "replication_conflicts",
+                "server": target,
+                "summary": summary,
+                "suffixes_checked": suffixes_to_check,
+                "conflict_count": len(all_conflicts),
+                "glue_count": len(all_glue),
+                "conflicts": all_conflicts,
+                "glue_entries": all_glue,
+                "findings": findings,
+            }
+
+        except Exception as e:
+            mcp.logger.error("Error searching for conflicts: %s", e)
+            return {
+                "type": "replication_conflicts",
+                "server": target,
+                "error": str(e),
+                "conflicts": [],
+                "glue_entries": [],
+            }
+        finally:
+            if ds:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+
+    @mcp.tool()
+    def get_agreement_status(
+        agreement_name: Optional[str] = None,
+        suffix: Optional[str] = None,
+        server_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get detailed status for replication agreements.
+
+        Returns comprehensive information about specific or all replication
+        agreements including status, schedule, and error conditions.
+
+        Args:
+            agreement_name: Specific agreement name to query. If not specified,
+                           returns all agreements.
+            suffix: Filter agreements by suffix.
+            server_name: Target server name. Uses default if not specified.
+
+        Returns:
+            Agreement details including:
+            - Agreement configuration
+            - Current synchronization status
+            - Last update timestamps
+            - Error conditions if any
+        """
+        target = server_name or mcp.default_server
+        if not target:
+            return {
+                "type": "agreement_status",
+                "error": "No server configured",
+            }
+
+        ds = None
+        try:
+            ds = mcp.connection_manager.connect(target)
+            replicas_obj = Replicas(ds)
+            replicas_list = replicas_obj.list()
+
+            if not replicas_list:
+                return {
+                    "type": "agreement_status",
+                    "server": target,
+                    "summary": "No replication configured",
+                    "agreements": [],
+                }
+
+            agreements_data = []
+            findings = []
+
+            for replica in replicas_list:
+                try:
+                    rep_suffix = replica.get_suffix()
+
+                    # Filter by suffix if specified
+                    if suffix and rep_suffix.lower() != suffix.lower():
+                        continue
+
+                    agmts = replica.get_agreements()
+                    for agmt in agmts.list():
+                        try:
+                            agmt_name = agmt.get_attr_val_utf8("cn")
+
+                            # Filter by agreement name if specified
+                            if agreement_name and agmt_name.lower() != agreement_name.lower():
+                                continue
+
+                            # Get comprehensive agreement data
+                            agmt_data = _get_agreement_details(agmt, mcp)
+                            agmt_data["suffix"] = rep_suffix
+
+                            # Add schedule info
+                            agmt_data["schedule"] = agmt.get_attr_val_utf8("nsds5replicaupdateschedule")
+
+                            # Add init status
+                            agmt_data["last_init_status"] = agmt.get_attr_val_utf8("nsds5ReplicaLastInitStatus")
+                            agmt_data["last_init_start"] = agmt.get_attr_val_utf8("nsds5ReplicaLastInitStart")
+                            agmt_data["last_init_end"] = agmt.get_attr_val_utf8("nsds5ReplicaLastInitEnd")
+
+                            # Add flow control info
+                            agmt_data["flow_control_window"] = agmt.get_attr_val_utf8("nsds5ReplicaFlowControlWindow")
+                            agmt_data["flow_control_pause"] = agmt.get_attr_val_utf8("nsds5ReplicaFlowControlPause")
+
+                            # Analyze for issues
+                            status = agmt_data.get("status", {})
+                            if status.get("state") == "red":
+                                findings.append(
+                                    format_finding(
+                                        title=f"Critical Agreement Error: {agmt_name}",
+                                        severity=Severity.CRITICAL,
+                                        impact="Agreement is in error state - replication is not working",
+                                        details=status.get("reason", "Unknown error"),
+                                        remediation="Check connectivity, credentials, and both server logs",
+                                        server=target,
+                                        metadata={"agreement": agmt_name, "suffix": rep_suffix},
+                                    )
+                                )
+
+                            agreements_data.append(agmt_data)
+
+                        except Exception as e:
+                            mcp.logger.warning("Error getting agreement details: %s", e)
+                            if agreement_name:
+                                # If looking for specific agreement and error, report it
+                                agreements_data.append({"name": agreement_name, "error": str(e)})
+
+                except Exception as e:
+                    mcp.logger.warning("Error processing replica: %s", e)
+
+            # Generate summary
+            error_count = sum(1 for a in agreements_data if a.get("status", {}).get("state") == "red")
+            warning_count = sum(1 for a in agreements_data if a.get("status", {}).get("state") == "amber")
+
+            if error_count > 0:
+                summary = f"CRITICAL: {error_count} agreement(s) in error state"
+            elif warning_count > 0:
+                summary = f"WARNING: {warning_count} agreement(s) with warnings"
+            elif agreements_data:
+                summary = f"HEALTHY: {len(agreements_data)} agreement(s) operating normally"
+            else:
+                summary = "No agreements found matching criteria"
+
+            return {
+                "type": "agreement_status",
+                "server": target,
+                "summary": summary,
+                "filter": {
+                    "agreement_name": agreement_name,
+                    "suffix": suffix,
+                },
+                "agreement_count": len(agreements_data),
+                "error_count": error_count,
+                "warning_count": warning_count,
+                "agreements": agreements_data,
+                "findings": findings,
+            }
+
+        except Exception as e:
+            mcp.logger.error("Error getting agreement status: %s", e)
+            return {
+                "type": "agreement_status",
+                "server": target,
+                "error": str(e),
+                "agreements": [],
+            }
+        finally:
+            if ds:
+                try:
+                    ds.close()
+                except Exception:
+                    pass

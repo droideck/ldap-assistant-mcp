@@ -24,6 +24,7 @@ from src.dirsrv_mcp.tools import (
     register_group_tools,
     register_health_tools,
     register_monitoring_tools,
+    register_replication_tools,
     register_search_tools,
     register_user_tools,
 )
@@ -114,7 +115,14 @@ class DirSrvMCP(LDAPAssistantMCP):
                         "Use the available MCP tools to accomplish the task. "
                         "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
                         "**Health & Diagnostics:**\n"
-                        "- first_look: Quick health overview across all servers.\n\n"
+                        "- first_look: Quick health overview across all servers.\n"
+                        "- run_healthcheck: Comprehensive health checks.\n\n"
+                        "**Replication:**\n"
+                        "- get_replication_status: Comprehensive replica and agreement status.\n"
+                        "- get_replication_topology: Map topology across all servers.\n"
+                        "- check_replication_lag: Analyze sync status and CSN lag.\n"
+                        "- list_replication_conflicts: Find conflict and glue entries.\n"
+                        "- get_agreement_status: Detailed agreement information.\n\n"
                         "**User Management:**\n"
                         "- list_active_users / list_locked_users / list_all_users\n"
                         "- search_users_by_name / search_users_by_attribute\n"
@@ -181,6 +189,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_group_tools(self)
         register_monitoring_tools(self)
         register_search_tools(self)
+        register_replication_tools(self)
 
     # --------------------------------------------------------------------- #
     # Helper methods (used by tool modules)
