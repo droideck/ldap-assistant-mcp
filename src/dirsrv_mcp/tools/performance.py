@@ -24,33 +24,10 @@ from lib389.monitor import Monitor, MonitorLDBM, MonitorDiskSpace, MonitorSNMP
 
 from src.dirsrv_mcp.connection import is_local_server
 from src.lib.result_formatter import Severity, format_finding
+from src.lib.value_utils import format_bytes, safe_float, safe_int
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    """Safely convert a value to int."""
-    if value is None:
-        return default
-    if isinstance(value, list):
-        value = value[0] if value else default
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float."""
-    if value is None:
-        return default
-    if isinstance(value, list):
-        value = value[0] if value else default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
 
 
 def _calculate_hit_ratio(hits: int, tries: int) -> float:
@@ -72,15 +49,6 @@ def _assess_cache_health(hit_ratio: float) -> tuple[str, Severity]:
         return "poor", Severity.MEDIUM
     else:
         return "critical", Severity.HIGH
-
-
-def _format_bytes(bytes_val: int) -> str:
-    """Format bytes into human-readable string."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if abs(bytes_val) < 1024.0:
-            return f"{bytes_val:.2f} {unit}"
-        bytes_val /= 1024.0
-    return f"{bytes_val:.2f} PB"
 
 
 def register_performance_tools(mcp: DirSrvMCP) -> None:
@@ -137,9 +105,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
                 # BDB-specific cache
                 if "dbcachehits" in ldbm_status:
-                    hits = _safe_int(ldbm_status.get("dbcachehits"))
-                    tries = _safe_int(ldbm_status.get("dbcachetries"))
-                    ratio = _safe_float(ldbm_status.get("dbcachehitratio"))
+                    hits = safe_int(ldbm_status.get("dbcachehits"))
+                    tries = safe_int(ldbm_status.get("dbcachetries"))
+                    ratio = safe_float(ldbm_status.get("dbcachehitratio"))
                     if ratio == 0 and tries > 0:
                         ratio = _calculate_hit_ratio(hits, tries)
 
@@ -148,10 +116,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         "hits": hits,
                         "tries": tries,
                         "hit_ratio": ratio,
-                        "page_in": _safe_int(ldbm_status.get("dbcachepagein")),
-                        "page_out": _safe_int(ldbm_status.get("dbcachepageout")),
-                        "ro_evictions": _safe_int(ldbm_status.get("dbcacheroevict")),
-                        "rw_evictions": _safe_int(ldbm_status.get("dbcacherwevict")),
+                        "page_in": safe_int(ldbm_status.get("dbcachepagein")),
+                        "page_out": safe_int(ldbm_status.get("dbcachepageout")),
+                        "ro_evictions": safe_int(ldbm_status.get("dbcacheroevict")),
+                        "rw_evictions": safe_int(ldbm_status.get("dbcacherwevict")),
                     }
 
                     health, severity = _assess_cache_health(ratio)
@@ -172,21 +140,21 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
                 # LMDB doesn't have traditional db cache, but has normalized DN cache
                 if "normalizeddncachehits" in ldbm_status:
-                    ndn_hits = _safe_int(ldbm_status.get("normalizeddncachehits"))
-                    ndn_tries = _safe_int(ldbm_status.get("normalizeddncachetries"))
-                    ndn_ratio = _safe_float(ldbm_status.get("normalizeddncachehitratio"))
+                    ndn_hits = safe_int(ldbm_status.get("normalizeddncachehits"))
+                    ndn_tries = safe_int(ldbm_status.get("normalizeddncachetries"))
+                    ndn_ratio = safe_float(ldbm_status.get("normalizeddncachehitratio"))
                     if ndn_ratio == 0 and ndn_tries > 0:
                         ndn_ratio = _calculate_hit_ratio(ndn_hits, ndn_tries)
 
                     db_cache["normalized_dn_cache"] = {
                         "hits": ndn_hits,
                         "tries": ndn_tries,
-                        "misses": _safe_int(ldbm_status.get("normalizeddncachemisses")),
+                        "misses": safe_int(ldbm_status.get("normalizeddncachemisses")),
                         "hit_ratio": ndn_ratio,
-                        "evictions": _safe_int(ldbm_status.get("normalizeddncacheevictions")),
-                        "current_size": _safe_int(ldbm_status.get("currentnormalizeddncachesize")),
-                        "max_size": _safe_int(ldbm_status.get("maxnormalizeddncachesize")),
-                        "current_count": _safe_int(ldbm_status.get("currentnormalizeddncachecount")),
+                        "evictions": safe_int(ldbm_status.get("normalizeddncacheevictions")),
+                        "current_size": safe_int(ldbm_status.get("currentnormalizeddncachesize")),
+                        "max_size": safe_int(ldbm_status.get("maxnormalizeddncachesize")),
+                        "current_count": safe_int(ldbm_status.get("currentnormalizeddncachecount")),
                     }
 
                 cache_data["global_db_cache"] = db_cache
@@ -210,25 +178,25 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         be_status = be_monitor.get_status()
 
                         # Entry cache
-                        entry_hits = _safe_int(be_status.get("entrycachehits"))
-                        entry_tries = _safe_int(be_status.get("entrycachetries"))
-                        entry_ratio = _safe_float(be_status.get("entrycachehitratio"))
+                        entry_hits = safe_int(be_status.get("entrycachehits"))
+                        entry_tries = safe_int(be_status.get("entrycachetries"))
+                        entry_ratio = safe_float(be_status.get("entrycachehitratio"))
                         if entry_ratio == 0 and entry_tries > 0:
                             entry_ratio = _calculate_hit_ratio(entry_hits, entry_tries)
 
-                        entry_current_size = _safe_int(be_status.get("currententrycachesize"))
-                        entry_max_size = _safe_int(be_status.get("maxentrycachesize"))
-                        entry_current_count = _safe_int(be_status.get("currententrycachecount"))
-                        entry_max_count = _safe_int(be_status.get("maxentrycachecount"))
+                        entry_current_size = safe_int(be_status.get("currententrycachesize"))
+                        entry_max_size = safe_int(be_status.get("maxentrycachesize"))
+                        entry_current_count = safe_int(be_status.get("currententrycachecount"))
+                        entry_max_count = safe_int(be_status.get("maxentrycachecount"))
 
                         entry_cache = {
                             "hits": entry_hits,
                             "tries": entry_tries,
                             "hit_ratio": entry_ratio,
                             "current_size": entry_current_size,
-                            "current_size_human": _format_bytes(entry_current_size),
+                            "current_size_human": format_bytes(entry_current_size),
                             "max_size": entry_max_size,
-                            "max_size_human": _format_bytes(entry_max_size),
+                            "max_size_human": format_bytes(entry_max_size),
                             "current_count": entry_current_count,
                             "max_count": entry_max_count,
                             "utilization_pct": round((entry_current_size / entry_max_size * 100), 2) if entry_max_size > 0 else 0,
@@ -251,9 +219,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                             )
 
                         # DN cache
-                        dn_hits = _safe_int(be_status.get("dncachehits"))
-                        dn_tries = _safe_int(be_status.get("dncachetries"))
-                        dn_ratio = _safe_float(be_status.get("dncachehitratio"))
+                        dn_hits = safe_int(be_status.get("dncachehits"))
+                        dn_tries = safe_int(be_status.get("dncachetries"))
+                        dn_ratio = safe_float(be_status.get("dncachehitratio"))
                         if dn_ratio == 0 and dn_tries > 0:
                             dn_ratio = _calculate_hit_ratio(dn_hits, dn_tries)
 
@@ -261,10 +229,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                             "hits": dn_hits,
                             "tries": dn_tries,
                             "hit_ratio": dn_ratio,
-                            "current_size": _safe_int(be_status.get("currentdncachesize")),
-                            "max_size": _safe_int(be_status.get("maxdncachesize")),
-                            "current_count": _safe_int(be_status.get("currentdncachecount")),
-                            "max_count": _safe_int(be_status.get("maxdncachecount")),
+                            "current_size": safe_int(be_status.get("currentdncachesize")),
+                            "max_size": safe_int(be_status.get("maxdncachesize")),
+                            "current_count": safe_int(be_status.get("currentdncachecount")),
+                            "max_count": safe_int(be_status.get("maxdncachecount")),
                         }
 
                         backend_data = {
@@ -355,18 +323,18 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
 
-            current_conns = _safe_int(status.get("currentconnections"))
-            total_conns = _safe_int(status.get("totalconnections"))
-            dtable_size = _safe_int(status.get("dtablesize"))
-            read_waiters = _safe_int(status.get("readwaiters"))
+            current_conns = safe_int(status.get("currentconnections"))
+            total_conns = safe_int(status.get("totalconnections"))
+            dtable_size = safe_int(status.get("dtablesize"))
+            read_waiters = safe_int(status.get("readwaiters"))
 
             # Connection state from resource stats (may fail for remote connections)
             try:
                 resource_stats = monitor.get_resource_stats()
-                conn_count = _safe_int(resource_stats.get("connection_count"))
-                conn_established = _safe_int(resource_stats.get("connection_established_count"))
-                conn_close_wait = _safe_int(resource_stats.get("connection_close_wait_count"))
-                conn_time_wait = _safe_int(resource_stats.get("connection_time_wait_count"))
+                conn_count = safe_int(resource_stats.get("connection_count"))
+                conn_established = safe_int(resource_stats.get("connection_established_count"))
+                conn_close_wait = safe_int(resource_stats.get("connection_close_wait_count"))
+                conn_time_wait = safe_int(resource_stats.get("connection_time_wait_count"))
             except Exception as e:
                 mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
                 conn_count = 0
@@ -509,10 +477,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
 
-            ops_initiated = _safe_int(status.get("opsinitiated"))
-            ops_completed = _safe_int(status.get("opscompleted"))
-            entries_sent = _safe_int(status.get("entriessent"))
-            bytes_sent = _safe_int(status.get("bytessent"))
+            ops_initiated = safe_int(status.get("opsinitiated"))
+            ops_completed = safe_int(status.get("opscompleted"))
+            entries_sent = safe_int(status.get("entriessent"))
+            bytes_sent = safe_int(status.get("bytessent"))
 
             ops_pending = ops_initiated - ops_completed
 
@@ -524,7 +492,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "operations_pending": ops_pending,
                 "entries_sent": entries_sent,
                 "bytes_sent": bytes_sent,
-                "bytes_sent_human": _format_bytes(bytes_sent),
+                "bytes_sent_human": format_bytes(bytes_sent),
             }
 
             # Get SNMP stats for detailed operation breakdown
@@ -534,41 +502,41 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
                 op_data["operation_breakdown"] = {
                     "binds": {
-                        "anonymous": _safe_int(snmp_status.get("anonymousbinds")),
-                        "unauthenticated": _safe_int(snmp_status.get("unauthbinds")),
-                        "simple": _safe_int(snmp_status.get("simpleauthbinds")),
-                        "strong": _safe_int(snmp_status.get("strongauthbinds")),
+                        "anonymous": safe_int(snmp_status.get("anonymousbinds")),
+                        "unauthenticated": safe_int(snmp_status.get("unauthbinds")),
+                        "simple": safe_int(snmp_status.get("simpleauthbinds")),
+                        "strong": safe_int(snmp_status.get("strongauthbinds")),
                     },
                     "searches": {
-                        "total": _safe_int(snmp_status.get("searchops")),
-                        "one_level": _safe_int(snmp_status.get("onelevelsearchops")),
-                        "subtree": _safe_int(snmp_status.get("wholesubtreesearchops")),
+                        "total": safe_int(snmp_status.get("searchops")),
+                        "one_level": safe_int(snmp_status.get("onelevelsearchops")),
+                        "subtree": safe_int(snmp_status.get("wholesubtreesearchops")),
                     },
                     "modifications": {
-                        "add": _safe_int(snmp_status.get("addentryops")),
-                        "modify": _safe_int(snmp_status.get("modifyentryops")),
-                        "delete": _safe_int(snmp_status.get("removeentryops")),
-                        "modrdn": _safe_int(snmp_status.get("modifyrdnops")),
+                        "add": safe_int(snmp_status.get("addentryops")),
+                        "modify": safe_int(snmp_status.get("modifyentryops")),
+                        "delete": safe_int(snmp_status.get("removeentryops")),
+                        "modrdn": safe_int(snmp_status.get("modifyrdnops")),
                     },
-                    "compare": _safe_int(snmp_status.get("compareops")),
-                    "referrals": _safe_int(snmp_status.get("referrals")),
+                    "compare": safe_int(snmp_status.get("compareops")),
+                    "referrals": safe_int(snmp_status.get("referrals")),
                 }
 
                 op_data["errors"] = {
-                    "security_errors": _safe_int(snmp_status.get("securityerrors")),
-                    "bind_security_errors": _safe_int(snmp_status.get("bindsecurityerrors")),
-                    "total_errors": _safe_int(snmp_status.get("errors")),
+                    "security_errors": safe_int(snmp_status.get("securityerrors")),
+                    "bind_security_errors": safe_int(snmp_status.get("bindsecurityerrors")),
+                    "total_errors": safe_int(snmp_status.get("errors")),
                 }
 
                 op_data["data_transfer"] = {
-                    "bytes_received": _safe_int(snmp_status.get("bytesrecv")),
-                    "bytes_sent": _safe_int(snmp_status.get("bytessent")),
-                    "entries_returned": _safe_int(snmp_status.get("entriesreturned")),
-                    "referrals_returned": _safe_int(snmp_status.get("referralsreturned")),
+                    "bytes_received": safe_int(snmp_status.get("bytesrecv")),
+                    "bytes_sent": safe_int(snmp_status.get("bytessent")),
+                    "entries_returned": safe_int(snmp_status.get("entriesreturned")),
+                    "referrals_returned": safe_int(snmp_status.get("referralsreturned")),
                 }
 
                 # Check for issues
-                bind_errors = _safe_int(snmp_status.get("bindsecurityerrors"))
+                bind_errors = safe_int(snmp_status.get("bindsecurityerrors"))
                 if bind_errors > 100:
                     findings.append(
                         format_finding(
@@ -582,7 +550,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         )
                     )
 
-                total_errors = _safe_int(snmp_status.get("errors"))
+                total_errors = safe_int(snmp_status.get("errors"))
                 if total_errors > 1000:
                     findings.append(
                         format_finding(
@@ -678,14 +646,14 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
 
-            threads = _safe_int(status.get("threads"))
-            conns_at_max_threads = _safe_int(status.get("currentconnectionsatmaxthreads"))
-            max_threads_hits = _safe_int(status.get("maxthreadsperconnhits"))
+            threads = safe_int(status.get("threads"))
+            conns_at_max_threads = safe_int(status.get("currentconnectionsatmaxthreads"))
+            max_threads_hits = safe_int(status.get("maxthreadsperconnhits"))
 
             # Get active thread count from resource stats (may fail for remote connections)
             try:
                 resource_stats = monitor.get_resource_stats()
-                total_threads = _safe_int(resource_stats.get("total_threads"))
+                total_threads = safe_int(resource_stats.get("total_threads"))
             except Exception as e:
                 mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
                 total_threads = 0
@@ -826,17 +794,17 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 )
 
             # Memory stats (will be 0 for remote connections)
-            rss = _safe_int(resource_stats.get("rss"))
-            vms = _safe_int(resource_stats.get("vms"))
-            swap = _safe_int(resource_stats.get("swap"))
-            total_mem = _safe_int(resource_stats.get("total_mem"))
-            mem_rss_pct = _safe_float(resource_stats.get("mem_rss_percent"))
-            mem_vms_pct = _safe_float(resource_stats.get("mem_vms_percent"))
-            mem_swap_pct = _safe_float(resource_stats.get("mem_swap_percent"))
+            rss = safe_int(resource_stats.get("rss"))
+            vms = safe_int(resource_stats.get("vms"))
+            swap = safe_int(resource_stats.get("swap"))
+            total_mem = safe_int(resource_stats.get("total_mem"))
+            mem_rss_pct = safe_float(resource_stats.get("mem_rss_percent"))
+            mem_vms_pct = safe_float(resource_stats.get("mem_vms_percent"))
+            mem_swap_pct = safe_float(resource_stats.get("mem_swap_percent"))
 
             # CPU stats
-            cpu_usage = _safe_float(resource_stats.get("cpu_usage"))
-            total_threads = _safe_int(resource_stats.get("total_threads"))
+            cpu_usage = safe_float(resource_stats.get("cpu_usage"))
+            total_threads = safe_int(resource_stats.get("total_threads"))
             server_status = resource_stats.get("server_status", ["Unknown"])
             if isinstance(server_status, list):
                 server_status = server_status[0]
@@ -858,16 +826,16 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "memory": {
                     "available": local_metrics_available,
                     "rss": rss if local_metrics_available else None,
-                    "rss_human": _format_bytes(rss) if local_metrics_available else "N/A (requires local access)",
+                    "rss_human": format_bytes(rss) if local_metrics_available else "N/A (requires local access)",
                     "rss_percent": mem_rss_pct if local_metrics_available else None,
                     "vms": vms if local_metrics_available else None,
-                    "vms_human": _format_bytes(vms) if local_metrics_available else "N/A (requires local access)",
+                    "vms_human": format_bytes(vms) if local_metrics_available else "N/A (requires local access)",
                     "vms_percent": mem_vms_pct if local_metrics_available else None,
                     "swap": swap if local_metrics_available else None,
-                    "swap_human": _format_bytes(swap) if local_metrics_available else "N/A (requires local access)",
+                    "swap_human": format_bytes(swap) if local_metrics_available else "N/A (requires local access)",
                     "swap_percent": mem_swap_pct if local_metrics_available else None,
                     "total_system": total_mem if local_metrics_available else None,
-                    "total_system_human": _format_bytes(total_mem) if local_metrics_available else "N/A (requires local access)",
+                    "total_system_human": format_bytes(total_mem) if local_metrics_available else "N/A (requires local access)",
                 },
                 "cpu": {
                     "available": local_metrics_available,
@@ -901,7 +869,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         disk_info.append(disk_entry)
 
                         # Check disk usage
-                        pct = _safe_int(disk_entry.get("percent", "0"))
+                        pct = safe_int(disk_entry.get("percent", "0"))
                         partition = disk_entry.get("partition", "unknown")
                         if pct >= 90:
                             findings.append(
@@ -941,7 +909,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         title="High Memory Usage",
                         severity=Severity.HIGH,
                         impact=f"Server using {mem_rss_pct}% of system memory",
-                        details=f"RSS: {_format_bytes(rss)}, Total: {_format_bytes(total_mem)}",
+                        details=f"RSS: {format_bytes(rss)}, Total: {format_bytes(total_mem)}",
                         remediation="Review cache sizes or consider adding memory",
                         server=target,
                         metadata={"rss_pct": mem_rss_pct, "rss": rss},
@@ -953,7 +921,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     format_finding(
                         title="Server Using Swap",
                         severity=Severity.MEDIUM,
-                        impact=f"Server has {_format_bytes(swap)} in swap ({mem_swap_pct}%)",
+                        impact=f"Server has {format_bytes(swap)} in swap ({mem_swap_pct}%)",
                         details="Swap usage degrades performance significantly",
                         remediation="Reduce cache sizes or add physical memory",
                         server=target,
@@ -1047,8 +1015,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     resource_stats = {}
 
                 # Connections
-                current_conns = _safe_int(status.get("currentconnections"))
-                dtable_size = _safe_int(status.get("dtablesize"))
+                current_conns = safe_int(status.get("currentconnections"))
+                dtable_size = safe_int(status.get("dtablesize"))
                 fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
 
                 summary_data["metrics"]["connections"] = {
@@ -1068,8 +1036,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     ))
 
                 # Operations
-                ops_initiated = _safe_int(status.get("opsinitiated"))
-                ops_completed = _safe_int(status.get("opscompleted"))
+                ops_initiated = safe_int(status.get("opsinitiated"))
+                ops_completed = safe_int(status.get("opscompleted"))
                 ops_pending = ops_initiated - ops_completed
 
                 summary_data["metrics"]["operations"] = {
@@ -1088,8 +1056,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     ))
 
                 # Threads
-                threads = _safe_int(status.get("threads"))
-                conns_at_max = _safe_int(status.get("currentconnectionsatmaxthreads"))
+                threads = safe_int(status.get("threads"))
+                conns_at_max = safe_int(status.get("currentconnectionsatmaxthreads"))
 
                 summary_data["metrics"]["threads"] = {
                     "configured": threads,
@@ -1107,13 +1075,13 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     ))
 
                 # Memory
-                mem_rss_pct = _safe_float(resource_stats.get("mem_rss_percent"))
-                rss = _safe_int(resource_stats.get("rss"))
-                cpu = _safe_float(resource_stats.get("cpu_usage"))
+                mem_rss_pct = safe_float(resource_stats.get("mem_rss_percent"))
+                rss = safe_int(resource_stats.get("rss"))
+                cpu = safe_float(resource_stats.get("cpu_usage"))
 
                 summary_data["metrics"]["resources"] = {
                     "memory_pct": mem_rss_pct,
-                    "memory_human": _format_bytes(rss),
+                    "memory_human": format_bytes(rss),
                     "cpu_pct": cpu,
                 }
 
@@ -1122,7 +1090,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         title="High Memory Usage",
                         severity=Severity.HIGH,
                         impact=f"{mem_rss_pct}% of system memory",
-                        details=f"RSS: {_format_bytes(rss)}",
+                        details=f"RSS: {format_bytes(rss)}",
                         remediation="Review cache sizes or add memory",
                         server=target,
                     ))
@@ -1135,7 +1103,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 ldbm_monitor = MonitorLDBM(ds)
                 ldbm_status = ldbm_monitor.get_status()
 
-                db_ratio = _safe_float(ldbm_status.get("dbcachehitratio"))
+                db_ratio = safe_float(ldbm_status.get("dbcachehitratio"))
                 summary_data["metrics"]["cache"] = {
                     "db_hit_ratio": db_ratio,
                 }

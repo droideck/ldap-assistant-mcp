@@ -20,6 +20,7 @@ from lib389.tunables import Tunables
 
 from src.dirsrv_mcp.connection import is_local_server
 from src.lib.result_formatter import Severity, format_finding
+from src.lib.value_utils import format_bytes, safe_float, safe_int
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.connection import ServerConfig
@@ -702,39 +703,6 @@ def _check_threads(
         mcp.logger.debug("Could not check threads for %s", server_name)
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    """Safely convert a value to int."""
-    if value is None:
-        return default
-    if isinstance(value, list):
-        value = value[0] if value else default
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float."""
-    if value is None:
-        return default
-    if isinstance(value, list):
-        value = value[0] if value else default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _format_bytes(bytes_val: int) -> str:
-    """Format bytes into human-readable string."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if abs(bytes_val) < 1024.0:
-            return f"{bytes_val:.1f} {unit}"
-        bytes_val /= 1024.0
-    return f"{bytes_val:.1f} PB"
-
-
 def _check_replication_health(
     mcp: DirSrvMCP,
     ds,
@@ -830,9 +798,9 @@ def _check_cache_health(
                 be_monitor = be.get_monitor()
                 be_status = be_monitor.get_status()
 
-                entry_hits = _safe_int(be_status.get("entrycachehits"))
-                entry_tries = _safe_int(be_status.get("entrycachetries"))
-                entry_ratio = _safe_float(be_status.get("entrycachehitratio"))
+                entry_hits = safe_int(be_status.get("entrycachehits"))
+                entry_tries = safe_int(be_status.get("entrycachetries"))
+                entry_ratio = safe_float(be_status.get("entrycachehitratio"))
 
                 if entry_ratio == 0 and entry_tries > 0:
                     entry_ratio = round((entry_hits / entry_tries) * 100, 2) if entry_tries > 0 else 0
@@ -909,7 +877,7 @@ def _check_disk_health(
                     disk_entry[key.lower()] = val.strip('"')
 
             partition = disk_entry.get("partition", "unknown")
-            pct = _safe_int(disk_entry.get("percent", "0"))
+            pct = safe_int(disk_entry.get("percent", "0"))
             size = disk_entry.get("size", "unknown")
             avail = disk_entry.get("avail", "unknown")
 
@@ -1074,13 +1042,13 @@ def _check_connection_health(
         except Exception:
             status = {}
 
-        current_conns = _safe_int(status.get("currentconnections"))
-        total_conns = _safe_int(status.get("totalconnections"))
-        dtable_size = _safe_int(status.get("dtablesize"))
-        threads = _safe_int(status.get("threads"))
-        conns_at_max = _safe_int(status.get("currentconnectionsatmaxthreads"))
-        ops_initiated = _safe_int(status.get("opsinitiated"))
-        ops_completed = _safe_int(status.get("opscompleted"))
+        current_conns = safe_int(status.get("currentconnections"))
+        total_conns = safe_int(status.get("totalconnections"))
+        dtable_size = safe_int(status.get("dtablesize"))
+        threads = safe_int(status.get("threads"))
+        conns_at_max = safe_int(status.get("currentconnectionsatmaxthreads"))
+        ops_initiated = safe_int(status.get("opsinitiated"))
+        ops_completed = safe_int(status.get("opscompleted"))
 
         fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
         ops_pending = ops_initiated - ops_completed
