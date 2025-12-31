@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lib389 import lint
@@ -11,17 +12,28 @@ from lib389.backend import Backends
 from lib389.config import Config, Encryption
 from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.dseldif import DSEldif, FSChecks
-from lib389.monitor import Monitor, MonitorDiskSpace
+from lib389.monitor import Monitor, MonitorDiskSpace, MonitorLDBM
 from lib389.nss_ssl import NssSsl
 from lib389.plugins import MemberOfPlugin, ReferentialIntegrityPlugin
-from lib389.replica import Replica
+from lib389.replica import Replica, Replicas
 from lib389.tunables import Tunables
 
+from src.dirsrv_mcp.connection import is_local_server
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.connection import ServerConfig
     from src.dirsrv_mcp.server import DirSrvMCP
+
+# Check UIDs that ONLY work with local servers (require filesystem or NSS access)
+# These are the lint_uid() values returned by the check objects
+LOCAL_ONLY_CHECK_UIDS = {
+    "fschecks",           # FSChecks - file system permission checks
+    "monitor-disk-space", # MonitorDiskSpace - disk space monitoring
+    "dseldif",            # DSEldif - DSE.ldif configuration access
+    "tls",                # NssSsl - certificate database access (uses "tls" uid)
+    "logs",               # DirsrvAccessLog - access log analysis
+}
 
 
 # Check objects that can perform lint operations (mirrors lib389 CHECK_OBJECTS)
@@ -164,13 +176,34 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def first_look() -> Dict[str, Any]:
-        """Quick health overview across all configured LDAP servers."""
+        """Comprehensive health overview - the go-to tool for "what's wrong with my directory?"
+
+        Performs a complete health assessment across all configured servers including:
+        - Server connectivity and basic health
+        - Connection and thread utilization
+        - Replication status and errors
+        - Cache efficiency (entry cache hit ratios)
+        - Disk space usage (local servers only)
+        - SSL certificate expiration (local servers only)
+
+        **Note on local vs remote servers:**
+        Most checks work via LDAP and are available for all servers. However, the
+        following require local server access (is_local=True with serverid):
+        - Disk space monitoring (requires filesystem access)
+        - Certificate expiration checking (requires NSS database access)
+
+        For remote servers, these metrics will show as unavailable in the response.
+
+        Returns prioritized findings with severity levels and actionable recommendations.
+        This should be the first tool called when investigating directory issues.
+        """
         server_names = mcp.connection_manager.get_server_names()
 
         if not server_names:
             return {
                 "type": "first_look",
                 "summary": "No servers configured",
+                "overall_health": "unknown",
                 "critical_count": 1,
                 "high_count": 0,
                 "medium_count": 0,
@@ -195,11 +228,13 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 ],
                 "servers_checked": [],
                 "servers_failed": [],
+                "metrics": {},
             }
 
         findings: List[Dict[str, Any]] = []
         servers_checked: List[str] = []
         servers_failed: List[str] = []
+        server_metrics: Dict[str, Any] = {}
 
         for server_name in server_names:
             ds = None
@@ -207,20 +242,21 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 config = mcp.connection_manager.get_config(server_name)
                 ds = mcp.connection_manager.connect(server_name)
                 servers_checked.append(server_name)
-                _check_server_health(mcp, ds, server_name, config, findings)
+                _check_server_health(mcp, ds, server_name, config, findings, server_metrics)
             except Exception as exc:
                 servers_failed.append(server_name)
                 severity = Severity.CRITICAL if "connect" in str(exc).lower() else Severity.HIGH
                 findings.append(
                     format_finding(
-                        title=f"Server Check Failed: {server_name}",
+                        title=f"Server Unreachable: {server_name}",
                         severity=severity,
-                        impact=f"Unable to complete health check for {server_name}",
+                        impact=f"Cannot connect to {server_name} - server may be down",
                         details=str(exc),
-                        remediation="Verify server connectivity and credentials",
+                        remediation="Verify server is running, check network connectivity and credentials",
                         server=server_name,
                     )
                 )
+                server_metrics[server_name] = {"error": str(exc)}
             finally:
                 if ds is not None:
                     try:
@@ -228,28 +264,73 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                     except Exception:
                         pass
 
+        # Count findings by severity
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         for finding in findings:
             severity = finding.get("severity", "info")
             if severity in severity_counts:
                 severity_counts[severity] += 1
 
-        total_issues = sum(severity_counts.values())
+        # Sort findings by severity (critical first)
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 5))
+
+        # Determine overall health
         if severity_counts["critical"] > 0:
+            overall_health = "critical"
             summary = (
-                f"CRITICAL: {severity_counts['critical']} critical issue(s) found "
-                f"across {len(server_names)} servers"
+                f"CRITICAL: {severity_counts['critical']} critical issue(s) require immediate attention"
             )
         elif severity_counts["high"] > 0:
-            summary = f"WARNING: {severity_counts['high']} high-priority issue(s) found"
-        elif total_issues > 0:
-            summary = f"OK: {total_issues} minor issue(s) found"
+            overall_health = "degraded"
+            summary = f"DEGRADED: {severity_counts['high']} high-priority issue(s) found"
+        elif severity_counts["medium"] > 0:
+            overall_health = "fair"
+            summary = f"FAIR: {severity_counts['medium']} issue(s) found that should be addressed"
+        elif servers_failed:
+            overall_health = "degraded"
+            summary = f"DEGRADED: {len(servers_failed)} server(s) unreachable"
         else:
-            summary = f"HEALTHY: All {len(servers_checked)} servers are operating normally"
+            overall_health = "healthy"
+            summary = f"HEALTHY: All {len(servers_checked)} server(s) operating normally"
+
+        # Build quick metrics summary
+        metrics_summary = {}
+        for srv_name, srv_metrics in server_metrics.items():
+            if "error" in srv_metrics:
+                metrics_summary[srv_name] = {"status": "unreachable"}
+            else:
+                srv_summary = {"status": "ok"}
+
+                # Connection summary
+                if "connections" in srv_metrics and "error" not in srv_metrics["connections"]:
+                    srv_summary["connections"] = srv_metrics["connections"].get("current", 0)
+                    srv_summary["fd_utilization"] = srv_metrics["connections"].get("fd_utilization_pct", 0)
+
+                # Replication summary
+                if "replication" in srv_metrics:
+                    repl = srv_metrics["replication"]
+                    if repl.get("configured"):
+                        srv_summary["replication"] = {
+                            "configured": True,
+                            "agreements": len(repl.get("agreements", [])),
+                        }
+                    else:
+                        srv_summary["replication"] = {"configured": False}
+
+                # Cache summary
+                if "cache" in srv_metrics and "backends" in srv_metrics["cache"]:
+                    backends = srv_metrics["cache"]["backends"]
+                    if backends:
+                        avg_ratio = sum(b.get("entry_cache_hit_ratio", 0) for b in backends) / len(backends)
+                        srv_summary["cache_hit_ratio_avg"] = round(avg_ratio, 1)
+
+                metrics_summary[srv_name] = srv_summary
 
         result = {
             "type": "first_look",
             "summary": summary,
+            "overall_health": overall_health,
             "critical_count": severity_counts["critical"],
             "high_count": severity_counts["high"],
             "medium_count": severity_counts["medium"],
@@ -259,6 +340,8 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             "servers_checked": servers_checked,
             "servers_failed": servers_failed,
             "total_servers": len(server_names),
+            "metrics": metrics_summary,
+            "detailed_metrics": server_metrics,
         }
 
         mcp.logger.info("first_look completed: %s", summary)
@@ -346,6 +429,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         examining configuration, backends, security, replication, plugins,
         certificates, disk space, and more.
 
+        **Note on local vs remote servers:**
+        Some checks require local server access (is_local=True with serverid):
+        - fschecks: File system permission checks
+        - monitor-disk-space: Disk space monitoring
+        - dseldif: DSE.ldif configuration access
+        - tls: Certificate database access (requires certutil)
+        - logs: Access log analysis
+
+        For remote servers, these checks will be automatically skipped.
+
         Args:
             checks: Optional list of specific checks to run (e.g., ['config:*', 'backends:mappingtree']).
                     Use '*' as wildcard. If not specified, runs all available checks.
@@ -358,6 +451,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             - Summary of issues found by severity
             - Detailed findings with error codes, descriptions, and remediation steps
             - List of checks that were run
+            - List of checks skipped (including local-only checks for remote servers)
         """
         target = server_name or mcp.default_server
         if not target:
@@ -371,6 +465,9 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         try:
             ds = mcp.connection_manager.connect(target)
             targets = _list_check_targets(ds)
+
+            # Check if this is a local server
+            is_local = is_local_server(mcp.connection_manager, target)
 
             # Determine which checks to run
             if checks:
@@ -390,6 +487,18 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 for spec in exclude_checks:
                     for uid, method, _ in _expand_check_spec(targets, spec):
                         excluded.add(f"{uid}:{method}")
+
+            # For remote servers, automatically exclude local-only checks
+            local_only_skipped = []
+            if not is_local:
+                for uid, target_info in targets.items():
+                    # Check if this uid matches any local-only check
+                    if uid.lower() in LOCAL_ONLY_CHECK_UIDS:
+                        for method in target_info["methods"]:
+                            check_id = f"{uid}:{method}"
+                            if check_id not in excluded:
+                                excluded.add(check_id)
+                                local_only_skipped.append(check_id)
 
             # Run checks
             raw_results = []
@@ -432,9 +541,10 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
             mcp.logger.info("run_healthcheck completed: %s", summary)
 
-            return {
+            result = {
                 "type": "healthcheck",
                 "server": target,
+                "is_local": is_local,
                 "summary": summary,
                 "critical_count": severity_counts["critical"],
                 "high_count": severity_counts["high"],
@@ -447,6 +557,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 "checks_skipped": checks_skipped,
                 "total_checks_run": len(checks_executed),
             }
+
+            # Add local-only skipped checks info for remote servers
+            if local_only_skipped:
+                result["local_only_checks_skipped"] = local_only_skipped
+                result["local_only_note"] = (
+                    f"Skipped {len(local_only_skipped)} check(s) that require local server access. "
+                    "Configure the server with is_local=True and serverid=<instance> to enable these checks."
+                )
+
+            return result
 
         except Exception as e:
             mcp.logger.error("run_healthcheck failed: %s", e)
@@ -480,32 +600,38 @@ def _check_server_health(
     server_name: str,
     config: ServerConfig,
     findings: List[Dict[str, Any]],
+    server_metrics: Dict[str, Any],
 ) -> None:
-    """Check health metrics for a single server."""
-    try:
-        monitor = Monitor(ds)
-        monitor_data = monitor.get_all_attrs()
-        _check_connection_limits(mcp, monitor_data, server_name, findings)
-        _check_threads(mcp, monitor_data, server_name, findings)
+    """Check comprehensive health metrics for a single server."""
+    metrics: Dict[str, Any] = {"server": server_name}
+
+    # Check if this is a local server
+    is_local = is_local_server(mcp.connection_manager, server_name)
+    metrics["is_local"] = is_local
+
+    # Run all health checks - each adds to findings and metrics
+    _check_connection_health(mcp, ds, server_name, findings, metrics)
+    _check_replication_health(mcp, ds, server_name, findings, metrics)
+    _check_cache_health(mcp, ds, server_name, findings, metrics)
+    _check_disk_health(mcp, ds, server_name, findings, metrics, is_local)
+    _check_certificate_health(mcp, ds, server_name, findings, metrics, is_local)
+
+    # Store metrics for this server
+    server_metrics[server_name] = metrics
+
+    # Add success indicator if no critical issues were found for this server
+    server_findings = [f for f in findings if f.get("server") == server_name]
+    critical_count = sum(1 for f in server_findings if f.get("severity") == "critical")
+    high_count = sum(1 for f in server_findings if f.get("severity") == "high")
+
+    if critical_count == 0 and high_count == 0:
         findings.append(
             format_finding(
-                title=f"Server {server_name} is operational",
+                title=f"Server {server_name} is healthy",
                 severity=Severity.INFO,
-                impact="Server is responding to queries",
-                details=f"Successfully connected and retrieved monitor data from {config.ldap_url}",
+                impact="Server is operating normally",
+                details=f"All health checks passed for {config.ldap_url}",
                 remediation="No action needed",
-                server=server_name,
-            )
-        )
-    except Exception as exc:
-        mcp.logger.warning("Error checking server health for %s: %s", server_name, exc)
-        findings.append(
-            format_finding(
-                title=f"Partial Health Check Failure: {server_name}",
-                severity=Severity.MEDIUM,
-                impact="Unable to retrieve complete health information",
-                details=f"Connected successfully but failed to retrieve monitor data: {exc}",
-                remediation="Check server logs and verify monitoring endpoints are accessible",
                 server=server_name,
             )
         )
@@ -574,4 +700,449 @@ def _check_threads(
             )
     except (KeyError, ValueError, IndexError):
         mcp.logger.debug("Could not check threads for %s", server_name)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert a value to int."""
+    if value is None:
+        return default
+    if isinstance(value, list):
+        value = value[0] if value else default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float."""
+    if value is None:
+        return default
+    if isinstance(value, list):
+        value = value[0] if value else default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _format_bytes(bytes_val: int) -> str:
+    """Format bytes into human-readable string."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if abs(bytes_val) < 1024.0:
+            return f"{bytes_val:.1f} {unit}"
+        bytes_val /= 1024.0
+    return f"{bytes_val:.1f} PB"
+
+
+def _check_replication_health(
+    mcp: DirSrvMCP,
+    ds,
+    server_name: str,
+    findings: List[Dict[str, Any]],
+    metrics: Dict[str, Any],
+) -> None:
+    """Check replication status for health issues."""
+    try:
+        replicas = Replicas(ds)
+        replica_list = replicas.list()
+
+        if not replica_list:
+            metrics["replication"] = {"configured": False}
+            return
+
+        metrics["replication"] = {
+            "configured": True,
+            "replica_count": len(replica_list),
+            "agreements": [],
+        }
+
+        for replica in replica_list:
+            try:
+                suffix = replica.get_suffix()
+                role = replica.get_role()
+                agreements = replica.get_agreements()
+
+                for agmt in agreements.list():
+                    agmt_name = agmt.get_attr_val_utf8("cn")
+                    consumer = agmt.get_attr_val_utf8("nsDS5ReplicaHost")
+                    last_result = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStatus") or ""
+                    last_update = agmt.get_attr_val_utf8("nsds5replicaLastUpdateEnd") or ""
+
+                    agmt_info = {
+                        "name": agmt_name,
+                        "consumer": consumer,
+                        "suffix": suffix,
+                    }
+                    metrics["replication"]["agreements"].append(agmt_info)
+
+                    # Check for replication errors
+                    if last_result:
+                        # Error status typically starts with "Error" or has non-zero code
+                        is_error = (
+                            "error" in last_result.lower() or
+                            last_result.startswith("(-") or
+                            (last_result.startswith("(") and not last_result.startswith("(0)"))
+                        )
+                        if is_error:
+                            findings.append(
+                                format_finding(
+                                    title=f"Replication Error: {agmt_name}",
+                                    severity=Severity.HIGH,
+                                    impact=f"Replication to {consumer} for {suffix} is failing",
+                                    details=f"Last status: {last_result}",
+                                    remediation="Check network connectivity and consumer server status",
+                                    server=server_name,
+                                    metadata={"agreement": agmt_name, "consumer": consumer},
+                                )
+                            )
+
+            except Exception as e:
+                mcp.logger.debug("Error checking replica %s: %s", replica, e)
+
+    except Exception as e:
+        mcp.logger.debug("Could not check replication for %s: %s", server_name, e)
+        metrics["replication"] = {"configured": False, "error": str(e)}
+
+
+def _check_cache_health(
+    mcp: DirSrvMCP,
+    ds,
+    server_name: str,
+    findings: List[Dict[str, Any]],
+    metrics: Dict[str, Any],
+) -> None:
+    """Check cache efficiency for health issues."""
+    try:
+        backends = Backends(ds)
+        backend_list = list(backends.list())
+
+        cache_metrics = {
+            "backends": [],
+            "overall_health": "healthy",
+        }
+
+        low_hit_ratio_count = 0
+
+        for be in backend_list:
+            be_name = be.get_attr_val_utf8("cn")
+            try:
+                be_monitor = be.get_monitor()
+                be_status = be_monitor.get_status()
+
+                entry_hits = _safe_int(be_status.get("entrycachehits"))
+                entry_tries = _safe_int(be_status.get("entrycachetries"))
+                entry_ratio = _safe_float(be_status.get("entrycachehitratio"))
+
+                if entry_ratio == 0 and entry_tries > 0:
+                    entry_ratio = round((entry_hits / entry_tries) * 100, 2) if entry_tries > 0 else 0
+
+                cache_metrics["backends"].append({
+                    "name": be_name,
+                    "entry_cache_hit_ratio": entry_ratio,
+                    "entry_cache_tries": entry_tries,
+                })
+
+                # Alert on low hit ratio only if there's significant activity
+                if entry_tries > 1000 and entry_ratio < 70:
+                    low_hit_ratio_count += 1
+                    severity = Severity.HIGH if entry_ratio < 50 else Severity.MEDIUM
+                    findings.append(
+                        format_finding(
+                            title=f"Low Cache Hit Ratio: {be_name}",
+                            severity=severity,
+                            impact=f"Entry cache hit ratio is {entry_ratio}% - frequent disk reads",
+                            details=f"Backend {be_name}: {entry_hits} hits / {entry_tries} tries",
+                            remediation=f"Consider increasing nsslapd-cachememsize for backend {be_name}",
+                            server=server_name,
+                            metadata={"backend": be_name, "hit_ratio": entry_ratio},
+                        )
+                    )
+
+            except Exception as e:
+                mcp.logger.debug("Error checking cache for backend %s: %s", be_name, e)
+
+        if low_hit_ratio_count > 0:
+            cache_metrics["overall_health"] = "degraded"
+
+        metrics["cache"] = cache_metrics
+
+    except Exception as e:
+        mcp.logger.debug("Could not check cache for %s: %s", server_name, e)
+        metrics["cache"] = {"error": str(e)}
+
+
+def _check_disk_health(
+    mcp: DirSrvMCP,
+    ds,
+    server_name: str,
+    findings: List[Dict[str, Any]],
+    metrics: Dict[str, Any],
+    is_local: bool = True,
+) -> None:
+    """Check disk space for health issues.
+
+    Note: Disk space monitoring requires local server access (is_local=True).
+    For remote servers, this check will be skipped with an informational message.
+    """
+    if not is_local:
+        mcp.logger.debug("Skipping disk health check for remote server %s", server_name)
+        metrics["disk"] = {
+            "available": False,
+            "reason": "Disk monitoring requires local server access (is_local=True with serverid)",
+        }
+        return
+
+    try:
+        disk_monitor = MonitorDiskSpace(ds)
+        disks = disk_monitor.get_disks()
+
+        disk_metrics = []
+
+        for disk in disks:
+            # Parse disk info string
+            parts = disk.split()
+            disk_entry = {}
+            for part in parts:
+                if "=" in part:
+                    key, val = part.split("=", 1)
+                    disk_entry[key.lower()] = val.strip('"')
+
+            partition = disk_entry.get("partition", "unknown")
+            pct = _safe_int(disk_entry.get("percent", "0"))
+            size = disk_entry.get("size", "unknown")
+            avail = disk_entry.get("avail", "unknown")
+
+            disk_metrics.append({
+                "partition": partition,
+                "usage_percent": pct,
+                "size": size,
+                "available": avail,
+            })
+
+            if pct >= 95:
+                findings.append(
+                    format_finding(
+                        title=f"Critical Disk Space: {partition}",
+                        severity=Severity.CRITICAL,
+                        impact=f"Partition {partition} is {pct}% full - server may fail",
+                        details=f"Size: {size}, Available: {avail}",
+                        remediation="Free up disk space immediately or expand storage",
+                        server=server_name,
+                        metadata={"partition": partition, "usage": pct},
+                    )
+                )
+            elif pct >= 85:
+                findings.append(
+                    format_finding(
+                        title=f"High Disk Usage: {partition}",
+                        severity=Severity.HIGH,
+                        impact=f"Partition {partition} is {pct}% full",
+                        details=f"Size: {size}, Available: {avail}",
+                        remediation="Plan for disk space cleanup or expansion",
+                        server=server_name,
+                        metadata={"partition": partition, "usage": pct},
+                    )
+                )
+
+        metrics["disk"] = {"available": True, "partitions": disk_metrics}
+
+    except Exception as e:
+        mcp.logger.debug("Could not check disk space for %s: %s", server_name, e)
+        metrics["disk"] = {"available": False, "error": str(e)}
+
+
+def _check_certificate_health(
+    mcp: DirSrvMCP,
+    ds,
+    server_name: str,
+    findings: List[Dict[str, Any]],
+    metrics: Dict[str, Any],
+    is_local: bool = True,
+) -> None:
+    """Check SSL certificate expiration.
+
+    Note: Certificate checking requires local server access (is_local=True)
+    to read the NSS certificate database. For remote servers, this check
+    will be skipped with an informational message.
+    """
+    if not is_local:
+        mcp.logger.debug("Skipping certificate health check for remote server %s", server_name)
+        metrics["certificates"] = {
+            "available": False,
+            "reason": "Certificate monitoring requires local server access (is_local=True with serverid)",
+        }
+        return
+
+    try:
+        nss_ssl = NssSsl(ds)
+        certs = []
+
+        # Try to get server cert info
+        try:
+            server_cert = nss_ssl.get_server_cert()
+            if server_cert:
+                # Parse certificate details
+                subject = server_cert.get("subject", "Unknown")
+                not_after = server_cert.get("not_after")
+
+                cert_info = {
+                    "subject": subject,
+                    "type": "server",
+                }
+
+                if not_after:
+                    try:
+                        # Parse expiration date
+                        if isinstance(not_after, str):
+                            # Try common date formats
+                            for fmt in ["%Y-%m-%d %H:%M:%S", "%b %d %H:%M:%S %Y %Z"]:
+                                try:
+                                    exp_date = datetime.strptime(not_after, fmt)
+                                    if exp_date.tzinfo is None:
+                                        exp_date = exp_date.replace(tzinfo=timezone.utc)
+                                    break
+                                except ValueError:
+                                    continue
+                            else:
+                                exp_date = None
+                        else:
+                            exp_date = not_after
+
+                        if exp_date:
+                            now = datetime.now(timezone.utc)
+                            days_until = (exp_date - now).days
+                            cert_info["expires"] = str(not_after)
+                            cert_info["days_until_expiry"] = days_until
+
+                            if days_until < 0:
+                                findings.append(
+                                    format_finding(
+                                        title="SSL Certificate Expired",
+                                        severity=Severity.CRITICAL,
+                                        impact="Server certificate has expired - clients may reject connections",
+                                        details=f"Certificate expired {abs(days_until)} days ago",
+                                        remediation="Renew the SSL certificate immediately",
+                                        server=server_name,
+                                        metadata={"days_expired": abs(days_until)},
+                                    )
+                                )
+                            elif days_until <= 30:
+                                findings.append(
+                                    format_finding(
+                                        title="SSL Certificate Expiring Soon",
+                                        severity=Severity.HIGH if days_until <= 7 else Severity.MEDIUM,
+                                        impact=f"Server certificate expires in {days_until} days",
+                                        details=f"Expiration: {not_after}",
+                                        remediation="Plan certificate renewal before expiration",
+                                        server=server_name,
+                                        metadata={"days_until_expiry": days_until},
+                                    )
+                                )
+                    except Exception as e:
+                        mcp.logger.debug("Error parsing cert date: %s", e)
+
+                certs.append(cert_info)
+
+        except Exception as e:
+            mcp.logger.debug("Could not get server cert: %s", e)
+
+        metrics["certificates"] = {"available": True, "certs": certs} if certs else {"available": True, "status": "no certificates found"}
+
+    except Exception as e:
+        mcp.logger.debug("Could not check certificates for %s: %s", server_name, e)
+        metrics["certificates"] = {"available": False, "error": str(e)}
+
+
+def _check_connection_health(
+    mcp: DirSrvMCP,
+    ds,
+    server_name: str,
+    findings: List[Dict[str, Any]],
+    metrics: Dict[str, Any],
+) -> None:
+    """Check connection and resource utilization."""
+    try:
+        monitor = Monitor(ds)
+
+        # Get specific attributes
+        try:
+            status = monitor.get_attrs_vals_utf8([
+                'currentconnections', 'totalconnections', 'dtablesize',
+                'threads', 'currentconnectionsatmaxthreads', 'opsinitiated', 'opscompleted'
+            ])
+        except Exception:
+            status = {}
+
+        current_conns = _safe_int(status.get("currentconnections"))
+        total_conns = _safe_int(status.get("totalconnections"))
+        dtable_size = _safe_int(status.get("dtablesize"))
+        threads = _safe_int(status.get("threads"))
+        conns_at_max = _safe_int(status.get("currentconnectionsatmaxthreads"))
+        ops_initiated = _safe_int(status.get("opsinitiated"))
+        ops_completed = _safe_int(status.get("opscompleted"))
+
+        fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
+        ops_pending = ops_initiated - ops_completed
+
+        metrics["connections"] = {
+            "current": current_conns,
+            "total": total_conns,
+            "max_fd": dtable_size,
+            "fd_utilization_pct": fd_util,
+        }
+
+        metrics["threads"] = {
+            "configured": threads,
+            "at_max_threads": conns_at_max,
+        }
+
+        metrics["operations"] = {
+            "completed": ops_completed,
+            "pending": ops_pending,
+        }
+
+        # Check for issues
+        if fd_util > 80:
+            findings.append(
+                format_finding(
+                    title="High Connection Utilization",
+                    severity=Severity.HIGH,
+                    impact=f"Server using {fd_util}% of available file descriptors",
+                    details=f"Current: {current_conns}, Max: {dtable_size}",
+                    remediation="Increase nsslapd-maxdescriptors or investigate connection leaks",
+                    server=server_name,
+                    metadata={"utilization": fd_util},
+                )
+            )
+
+        if conns_at_max > 0:
+            findings.append(
+                format_finding(
+                    title="Thread Contention Detected",
+                    severity=Severity.HIGH,
+                    impact=f"{conns_at_max} connections hitting thread limit",
+                    details="Connections are being throttled due to thread limits",
+                    remediation="Increase nsslapd-threadnumber",
+                    server=server_name,
+                    metadata={"at_max_threads": conns_at_max},
+                )
+            )
+
+        if ops_pending > 100:
+            findings.append(
+                format_finding(
+                    title="High Pending Operations",
+                    severity=Severity.HIGH,
+                    impact=f"{ops_pending} operations pending",
+                    details="Server may be overloaded",
+                    remediation="Check server resources and consider scaling",
+                    server=server_name,
+                    metadata={"pending": ops_pending},
+                )
+            )
+
+    except Exception as e:
+        mcp.logger.debug("Could not check connections for %s: %s", server_name, e)
+        metrics["connections"] = {"error": str(e)}
 

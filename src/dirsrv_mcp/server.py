@@ -24,6 +24,7 @@ from src.dirsrv_mcp.tools import (
     register_group_tools,
     register_health_tools,
     register_monitoring_tools,
+    register_performance_tools,
     register_replication_tools,
     register_search_tools,
     register_user_tools,
@@ -115,8 +116,15 @@ class DirSrvMCP(LDAPAssistantMCP):
                         "Use the available MCP tools to accomplish the task. "
                         "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
                         "**Health & Diagnostics:**\n"
-                        "- first_look: Quick health overview across all servers.\n"
-                        "- run_healthcheck: Comprehensive health checks.\n\n"
+                        "- first_look: Comprehensive health overview across all servers.\n"
+                        "- run_healthcheck: Deep health checks with lint rules.\n\n"
+                        "**Performance:**\n"
+                        "- get_performance_summary: Combined performance overview.\n"
+                        "- get_cache_statistics: Entry/DN/DB cache analysis.\n"
+                        "- get_connection_statistics: Connection patterns and FD usage.\n"
+                        "- get_operation_statistics: Operation counts by type.\n"
+                        "- get_thread_statistics: Thread pool utilization.\n"
+                        "- get_resource_utilization: Memory, CPU, disk usage.\n\n"
                         "**Replication:**\n"
                         "- get_replication_status: Comprehensive replica and agreement status.\n"
                         "- get_replication_topology: Map topology across all servers.\n"
@@ -134,6 +142,121 @@ class DirSrvMCP(LDAPAssistantMCP):
                         "**Advanced:**\n"
                         "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
                         "State which tool you'll call next and why; keep outputs concise."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def diagnose_replication() -> List[PromptMessage]:
+            """Start a guided replication troubleshooting session."""
+
+            return [
+                PromptMessage(
+                    role="user",
+                    content="I need help diagnosing replication issues in my directory.",
+                ),
+                PromptMessage(
+                    role="assistant",
+                    content=(
+                        "I'll help you diagnose replication issues. Let me perform a systematic analysis:\n\n"
+                        "**Step 1: Check replication topology and agreement status**\n"
+                        "I'll use `get_replication_status` to get an overview of all replicas and agreements.\n\n"
+                        "**Step 2: Look for replication conflicts**\n"
+                        "I'll use `list_replication_conflicts` to find any conflict or glue entries that need resolution.\n\n"
+                        "**Step 3: Analyze replication lag**\n"
+                        "I'll use `check_replication_lag` to identify any sync delays between servers.\n\n"
+                        "**Step 4: Examine specific agreements if needed**\n"
+                        "I'll use `get_agreement_status` to dive deeper into any problematic agreements.\n\n"
+                        "Let me start by getting the replication status across your servers..."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def performance_investigation() -> List[PromptMessage]:
+            """Start a guided performance troubleshooting session."""
+
+            return [
+                PromptMessage(
+                    role="user",
+                    content="I need help investigating performance issues with my directory server.",
+                ),
+                PromptMessage(
+                    role="assistant",
+                    content=(
+                        "I'll help investigate performance issues. Here's my systematic approach:\n\n"
+                        "**Step 1: Get performance overview**\n"
+                        "I'll use `get_performance_summary` for a quick view of key metrics and any obvious issues.\n\n"
+                        "**Step 2: Check connection and operation load**\n"
+                        "I'll use `get_connection_statistics` and `get_operation_statistics` to understand the workload.\n\n"
+                        "**Step 3: Analyze cache efficiency**\n"
+                        "I'll use `get_cache_statistics` to check if cache sizes are adequate - low hit ratios cause disk I/O.\n\n"
+                        "**Step 4: Check thread utilization**\n"
+                        "I'll use `get_thread_statistics` to identify thread pool contention.\n\n"
+                        "**Step 5: Review resource usage**\n"
+                        "I'll use `get_resource_utilization` to check memory, CPU, and disk space.\n\n"
+                        "Let me start by getting a performance summary..."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def daily_health_check() -> List[PromptMessage]:
+            """Perform a comprehensive daily health check suitable for operations review."""
+
+            return [
+                PromptMessage(
+                    role="user",
+                    content="Please perform a daily health check of my directory infrastructure.",
+                ),
+                PromptMessage(
+                    role="assistant",
+                    content=(
+                        "I'll perform a comprehensive daily health check covering all critical areas:\n\n"
+                        "**1. Overall Health Assessment**\n"
+                        "I'll use `first_look` to get a complete health overview including:\n"
+                        "- Server connectivity\n"
+                        "- Connection/thread utilization\n"
+                        "- Replication status\n"
+                        "- Cache efficiency\n"
+                        "- Disk space\n"
+                        "- Certificate expiration\n\n"
+                        "**2. Detailed Health Checks**\n"
+                        "I'll use `run_healthcheck` to run the full lint suite for configuration issues.\n\n"
+                        "**3. Replication Verification** (if applicable)\n"
+                        "I'll check for any replication lag or conflicts.\n\n"
+                        "**4. Performance Baseline**\n"
+                        "I'll capture current performance metrics for trending.\n\n"
+                        "Let me start with the comprehensive health overview..."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def troubleshoot_connectivity() -> List[PromptMessage]:
+            """Start a guided session to troubleshoot connection issues."""
+
+            return [
+                PromptMessage(
+                    role="user",
+                    content="I'm having trouble connecting to my directory server or clients are reporting connection issues.",
+                ),
+                PromptMessage(
+                    role="assistant",
+                    content=(
+                        "I'll help troubleshoot connectivity issues. Let me check several areas:\n\n"
+                        "**Step 1: Basic connectivity check**\n"
+                        "I'll use `first_look` to verify server accessibility and basic health.\n\n"
+                        "**Step 2: Connection capacity analysis**\n"
+                        "I'll use `get_connection_statistics` to check:\n"
+                        "- Current connection count vs. limits\n"
+                        "- File descriptor utilization\n"
+                        "- Connection states (CLOSE_WAIT can indicate client issues)\n\n"
+                        "**Step 3: Thread availability**\n"
+                        "I'll use `get_thread_statistics` to see if thread exhaustion is causing connection issues.\n\n"
+                        "**Step 4: Resource constraints**\n"
+                        "I'll use `get_resource_utilization` to check for resource exhaustion.\n\n"
+                        "Let me start by checking basic connectivity..."
                     ),
                 ),
             ]
@@ -190,6 +313,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_monitoring_tools(self)
         register_search_tools(self)
         register_replication_tools(self)
+        register_performance_tools(self)
 
     # --------------------------------------------------------------------- #
     # Helper methods (used by tool modules)
