@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.config.loader import load_config
 from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
 from src.dirsrv_mcp.tools import (
+    register_config_tools,
     register_group_tools,
     register_health_tools,
     register_index_tools,
@@ -316,6 +317,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_replication_tools(self)
         register_performance_tools(self)
         register_index_tools(self)
+        register_config_tools(self)
 
     # --------------------------------------------------------------------- #
     # Helper methods (used by tool modules)
