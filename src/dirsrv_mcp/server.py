@@ -23,6 +23,7 @@ from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
 from src.dirsrv_mcp.tools import (
     register_group_tools,
     register_health_tools,
+    register_index_tools,
     register_monitoring_tools,
     register_performance_tools,
     register_replication_tools,
@@ -314,6 +315,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_search_tools(self)
         register_replication_tools(self)
         register_performance_tools(self)
+        register_index_tools(self)
 
     # --------------------------------------------------------------------- #
     # Helper methods (used by tool modules)
