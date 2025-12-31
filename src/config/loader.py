@@ -8,15 +8,16 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from src.dirsrv_mcp.connection import ConnectionManager, get_connection_manager
-from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig
+from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig, MCPSettings
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ServerListConfig:
-    """Configuration for multiple LDAP servers."""
+    """Configuration for multiple LDAP servers and MCP settings."""
     servers: List[LDAPServerConfig] = field(default_factory=list)
+    settings: MCPSettings = field(default_factory=MCPSettings)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -41,7 +42,11 @@ class ServerListConfig:
                 if s.use_ldapi:
                     server_dict["use_ldapi"] = s.use_ldapi
             server_list.append(server_dict)
-        return {"servers": server_list}
+        result = {"servers": server_list}
+        # Include settings if non-default
+        if self.settings.expose_sensitive_data:
+            result["settings"] = self.settings.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ServerListConfig":
@@ -49,7 +54,12 @@ class ServerListConfig:
         servers = []
         for server_data in data.get("servers", []):
             servers.append(_server_config_from_dict(server_data))
-        return cls(servers=servers)
+
+        # Load settings from config or environment
+        settings_data = data.get("settings", {})
+        settings = _settings_from_dict(settings_data)
+
+        return cls(servers=servers, settings=settings)
 
 
 def load_config(
@@ -274,3 +284,34 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
+    """Create MCPSettings from dictionary, with environment variable fallback.
+
+    Settings can come from:
+    1. JSON config file "settings" section
+    2. Environment variables (as fallback)
+
+    JSON format:
+    {
+        "settings": {
+            "expose_sensitive_data": true
+        }
+    }
+
+    Environment variables:
+        LDAP_MCP_EXPOSE_SENSITIVE_DATA: true/false
+    """
+    # Start with environment-based defaults
+    env_settings = MCPSettings.from_env()
+
+    # Override with config file values if present
+    if "expose_sensitive_data" in data:
+        expose = _coerce_bool(data["expose_sensitive_data"])
+    else:
+        expose = env_settings.expose_sensitive_data
+
+    return MCPSettings(
+        expose_sensitive_data=expose,
+    )

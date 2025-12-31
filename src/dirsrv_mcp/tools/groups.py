@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from lib389.idm.group import Groups
 
 from src.lib.datetime_utils import convert_datetimes_to_strings
+from src.lib.privacy import create_count_only_response
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
@@ -18,11 +19,21 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_all_groups(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
-        """List directory groups."""
+        """List directory groups.
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full group details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             groups = Groups(ds, base_dn)
+
+            # In privacy mode, return count only
+            if mcp.privacy_enabled:
+                count = sum(1 for _ in groups.list())
+                return create_count_only_response("group_list", srv, count, mcp.sanitizer)
+
             results = []
             count = 0
             for group in groups.list():

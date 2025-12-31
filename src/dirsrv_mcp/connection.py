@@ -192,16 +192,19 @@ class ConnectionManager:
 
             if config.use_ldapi:
                 # LDAPI connection: no password needed, uses SASL EXTERNAL
+                # Must provide explicit LDAPI URI - lib389 defaults to TCP if None
+                ldapi_uri = f"ldapi://%2Fvar%2Frun%2Fslapd-{config.serverid}.socket"
                 ds.local_simple_allocate(
                     serverid=config.serverid,
-                    ldapuri=None,  # Will use LDAPI socket
+                    ldapuri=ldapi_uri,
                     binddn=config.bind_dn or "cn=Directory Manager",
                     password=None,  # No password for LDAPI
                 )
                 logger.debug(
-                    "Using local_simple_allocate with LDAPI for %s (serverid=%s)",
+                    "Using local_simple_allocate with LDAPI for %s (serverid=%s, uri=%s)",
                     server_name,
                     config.serverid,
+                    ldapi_uri,
                 )
             else:
                 # Local with TCP connection

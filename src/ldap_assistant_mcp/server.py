@@ -1,14 +1,70 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 
-__all__ = ["LDAPAssistantMCP", "LDAPAuthMethod", "LDAPServerConfig"]
+__all__ = ["LDAPAssistantMCP", "LDAPAuthMethod", "LDAPServerConfig", "MCPSettings"]
+
+
+@dataclass
+class MCPSettings:
+    """Settings controlling MCP server behavior.
+
+    Privacy and security settings that control what information is exposed
+    through MCP tool outputs. By default, sensitive information is redacted
+    to prevent accidental exposure to AI agents/LLMs.
+
+    Attributes:
+        expose_sensitive_data: When False (default), sensitive data is redacted
+            from all tool outputs. This includes:
+            - User/group DNs and names
+            - Hostnames and server names
+            - Configuration values (bind DNs, paths, etc.)
+            - Replication agreement targets
+            - Suffixes and base DNs
+            When True, full data is exposed (use only in trusted environments).
+
+        # Future settings (commented placeholders):
+        # allow_write_operations: Enable tools that modify directory data
+        # allow_task_operations: Enable tools that run server tasks
+    """
+
+    expose_sensitive_data: bool = False
+
+    # Future: Allow write/modify operations (create users, modify config, etc.)
+    # allow_write_operations: bool = False
+
+    # Future: Allow task execution (reindex, backup, export, import, etc.)
+    # allow_task_operations: bool = False
+
+    @classmethod
+    def from_env(cls) -> "MCPSettings":
+        """Create settings from environment variables.
+
+        Environment variables:
+            LDAP_MCP_EXPOSE_SENSITIVE_DATA: true/false (default: false)
+            # LDAP_MCP_ALLOW_WRITE_OPERATIONS: true/false (default: false)
+            # LDAP_MCP_ALLOW_TASK_OPERATIONS: true/false (default: false)
+        """
+        expose_env = os.environ.get("LDAP_MCP_EXPOSE_SENSITIVE_DATA", "")
+        expose_sensitive = str(expose_env).lower() in {"1", "true", "yes", "on"}
+
+        return cls(
+            expose_sensitive_data=expose_sensitive,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert settings to dictionary."""
+        return {
+            "expose_sensitive_data": self.expose_sensitive_data,
+            # "allow_write_operations": self.allow_write_operations,
+            # "allow_task_operations": self.allow_task_operations,
+        }
 
 
 class LDAPAuthMethod(str, Enum):

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import ldap
 from fastmcp.exceptions import ToolError
 
+from src.lib.privacy import create_privacy_error
+
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
@@ -25,7 +27,15 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
         limit: int = 100,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Perform a generic LDAP search."""
+        """Perform a generic LDAP search.
+
+        Note: This tool is disabled in privacy mode (default) as it can
+        retrieve arbitrary directory data. Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true
+        to enable.
+        """
+        # Disabled in privacy mode - can retrieve any data
+        if mcp.privacy_enabled:
+            return create_privacy_error("ldap_search")
         target = str(server_name) if server_name is not None else mcp.default_server
         with mcp._connection(target) as (srv, ds):
             try:

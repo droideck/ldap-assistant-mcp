@@ -188,3 +188,108 @@ value = obj.get_attr_val_int("nsslapd-threadnumber")
 ```
 
 Don't duplicate helpers across tool modules.
+
+## Version-Agnostic Design
+
+Tools must work across all 389 Directory Server versions. Follow these principles:
+
+### Dynamic Data Retrieval
+
+Prefer dynamic attribute fetching over hardcoded lists:
+
+```python
+# GOOD - works across all versions
+all_attrs = config.get_all_attrs()
+for attr, values in all_attrs.items():
+    if pattern and pattern.lower() not in attr.lower():
+        continue
+    result[attr] = normalize_value(values)
+
+# BAD - may miss attributes in newer/older versions
+HARDCODED_ATTRS = ["nsslapd-port", "nsslapd-security", ...]
+for attr in HARDCODED_ATTRS:
+    result[attr] = config.get_attr_val_utf8(attr)
+```
+
+### Acceptable Hardcoded Elements
+
+Some hardcoded values are acceptable when they represent **universal best practices**:
+
+| Category | Example | Rationale |
+|----------|---------|-----------|
+| Recommended indexes | `uid`, `cn`, `mail`, `member` | RFC standard attributes |
+| Index types | `eq`, `pres`, `sub`, `approx` | LDAP spec, won't change |
+| Industry thresholds | 95% disk critical, 85% warning | Universal ops standards |
+| Certificate warnings | 30 days, 7 days | Industry best practice |
+| Cache health | 70%+ hit ratio = acceptable | Performance best practice |
+
+### lib389 Handles Version Differences
+
+Trust lib389 to handle version-specific logic internally:
+
+```python
+# GOOD - lib389 handles role enum across versions
+from lib389._constants import ReplicaRole
+role = replica.get_role()  # Returns ReplicaRole enum
+
+# GOOD - lib389 status colors are version-independent
+status = agmt.get_agmt_status(return_json=True)
+if status.get("state") == "red":  # lib389's internal indicator
+    ...
+```
+
+### Separation of Concerns
+
+**Tools provide data** - LLMs provide situational analysis:
+
+```python
+# GOOD - Return raw metrics, let LLM contextualize
+return {
+    "type": "cache_statistics",
+    "entry_cache_hit_ratio": 65.4,
+    "entry_cache_tries": 50000,
+    "findings": findings,  # Universal threshold violations only
+}
+
+# BAD - Making situational recommendations in tools
+if hit_ratio < 90 and workload_type == "read_heavy":
+    recommendations.append("Consider increasing cache")  # Situational!
+```
+
+### Pattern-Based Filtering
+
+Use flexible patterns instead of fixed categories:
+
+```python
+# GOOD - Flexible pattern matching
+def get_server_configuration(
+    pattern: Optional[str] = None,  # e.g., "cache", "security", "port"
+    server_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    all_attrs = config.get_all_attrs()
+    for attr, values in all_attrs.items():
+        if pattern and pattern.lower() not in attr.lower():
+            continue
+        ...
+
+# BAD - Fixed sections that may not match all versions
+SECTIONS = {
+    "cache": ["nsslapd-cachememsize", "nsslapd-cachesize"],  # May be incomplete
+    ...
+}
+```
+
+### Error Resilience
+
+Handle missing attributes gracefully:
+
+```python
+# GOOD - Safe retrieval with fallbacks
+from src.lib.value_utils import safe_int, safe_float
+
+value = safe_int(status.get("some_attribute"))  # Returns 0 if missing
+ratio = safe_float(status.get("hit_ratio"))     # Returns 0.0 if missing
+
+# BAD - Assumes attribute exists
+value = int(status["some_attribute"])  # KeyError if missing in some versions
+```

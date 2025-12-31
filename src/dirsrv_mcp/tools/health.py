@@ -26,6 +26,135 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.connection import ServerConfig
     from src.dirsrv_mcp.server import DirSrvMCP
 
+
+def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize health check result for privacy mode."""
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize server lists
+    if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
+        sanitized["servers_checked"] = [
+            sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
+        ]
+    if "servers_failed" in sanitized and isinstance(sanitized["servers_failed"], list):
+        sanitized["servers_failed"] = [
+            sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
+        ]
+
+    # Sanitize findings
+    if "findings" in sanitized and isinstance(sanitized["findings"], list):
+        sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
+
+    # Sanitize metrics (contains server names, backend names, hostnames)
+    if "metrics" in sanitized and isinstance(sanitized["metrics"], dict):
+        sanitized["metrics"] = _sanitize_metrics(sanitizer, sanitized["metrics"])
+
+    if "detailed_metrics" in sanitized and isinstance(sanitized["detailed_metrics"], dict):
+        sanitized["detailed_metrics"] = _sanitize_metrics(sanitizer, sanitized["detailed_metrics"])
+
+    return sanitized
+
+
+def _sanitize_metrics(sanitizer, metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize metrics dictionary."""
+    result = {}
+    for server_name, server_data in metrics.items():
+        anon_server = sanitizer.sanitize_server_name(server_name)
+        if isinstance(server_data, dict):
+            result[anon_server] = _sanitize_server_metrics(sanitizer, server_data)
+        else:
+            result[anon_server] = server_data
+    return result
+
+
+def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize server-level metrics."""
+    result = {}
+    for key, value in data.items():
+        if key == "server":
+            result[key] = sanitizer.sanitize_server_name(value)
+        elif key == "replication" and isinstance(value, dict):
+            result[key] = _sanitize_replication_metrics(sanitizer, value)
+        elif key == "cache" and isinstance(value, dict):
+            result[key] = _sanitize_cache_metrics(sanitizer, value)
+        elif key == "disk" and isinstance(value, dict):
+            result[key] = _sanitize_disk_metrics(sanitizer, value)
+        elif key == "certificates" and isinstance(value, dict):
+            result[key] = _sanitize_cert_metrics(value)
+        else:
+            # Keep numeric metrics and status flags
+            result[key] = value
+    return result
+
+
+def _sanitize_replication_metrics(sanitizer, repl: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize replication metrics."""
+    result = dict(repl)
+    if "agreements" in result and isinstance(result["agreements"], list):
+        result["agreements"] = [
+            {
+                "name": "[agreement]",
+                "consumer": sanitizer.sanitize_hostname(a.get("consumer")),
+                "suffix": sanitizer.sanitize_suffix(a.get("suffix")),
+            }
+            for a in result["agreements"]
+        ]
+    return result
+
+
+def _sanitize_cache_metrics(sanitizer, cache: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize cache metrics."""
+    result = dict(cache)
+    if "backends" in result and isinstance(result["backends"], list):
+        result["backends"] = [
+            {
+                "name": "[backend]",
+                "entry_cache_hit_ratio": b.get("entry_cache_hit_ratio"),
+                "entry_cache_tries": b.get("entry_cache_tries"),
+            }
+            for b in result["backends"]
+        ]
+    return result
+
+
+def _sanitize_disk_metrics(sanitizer, disk: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize disk metrics."""
+    result = dict(disk)
+    if "partitions" in result and isinstance(result["partitions"], list):
+        result["partitions"] = [
+            {
+                "partition": "[partition]",
+                "usage_percent": p.get("usage_percent"),
+                "size": p.get("size"),
+                "available": p.get("available"),
+            }
+            for p in result["partitions"]
+        ]
+    return result
+
+
+def _sanitize_cert_metrics(certs: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize certificate metrics."""
+    result = dict(certs)
+    if "certs" in result and isinstance(result["certs"], list):
+        result["certs"] = [
+            {
+                "subject": "[certificate]",
+                "type": c.get("type"),
+                "days_until_expiry": c.get("days_until_expiry"),
+            }
+            for c in result["certs"]
+        ]
+    return result
+
 # Check UIDs that ONLY work with local servers (require filesystem or NSS access)
 # These are the lint_uid() values returned by the check objects
 LOCAL_ONLY_CHECK_UIDS = {
@@ -346,7 +475,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         }
 
         mcp.logger.info("first_look completed: %s", summary)
-        return result
+        return _sanitize_health_result(mcp, result)
 
     @mcp.tool()
     def list_healthcheck_errors() -> Dict[str, Any]:
@@ -397,20 +526,20 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                         "check": method,
                     })
 
-            return {
+            return _sanitize_health_result(mcp, {
                 "type": "healthcheck_list",
                 "server": target,
                 "total_count": len(checks),
                 "checks": checks,
                 "categories": sorted(targets.keys()),
-            }
+            })
         except Exception as e:
-            return {
+            return _sanitize_health_result(mcp, {
                 "type": "healthcheck_list",
                 "server": target,
                 "error": str(e),
                 "checks": [],
-            }
+            })
         finally:
             if ds:
                 try:
@@ -567,11 +696,11 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                     "Configure the server with is_local=True and serverid=<instance> to enable these checks."
                 )
 
-            return result
+            return _sanitize_health_result(mcp, result)
 
         except Exception as e:
             mcp.logger.error("run_healthcheck failed: %s", e)
-            return {
+            return _sanitize_health_result(mcp, {
                 "type": "healthcheck",
                 "server": target,
                 "error": str(e),
@@ -586,7 +715,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     )
                 ],
-            }
+            })
         finally:
             if ds:
                 try:

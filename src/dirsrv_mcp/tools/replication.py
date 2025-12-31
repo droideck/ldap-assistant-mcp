@@ -19,6 +19,108 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize replication result for privacy mode."""
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize replicas list
+    if "replicas" in sanitized and isinstance(sanitized["replicas"], list):
+        sanitized["replicas"] = [sanitizer.sanitize_replica(r) for r in sanitized["replicas"]]
+
+    # Sanitize servers list (topology)
+    if "servers" in sanitized and isinstance(sanitized["servers"], list):
+        sanitized["servers"] = [sanitizer.sanitize_server_info(s) for s in sanitized["servers"]]
+
+    # Sanitize agreements list
+    if "agreements" in sanitized and isinstance(sanitized["agreements"], list):
+        sanitized["agreements"] = [sanitizer.sanitize_agreement(a) for a in sanitized["agreements"]]
+
+    # Sanitize lag_data
+    if "lag_data" in sanitized and isinstance(sanitized["lag_data"], list):
+        sanitized["lag_data"] = [sanitizer.sanitize_agreement(a) for a in sanitized["lag_data"]]
+
+    # Sanitize findings
+    if "findings" in sanitized and isinstance(sanitized["findings"], list):
+        sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
+
+    # Sanitize suffixes dict
+    if "suffixes" in sanitized and isinstance(sanitized["suffixes"], dict):
+        new_suffixes = {}
+        for suffix, data in sanitized["suffixes"].items():
+            anon_suffix = sanitizer.sanitize_suffix(suffix)
+            new_data = {}
+            for key, servers in data.items():
+                if isinstance(servers, list):
+                    new_data[key] = [sanitizer.sanitize_server_name(s) for s in servers]
+                else:
+                    new_data[key] = servers
+            new_suffixes[anon_suffix] = new_data
+        sanitized["suffixes"] = new_suffixes
+
+    # Sanitize suffix_filter
+    if "suffix_filter" in sanitized and sanitized["suffix_filter"]:
+        sanitized["suffix_filter"] = sanitizer.sanitize_suffix(sanitized["suffix_filter"])
+
+    # Sanitize suffixes_checked
+    if "suffixes_checked" in sanitized and isinstance(sanitized["suffixes_checked"], list):
+        sanitized["suffixes_checked"] = [
+            sanitizer.sanitize_suffix(s) for s in sanitized["suffixes_checked"]
+        ]
+
+    # Sanitize servers lists
+    if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
+        sanitized["servers_checked"] = [
+            sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
+        ]
+    if "servers_failed" in sanitized and isinstance(sanitized["servers_failed"], list):
+        sanitized["servers_failed"] = [
+            sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
+        ]
+
+    # Sanitize conflicts and glue entries
+    if "conflicts" in sanitized and isinstance(sanitized["conflicts"], list):
+        sanitized["conflicts"] = [
+            {
+                **c,
+                "dn": sanitizer.sanitize_dn(c.get("dn")),
+                "suffix": sanitizer.sanitize_suffix(c.get("suffix")),
+                "valid_entry_dn": sanitizer.sanitize_dn(c.get("valid_entry_dn")) if c.get("valid_entry_dn") else None,
+            }
+            for c in sanitized["conflicts"]
+        ]
+    if "glue_entries" in sanitized and isinstance(sanitized["glue_entries"], list):
+        sanitized["glue_entries"] = [
+            {
+                **g,
+                "dn": sanitizer.sanitize_dn(g.get("dn")),
+                "suffix": sanitizer.sanitize_suffix(g.get("suffix")),
+            }
+            for g in sanitized["glue_entries"]
+        ]
+
+    # Sanitize filter
+    if "filter" in sanitized and isinstance(sanitized["filter"], dict):
+        new_filter = {}
+        for key, value in sanitized["filter"].items():
+            if key == "suffix" and value:
+                new_filter[key] = sanitizer.sanitize_suffix(value)
+            elif key == "agreement_name" and value:
+                new_filter[key] = "[agreement]"
+            else:
+                new_filter[key] = value
+        sanitized["filter"] = new_filter
+
+    return sanitized
+
+
 def _role_to_string(role: ReplicaRole) -> str:
     """Convert ReplicaRole enum to readable string."""
     role_map = {
@@ -111,7 +213,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             replicas_list = replicas_obj.list()
 
             if not replicas_list:
-                return {
+                return _sanitize_replication_result(mcp, {
                     "type": "replication_status",
                     "server": target,
                     "summary": "No replication configured",
@@ -126,7 +228,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                             server=target,
                         )
                     ],
-                }
+                })
 
             findings: List[Dict[str, Any]] = []
             replicas_data = []
@@ -262,7 +364,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             else:
                 summary = f"HEALTHY: {len(replicas_data)} replica(s) with {total_agreements} agreement(s) operating normally"
 
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_status",
                 "server": target,
                 "summary": summary,
@@ -270,11 +372,11 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "total_agreements": total_agreements,
                 "replicas": replicas_data,
                 "findings": findings,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error getting replication status: %s", e)
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_status",
                 "server": target,
                 "error": str(e),
@@ -290,7 +392,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     )
                 ],
-            }
+            })
         finally:
             if ds:
                 try:
@@ -456,7 +558,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         topology["servers_checked"] = servers_checked
         topology["servers_failed"] = servers_failed
 
-        return topology
+        return _sanitize_replication_result(mcp, topology)
 
     @mcp.tool()
     def check_replication_lag(
@@ -493,12 +595,12 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             replicas_list = replicas_obj.list()
 
             if not replicas_list:
-                return {
+                return _sanitize_replication_result(mcp, {
                     "type": "replication_lag",
                     "server": target,
                     "summary": "No replication configured",
                     "lag_data": [],
-                }
+                })
 
             lag_data = []
             findings = []
@@ -601,7 +703,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             else:
                 summary = "No outbound replication agreements found"
 
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_lag",
                 "server": target,
                 "suffix_filter": suffix,
@@ -611,16 +713,16 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "error_count": error_count,
                 "lag_data": lag_data,
                 "findings": findings,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error checking replication lag: %s", e)
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_lag",
                 "server": target,
                 "error": str(e),
                 "lag_data": [],
-            }
+            })
         finally:
             if ds:
                 try:
@@ -674,13 +776,13 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         pass
 
             if not suffixes_to_check:
-                return {
+                return _sanitize_replication_result(mcp, {
                     "type": "replication_conflicts",
                     "server": target,
                     "summary": "No replicated suffixes found",
                     "conflicts": [],
                     "glue_entries": [],
-                }
+                })
 
             all_conflicts = []
             all_glue = []
@@ -764,7 +866,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             else:
                 summary = f"ISSUES FOUND: {len(all_conflicts)} conflicts, {len(all_glue)} glue entries"
 
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_conflicts",
                 "server": target,
                 "summary": summary,
@@ -774,17 +876,17 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "conflicts": all_conflicts,
                 "glue_entries": all_glue,
                 "findings": findings,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error searching for conflicts: %s", e)
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "replication_conflicts",
                 "server": target,
                 "error": str(e),
                 "conflicts": [],
                 "glue_entries": [],
-            }
+            })
         finally:
             if ds:
                 try:
@@ -830,12 +932,12 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             replicas_list = replicas_obj.list()
 
             if not replicas_list:
-                return {
+                return _sanitize_replication_result(mcp, {
                     "type": "agreement_status",
                     "server": target,
                     "summary": "No replication configured",
                     "agreements": [],
-                }
+                })
 
             agreements_data = []
             findings = []
@@ -912,7 +1014,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             else:
                 summary = "No agreements found matching criteria"
 
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "agreement_status",
                 "server": target,
                 "summary": summary,
@@ -925,16 +1027,16 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "warning_count": warning_count,
                 "agreements": agreements_data,
                 "findings": findings,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error getting agreement status: %s", e)
-            return {
+            return _sanitize_replication_result(mcp, {
                 "type": "agreement_status",
                 "server": target,
                 "error": str(e),
                 "agreements": [],
-            }
+            })
         finally:
             if ds:
                 try:
