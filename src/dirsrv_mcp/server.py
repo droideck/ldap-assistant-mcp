@@ -24,6 +24,7 @@ from src.dirsrv_mcp.tools import (
     register_group_tools,
     register_health_tools,
     register_monitoring_tools,
+    register_performance_tools,
     register_replication_tools,
     register_search_tools,
     register_user_tools,
@@ -117,6 +118,13 @@ class DirSrvMCP(LDAPAssistantMCP):
                         "**Health & Diagnostics:**\n"
                         "- first_look: Quick health overview across all servers.\n"
                         "- run_healthcheck: Comprehensive health checks.\n\n"
+                        "**Performance:**\n"
+                        "- get_performance_summary: Combined performance overview.\n"
+                        "- get_cache_statistics: Entry/DN/DB cache analysis.\n"
+                        "- get_connection_statistics: Connection patterns and FD usage.\n"
+                        "- get_operation_statistics: Operation counts by type.\n"
+                        "- get_thread_statistics: Thread pool utilization.\n"
+                        "- get_resource_utilization: Memory, CPU, disk usage.\n\n"
                         "**Replication:**\n"
                         "- get_replication_status: Comprehensive replica and agreement status.\n"
                         "- get_replication_topology: Map topology across all servers.\n"
@@ -190,6 +198,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_monitoring_tools(self)
         register_search_tools(self)
         register_replication_tools(self)
+        register_performance_tools(self)
 
     # --------------------------------------------------------------------- #
     # Helper methods (used by tool modules)

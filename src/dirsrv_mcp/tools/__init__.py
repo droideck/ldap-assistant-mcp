@@ -6,6 +6,7 @@ from src.dirsrv_mcp.tools.groups import register_group_tools
 from src.dirsrv_mcp.tools.monitoring import register_monitoring_tools
 from src.dirsrv_mcp.tools.search import register_search_tools
 from src.dirsrv_mcp.tools.replication import register_replication_tools
+from src.dirsrv_mcp.tools.performance import register_performance_tools
 
 __all__ = [
     "register_health_tools",
@@ -14,5 +15,6 @@ __all__ = [
     "register_monitoring_tools",
     "register_search_tools",
     "register_replication_tools",
+    "register_performance_tools",
 ]
 
