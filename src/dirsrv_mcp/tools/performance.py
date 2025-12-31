@@ -3,6 +3,16 @@
 This module provides comprehensive performance monitoring and diagnostic capabilities
 including cache analysis, connection statistics, operation metrics, thread utilization,
 and resource usage analysis.
+
+Note on local vs remote servers:
+- Most metrics are available via LDAP from cn=monitor and work for remote servers
+- Some metrics require local server access (is_local=True with serverid):
+  - Process memory/CPU usage (via psutil)
+  - Disk space monitoring (via MonitorDiskSpace)
+  - Connection state details (ESTABLISHED, CLOSE_WAIT, etc.)
+
+When a server is remote, these local-only metrics will show as unavailable
+rather than failing the entire tool.
 """
 
 from __future__ import annotations
@@ -12,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from lib389.backend import Backends
 from lib389.monitor import Monitor, MonitorLDBM, MonitorDiskSpace, MonitorSNMP
 
+from src.dirsrv_mcp.connection import is_local_server
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -747,15 +758,23 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         Returns resource utilization including memory, CPU, and disk usage
         with health assessments and recommendations.
 
+        **Note:** Some metrics require local server access (is_local=True):
+        - Process memory (RSS, VMS, swap) - requires psutil access
+        - CPU utilization - requires psutil access
+        - Disk space - requires file system access
+
+        For remote servers, these metrics will show as "unavailable" but
+        server uptime (from cn=monitor) will still be reported.
+
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
             Resource metrics including:
-            - Memory usage (RSS, VMS, swap)
-            - CPU utilization
-            - Disk space for database paths
-            - Server uptime
+            - Memory usage (RSS, VMS, swap) - LOCAL ONLY
+            - CPU utilization - LOCAL ONLY
+            - Disk space for database paths - LOCAL ONLY
+            - Server uptime - available for all servers
         """
         target = server_name or mcp.default_server
         if not target:
@@ -770,19 +789,41 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
 
-            # Get uptime info from cn=monitor
+            # Check if this is a local server
+            is_local = is_local_server(mcp.connection_manager, target)
+
+            # Get uptime info from cn=monitor (works for all servers)
             try:
                 status = monitor.get_attrs_vals_utf8(['starttime', 'currenttime'])
             except Exception as e:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
 
-            # Get resource stats (may fail for remote connections)
-            try:
-                resource_stats = monitor.get_resource_stats()
-            except Exception as e:
-                mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
-                resource_stats = {}
+            # Get resource stats (requires local server with psutil access)
+            resource_stats = {}
+            local_metrics_available = False
+            if is_local:
+                try:
+                    resource_stats = monitor.get_resource_stats()
+                    local_metrics_available = True
+                except Exception as e:
+                    mcp.logger.debug("Resource stats unavailable: %s", e)
+            else:
+                mcp.logger.debug("Skipping resource stats - server is remote")
+                findings.append(
+                    format_finding(
+                        title="Limited Metrics Available",
+                        severity=Severity.INFO,
+                        impact="Process memory, CPU, and disk metrics require local server access",
+                        details=(
+                            f"Server '{target}' is configured as remote. "
+                            "To enable full resource metrics, configure the server with "
+                            "is_local=True and serverid=<instance>."
+                        ),
+                        remediation="Configure local server access if this server runs on the same host",
+                        server=target,
+                    )
+                )
 
             # Memory stats (will be 0 for remote connections)
             rss = _safe_int(resource_stats.get("rss"))
@@ -811,23 +852,27 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             resource_data = {
                 "type": "resource_utilization",
                 "server": target,
-                "server_status": server_status,
+                "is_local": is_local,
+                "local_metrics_available": local_metrics_available,
+                "server_status": server_status if local_metrics_available else "unknown (remote)",
                 "memory": {
-                    "rss": rss,
-                    "rss_human": _format_bytes(rss),
-                    "rss_percent": mem_rss_pct,
-                    "vms": vms,
-                    "vms_human": _format_bytes(vms),
-                    "vms_percent": mem_vms_pct,
-                    "swap": swap,
-                    "swap_human": _format_bytes(swap),
-                    "swap_percent": mem_swap_pct,
-                    "total_system": total_mem,
-                    "total_system_human": _format_bytes(total_mem),
+                    "available": local_metrics_available,
+                    "rss": rss if local_metrics_available else None,
+                    "rss_human": _format_bytes(rss) if local_metrics_available else "N/A (requires local access)",
+                    "rss_percent": mem_rss_pct if local_metrics_available else None,
+                    "vms": vms if local_metrics_available else None,
+                    "vms_human": _format_bytes(vms) if local_metrics_available else "N/A (requires local access)",
+                    "vms_percent": mem_vms_pct if local_metrics_available else None,
+                    "swap": swap if local_metrics_available else None,
+                    "swap_human": _format_bytes(swap) if local_metrics_available else "N/A (requires local access)",
+                    "swap_percent": mem_swap_pct if local_metrics_available else None,
+                    "total_system": total_mem if local_metrics_available else None,
+                    "total_system_human": _format_bytes(total_mem) if local_metrics_available else "N/A (requires local access)",
                 },
                 "cpu": {
-                    "usage_percent": cpu_usage,
-                    "process_threads": total_threads,
+                    "available": local_metrics_available,
+                    "usage_percent": cpu_usage if local_metrics_available else None,
+                    "process_threads": total_threads if local_metrics_available else None,
                 },
                 "uptime": {
                     "start_time": start_time,
@@ -835,53 +880,59 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 },
             }
 
-            # Get disk space info
-            try:
-                disk_monitor = MonitorDiskSpace(ds)
-                disks = disk_monitor.get_disks()
-                disk_info = []
-                for disk in disks:
-                    parts = disk.split()
-                    disk_entry = {}
-                    for part in parts:
-                        if "=" in part:
-                            key, val = part.split("=", 1)
-                            disk_entry[key.lower()] = val.strip('"')
-                    disk_info.append(disk_entry)
+            # Get disk space info (requires local access)
+            if not is_local:
+                resource_data["disk"] = {
+                    "available": False,
+                    "message": "Disk monitoring requires local server access (is_local=True)",
+                }
+            else:
+                try:
+                    disk_monitor = MonitorDiskSpace(ds)
+                    disks = disk_monitor.get_disks()
+                    disk_info = []
+                    for disk in disks:
+                        parts = disk.split()
+                        disk_entry = {}
+                        for part in parts:
+                            if "=" in part:
+                                key, val = part.split("=", 1)
+                                disk_entry[key.lower()] = val.strip('"')
+                        disk_info.append(disk_entry)
 
-                    # Check disk usage
-                    pct = _safe_int(disk_entry.get("percent", "0"))
-                    partition = disk_entry.get("partition", "unknown")
-                    if pct >= 90:
-                        findings.append(
-                            format_finding(
-                                title=f"Critical Disk Usage: {partition}",
-                                severity=Severity.CRITICAL,
-                                impact=f"Partition {partition} is {pct}% full",
-                                details="Server may fail if disk fills completely",
-                                remediation="Free up disk space or expand storage immediately",
-                                server=target,
-                                metadata={"partition": partition, "usage": pct},
+                        # Check disk usage
+                        pct = _safe_int(disk_entry.get("percent", "0"))
+                        partition = disk_entry.get("partition", "unknown")
+                        if pct >= 90:
+                            findings.append(
+                                format_finding(
+                                    title=f"Critical Disk Usage: {partition}",
+                                    severity=Severity.CRITICAL,
+                                    impact=f"Partition {partition} is {pct}% full",
+                                    details="Server may fail if disk fills completely",
+                                    remediation="Free up disk space or expand storage immediately",
+                                    server=target,
+                                    metadata={"partition": partition, "usage": pct},
+                                )
                             )
-                        )
-                    elif pct >= 80:
-                        findings.append(
-                            format_finding(
-                                title=f"High Disk Usage: {partition}",
-                                severity=Severity.HIGH,
-                                impact=f"Partition {partition} is {pct}% full",
-                                details="Disk is filling up and needs attention",
-                                remediation="Plan for disk space cleanup or expansion",
-                                server=target,
-                                metadata={"partition": partition, "usage": pct},
+                        elif pct >= 80:
+                            findings.append(
+                                format_finding(
+                                    title=f"High Disk Usage: {partition}",
+                                    severity=Severity.HIGH,
+                                    impact=f"Partition {partition} is {pct}% full",
+                                    details="Disk is filling up and needs attention",
+                                    remediation="Plan for disk space cleanup or expansion",
+                                    server=target,
+                                    metadata={"partition": partition, "usage": pct},
+                                )
                             )
-                        )
 
-                resource_data["disk"] = disk_info
+                    resource_data["disk"] = {"available": True, "partitions": disk_info}
 
-            except Exception as e:
-                mcp.logger.warning("Error getting disk stats: %s", e)
-                resource_data["disk"] = {"error": str(e)}
+                except Exception as e:
+                    mcp.logger.warning("Error getting disk stats: %s", e)
+                    resource_data["disk"] = {"available": False, "error": str(e)}
 
             # Check for memory issues
             if mem_rss_pct > 80:

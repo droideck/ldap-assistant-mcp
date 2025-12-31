@@ -17,7 +17,23 @@ __all__ = [
     "ConnectionManager",
     "get_connection_manager",
     "get_connection",
+    "is_local_server",
+    "require_local_server",
+    "LocalServerRequired",
 ]
+
+
+class LocalServerRequired(Exception):
+    """Raised when a local server is required but a remote connection is used."""
+
+    def __init__(self, feature: str, server_name: str):
+        self.feature = feature
+        self.server_name = server_name
+        super().__init__(
+            f"'{feature}' requires a local server configuration. "
+            f"Server '{server_name}' is configured as remote. "
+            f"To enable local features, configure the server with is_local=True and serverid=<instance>."
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -259,3 +275,48 @@ def get_connection(server_name: str = "default") -> DirSrv:
     if server_name not in manager.get_server_names():
         manager.add_server(ServerConfig.from_env(name=server_name))
     return manager.connect(server_name)
+
+
+def is_local_server(manager: ConnectionManager, server_name: str) -> bool:
+    """Check if a server is configured as local.
+
+    Local servers have access to:
+    - Log files (access, error, audit)
+    - File system checks
+    - Process metrics (CPU, memory via psutil)
+    - DSE.ldif for offline config
+    - NSS certificate database
+
+    Args:
+        manager: The connection manager
+        server_name: Name of the server to check
+
+    Returns:
+        True if the server is configured with is_local=True and has a serverid
+    """
+    try:
+        config = manager.get_config(server_name)
+        return config.is_local and config.serverid is not None
+    except KeyError:
+        return False
+
+
+def require_local_server(
+    manager: ConnectionManager,
+    server_name: str,
+    feature: str,
+) -> None:
+    """Raise LocalServerRequired if the server is not local.
+
+    Use this at the start of tools that require local server access.
+
+    Args:
+        manager: The connection manager
+        server_name: Name of the server to check
+        feature: Description of the feature requiring local access
+
+    Raises:
+        LocalServerRequired: If the server is not configured as local
+    """
+    if not is_local_server(manager, server_name):
+        raise LocalServerRequired(feature, server_name)

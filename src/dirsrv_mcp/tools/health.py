@@ -18,11 +18,22 @@ from lib389.plugins import MemberOfPlugin, ReferentialIntegrityPlugin
 from lib389.replica import Replica, Replicas
 from lib389.tunables import Tunables
 
+from src.dirsrv_mcp.connection import is_local_server
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.connection import ServerConfig
     from src.dirsrv_mcp.server import DirSrvMCP
+
+# Check UIDs that ONLY work with local servers (require filesystem or NSS access)
+# These are the lint_uid() values returned by the check objects
+LOCAL_ONLY_CHECK_UIDS = {
+    "fschecks",           # FSChecks - file system permission checks
+    "monitor-disk-space", # MonitorDiskSpace - disk space monitoring
+    "dseldif",            # DSEldif - DSE.ldif configuration access
+    "tls",                # NssSsl - certificate database access (uses "tls" uid)
+    "logs",               # DirsrvAccessLog - access log analysis
+}
 
 
 # Check objects that can perform lint operations (mirrors lib389 CHECK_OBJECTS)
@@ -172,8 +183,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         - Connection and thread utilization
         - Replication status and errors
         - Cache efficiency (entry cache hit ratios)
-        - Disk space usage
-        - SSL certificate expiration
+        - Disk space usage (local servers only)
+        - SSL certificate expiration (local servers only)
+
+        **Note on local vs remote servers:**
+        Most checks work via LDAP and are available for all servers. However, the
+        following require local server access (is_local=True with serverid):
+        - Disk space monitoring (requires filesystem access)
+        - Certificate expiration checking (requires NSS database access)
+
+        For remote servers, these metrics will show as unavailable in the response.
 
         Returns prioritized findings with severity levels and actionable recommendations.
         This should be the first tool called when investigating directory issues.
@@ -410,6 +429,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         examining configuration, backends, security, replication, plugins,
         certificates, disk space, and more.
 
+        **Note on local vs remote servers:**
+        Some checks require local server access (is_local=True with serverid):
+        - fschecks: File system permission checks
+        - monitor-disk-space: Disk space monitoring
+        - dseldif: DSE.ldif configuration access
+        - tls: Certificate database access (requires certutil)
+        - logs: Access log analysis
+
+        For remote servers, these checks will be automatically skipped.
+
         Args:
             checks: Optional list of specific checks to run (e.g., ['config:*', 'backends:mappingtree']).
                     Use '*' as wildcard. If not specified, runs all available checks.
@@ -422,6 +451,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             - Summary of issues found by severity
             - Detailed findings with error codes, descriptions, and remediation steps
             - List of checks that were run
+            - List of checks skipped (including local-only checks for remote servers)
         """
         target = server_name or mcp.default_server
         if not target:
@@ -435,6 +465,9 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         try:
             ds = mcp.connection_manager.connect(target)
             targets = _list_check_targets(ds)
+
+            # Check if this is a local server
+            is_local = is_local_server(mcp.connection_manager, target)
 
             # Determine which checks to run
             if checks:
@@ -454,6 +487,18 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 for spec in exclude_checks:
                     for uid, method, _ in _expand_check_spec(targets, spec):
                         excluded.add(f"{uid}:{method}")
+
+            # For remote servers, automatically exclude local-only checks
+            local_only_skipped = []
+            if not is_local:
+                for uid, target_info in targets.items():
+                    # Check if this uid matches any local-only check
+                    if uid.lower() in LOCAL_ONLY_CHECK_UIDS:
+                        for method in target_info["methods"]:
+                            check_id = f"{uid}:{method}"
+                            if check_id not in excluded:
+                                excluded.add(check_id)
+                                local_only_skipped.append(check_id)
 
             # Run checks
             raw_results = []
@@ -496,9 +541,10 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
             mcp.logger.info("run_healthcheck completed: %s", summary)
 
-            return {
+            result = {
                 "type": "healthcheck",
                 "server": target,
+                "is_local": is_local,
                 "summary": summary,
                 "critical_count": severity_counts["critical"],
                 "high_count": severity_counts["high"],
@@ -511,6 +557,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 "checks_skipped": checks_skipped,
                 "total_checks_run": len(checks_executed),
             }
+
+            # Add local-only skipped checks info for remote servers
+            if local_only_skipped:
+                result["local_only_checks_skipped"] = local_only_skipped
+                result["local_only_note"] = (
+                    f"Skipped {len(local_only_skipped)} check(s) that require local server access. "
+                    "Configure the server with is_local=True and serverid=<instance> to enable these checks."
+                )
+
+            return result
 
         except Exception as e:
             mcp.logger.error("run_healthcheck failed: %s", e)
@@ -549,12 +605,16 @@ def _check_server_health(
     """Check comprehensive health metrics for a single server."""
     metrics: Dict[str, Any] = {"server": server_name}
 
+    # Check if this is a local server
+    is_local = is_local_server(mcp.connection_manager, server_name)
+    metrics["is_local"] = is_local
+
     # Run all health checks - each adds to findings and metrics
     _check_connection_health(mcp, ds, server_name, findings, metrics)
     _check_replication_health(mcp, ds, server_name, findings, metrics)
     _check_cache_health(mcp, ds, server_name, findings, metrics)
-    _check_disk_health(mcp, ds, server_name, findings, metrics)
-    _check_certificate_health(mcp, ds, server_name, findings, metrics)
+    _check_disk_health(mcp, ds, server_name, findings, metrics, is_local)
+    _check_certificate_health(mcp, ds, server_name, findings, metrics, is_local)
 
     # Store metrics for this server
     server_metrics[server_name] = metrics
@@ -818,8 +878,21 @@ def _check_disk_health(
     server_name: str,
     findings: List[Dict[str, Any]],
     metrics: Dict[str, Any],
+    is_local: bool = True,
 ) -> None:
-    """Check disk space for health issues."""
+    """Check disk space for health issues.
+
+    Note: Disk space monitoring requires local server access (is_local=True).
+    For remote servers, this check will be skipped with an informational message.
+    """
+    if not is_local:
+        mcp.logger.debug("Skipping disk health check for remote server %s", server_name)
+        metrics["disk"] = {
+            "available": False,
+            "reason": "Disk monitoring requires local server access (is_local=True with serverid)",
+        }
+        return
+
     try:
         disk_monitor = MonitorDiskSpace(ds)
         disks = disk_monitor.get_disks()
@@ -872,11 +945,11 @@ def _check_disk_health(
                     )
                 )
 
-        metrics["disk"] = disk_metrics
+        metrics["disk"] = {"available": True, "partitions": disk_metrics}
 
     except Exception as e:
         mcp.logger.debug("Could not check disk space for %s: %s", server_name, e)
-        metrics["disk"] = {"error": str(e)}
+        metrics["disk"] = {"available": False, "error": str(e)}
 
 
 def _check_certificate_health(
@@ -885,8 +958,22 @@ def _check_certificate_health(
     server_name: str,
     findings: List[Dict[str, Any]],
     metrics: Dict[str, Any],
+    is_local: bool = True,
 ) -> None:
-    """Check SSL certificate expiration."""
+    """Check SSL certificate expiration.
+
+    Note: Certificate checking requires local server access (is_local=True)
+    to read the NSS certificate database. For remote servers, this check
+    will be skipped with an informational message.
+    """
+    if not is_local:
+        mcp.logger.debug("Skipping certificate health check for remote server %s", server_name)
+        metrics["certificates"] = {
+            "available": False,
+            "reason": "Certificate monitoring requires local server access (is_local=True with serverid)",
+        }
+        return
+
     try:
         nss_ssl = NssSsl(ds)
         certs = []
@@ -960,11 +1047,11 @@ def _check_certificate_health(
         except Exception as e:
             mcp.logger.debug("Could not get server cert: %s", e)
 
-        metrics["certificates"] = certs if certs else {"status": "unable to check"}
+        metrics["certificates"] = {"available": True, "certs": certs} if certs else {"available": True, "status": "no certificates found"}
 
     except Exception as e:
         mcp.logger.debug("Could not check certificates for %s: %s", server_name, e)
-        metrics["certificates"] = {"error": str(e)}
+        metrics["certificates"] = {"available": False, "error": str(e)}
 
 
 def _check_connection_health(
