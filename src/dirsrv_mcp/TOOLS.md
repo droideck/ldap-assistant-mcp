@@ -4,17 +4,25 @@ Complete reference for all 389 DS MCP tools, resources, and prompts.
 
 This documentation covers the `dirsrv_mcp` provider which uses [lib389](https://lib389.readthedocs.io/) for 389 Directory Server operations.
 
+---
+
 ## Health & Diagnostics
 
 ### first_look()
 
-Quick health overview across all configured servers.
+Comprehensive health overview - the go-to tool for "what's wrong with my directory?"
 
 ```
 first_look()
 ```
 
-**Returns:** Multi-server health summary including connectivity, basic metrics, and any critical issues.
+**Returns:** Multi-server health summary including:
+- Server connectivity and basic health
+- Connection and thread utilization
+- Replication status and errors
+- Cache efficiency (entry cache hit ratios)
+- Disk space usage (local servers only)
+- SSL certificate expiration (local servers only)
 
 **Example prompts:**
 - "Check the health of all servers"
@@ -23,20 +31,70 @@ first_look()
 
 ---
 
-### replication_status(server_name)
+### run_healthcheck(checks?, exclude_checks?, server_name?)
 
-Check all replication agreements for a server, detecting lag and failures.
+Run comprehensive health checks equivalent to `dsctl <instance> healthcheck`.
 
 ```
-replication_status(server_name: str)
+run_healthcheck(
+    checks: list = None,
+    exclude_checks: list = None,
+    server_name: str = None
+)
 ```
 
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| server_name | str | Yes | Name of the server to check |
+| checks | list | No | Specific checks to run (e.g., ['config:*', 'backends:mappingtree']) |
+| exclude_checks | list | No | Checks to skip |
+| server_name | str | No | Target server name |
 
-**Returns:** Replication agreement status, lag detection, and failure analysis.
+**Returns:** Structured report with DSLE error codes, severity, and remediation steps.
+
+**Note:** Some checks require local server access (is_local=True with serverid).
+
+---
+
+### list_healthchecks(server_name?)
+
+List all available health checks that can be run.
+
+```
+list_healthchecks(server_name: str = None)
+```
+
+**Returns:** List of available checks in 'category:check_name' format.
+
+---
+
+### list_healthcheck_errors()
+
+List all known DSLE error codes from lib389.
+
+```
+list_healthcheck_errors()
+```
+
+**Returns:** All possible error codes with severity and description.
+
+---
+
+## Replication
+
+### get_replication_status(server_name?)
+
+Get comprehensive replication status for a server.
+
+```
+get_replication_status(server_name: str = None)
+```
+
+**Returns:**
+- Replica role (supplier/hub/consumer)
+- Replica ID and RUV analysis
+- All agreements with current status
+- Findings for any issues detected
 
 **Example prompts:**
 - "Check replication status for ds-prod1"
@@ -45,20 +103,88 @@ replication_status(server_name: str)
 
 ---
 
-### performance_summary(server_name)
+### get_replication_topology()
 
-Identify performance bottlenecks with thread, connection, and cache metrics.
+Map the complete replication topology across all configured servers.
 
 ```
-performance_summary(server_name: str)
+get_replication_topology()
+```
+
+**Returns:**
+- All servers and their roles
+- Replication agreements between servers
+- Potential issues (single points of failure, orphaned replicas)
+
+**Example prompts:**
+- "Show me the replication topology"
+- "Map all replication agreements"
+
+---
+
+### check_replication_lag(suffix?, server_name?)
+
+Analyze replication lag across agreements by comparing CSN values.
+
+```
+check_replication_lag(suffix: str = None, server_name: str = None)
 ```
 
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| server_name | str | Yes | Name of the server to analyze |
+| suffix | str | No | Specific suffix to check |
+| server_name | str | No | Target server name |
 
-**Returns:** Performance metrics including thread utilization, connection counts, and cache hit rates.
+**Returns:** Per-agreement lag status with CSN comparisons and severity assessment.
+
+---
+
+### list_replication_conflicts(base_dn?, server_name?)
+
+Find all replication conflict and glue entries.
+
+```
+list_replication_conflicts(base_dn: str = None, server_name: str = None)
+```
+
+**Returns:**
+- List of conflict entries with details
+- List of glue entries
+- Resolution recommendations
+
+---
+
+### get_agreement_status(agreement_name?, suffix?, server_name?)
+
+Get detailed status for replication agreements.
+
+```
+get_agreement_status(
+    agreement_name: str = None,
+    suffix: str = None,
+    server_name: str = None
+)
+```
+
+**Returns:** Agreement configuration, synchronization status, timestamps, and errors.
+
+---
+
+## Performance
+
+### get_performance_summary(server_name?)
+
+Comprehensive performance overview in a single call.
+
+```
+get_performance_summary(server_name: str = None)
+```
+
+**Returns:**
+- Overall health status
+- Key metrics from cache, connections, operations, threads, resources
+- Prioritized findings with recommendations
 
 **Example prompts:**
 - "Give me a performance summary for ds-prod1"
@@ -67,50 +193,207 @@ performance_summary(server_name: str)
 
 ---
 
-### indexing_analysis(server_name, attribute?, backend?)
+### get_cache_statistics(backend?, server_name?)
 
-Detect indexing issues and unindexed search problems.
+Analyze database and entry cache efficiency.
 
 ```
-indexing_analysis(server_name: str, attribute: str = None, backend: str = None)
+get_cache_statistics(backend: str = None, server_name: str = None)
 ```
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| server_name | str | Yes | Name of the server to analyze |
-| attribute | str | No | Specific attribute to check |
-| backend | str | No | Specific backend to check |
-
-**Returns:** Index configuration, unindexed search detection, and recommendations.
-
-**Example prompts:**
-- "Check indexing for ds-prod1"
-- "Are there unindexed searches?"
-- "Show me index configuration for userRoot"
+**Returns:**
+- Entry cache hit ratio and utilization
+- DN cache statistics
+- Database cache metrics
+- Health assessment and recommendations
 
 ---
 
-### aci_audit(server_name, base_dn?)
+### get_connection_statistics(server_name?)
 
-Validate access control configurations and identify security issues.
+Analyze connection patterns and resource usage.
 
 ```
-aci_audit(server_name: str, base_dn: str = None)
+get_connection_statistics(server_name: str = None)
+```
+
+**Returns:**
+- Current vs max connections
+- File descriptor utilization
+- Connection state breakdown
+- Recommendations for tuning
+
+---
+
+### get_operation_statistics(server_name?)
+
+Get operation counts and performance metrics.
+
+```
+get_operation_statistics(server_name: str = None)
+```
+
+**Returns:**
+- Operations initiated vs completed
+- Breakdown by type (search, bind, modify, etc.)
+- Bind method distribution
+- Error counts
+
+---
+
+### get_thread_statistics(server_name?)
+
+Analyze worker thread utilization.
+
+```
+get_thread_statistics(server_name: str = None)
+```
+
+**Returns:**
+- Current thread count and configuration
+- Connections at max threads
+- Utilization assessment
+
+---
+
+### get_resource_utilization(server_name?)
+
+Get system resource usage.
+
+```
+get_resource_utilization(server_name: str = None)
+```
+
+**Returns:**
+- Memory usage (RSS, VMS, swap) - LOCAL ONLY
+- CPU utilization - LOCAL ONLY
+- Disk space - LOCAL ONLY
+- Server uptime
+
+**Note:** Some metrics require local server access (is_local=True with serverid).
+
+---
+
+## Index Analysis
+
+### list_indexes(backend?, server_name?)
+
+List all configured indexes.
+
+```
+list_indexes(backend: str = None, server_name: str = None)
+```
+
+**Returns:**
+- Per-backend index configuration
+- Index types for each attribute
+- System vs user-defined indexes
+- VLV index definitions
+
+---
+
+### analyze_index_configuration(backend?, server_name?)
+
+Analyze index configuration against best practices.
+
+```
+analyze_index_configuration(backend: str = None, server_name: str = None)
+```
+
+**Returns:**
+- Missing recommended indexes
+- Incomplete index configurations
+- dsconf commands for remediation
+
+**Example prompts:**
+- "Check indexing for ds-prod1"
+- "Are there missing indexes?"
+- "Show me index recommendations"
+
+---
+
+### find_unindexed_searches(time_range?, limit?, server_name?)
+
+Identify unindexed searches from access logs.
+
+```
+find_unindexed_searches(
+    time_range: str = "1h",
+    limit: int = 50,
+    server_name: str = None
+)
+```
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| time_range | str | No | "1h" | How far back to analyze ("1h", "6h", "24h", "7d") |
+| limit | int | No | 50 | Max patterns to return |
+| server_name | str | No | - | Target server |
+
+**Returns:** Search patterns causing unindexed searches with frequency and recommendations.
+
+**Note:** Requires local server access (is_local=True with serverid).
+
+---
+
+## Configuration
+
+### get_server_configuration(pattern?, server_name?)
+
+Get server configuration from cn=config.
+
+```
+get_server_configuration(pattern: str = None, server_name: str = None)
 ```
 
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| server_name | str | Yes | Name of the server to audit |
-| base_dn | str | No | Base DN to start audit from |
+| pattern | str | No | Filter pattern (e.g., "nsslapd-security", "cache") |
+| server_name | str | No | Target server |
 
-**Returns:** ACI analysis, security findings, and recommendations.
+**Returns:** All matching configuration attributes.
 
-**Example prompts:**
-- "Audit ACIs on ds-prod1"
-- "Check access control security"
-- "Show me all ACIs under ou=People"
+---
+
+### compare_server_configurations(server1, server2, pattern?)
+
+Compare configuration between two servers.
+
+```
+compare_server_configurations(
+    server1: str,
+    server2: str,
+    pattern: str = None
+)
+```
+
+**Returns:** Differences, attributes only on one server, and matching count.
+
+---
+
+### list_plugins(enabled_only?, server_name?)
+
+List configured plugins.
+
+```
+list_plugins(enabled_only: bool = True, server_name: str = None)
+```
+
+**Returns:** Plugin list with name, type, enabled status, and details.
+
+---
+
+### get_backend_configuration(backend?, server_name?)
+
+Get backend-specific configuration.
+
+```
+get_backend_configuration(backend: str = None, server_name: str = None)
+```
+
+**Returns:** Backend configuration including cache settings, statistics, and replication status.
 
 ---
 
@@ -131,11 +414,6 @@ list_all_users(limit: int = 50)
 
 **Returns:** List of users with basic attributes (uid, cn, mail, status).
 
-**Example prompts:**
-- "Show me all users"
-- "List the first 100 users"
-- "Who are the users on this server?"
-
 ---
 
 ### search_users_by_name(name, limit?)
@@ -146,18 +424,9 @@ Search for users by name or email.
 search_users_by_name(name: str, limit: int = 50)
 ```
 
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| name | str | Yes | - | Name or email to search for |
-| limit | int | No | 50 | Maximum users to return |
-
-**Returns:** Matching users with basic attributes.
-
 **Example prompts:**
 - "Find users named John"
 - "Search for smith@example.com"
-- "Who has 'admin' in their name?"
 
 ---
 
@@ -169,17 +438,7 @@ Get complete details for a specific user.
 get_user_details(username: str)
 ```
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| username | str | Yes | Username (uid) to look up |
-
-**Returns:** All user attributes including account status, group memberships, and metadata.
-
-**Example prompts:**
-- "Show me details for jdoe"
-- "Get user info for admin"
-- "What groups is jsmith in?"
+**Returns:** All user attributes including account status and group memberships.
 
 ---
 
@@ -191,39 +450,15 @@ List only active (unlocked) users.
 list_active_users(limit: int = 50)
 ```
 
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| limit | int | No | 50 | Maximum users to return |
-
-**Returns:** List of active users with basic attributes.
-
-**Example prompts:**
-- "Show me all active users"
-- "List unlocked users"
-- "Who can currently log in?"
-
 ---
 
 ### list_locked_users(limit?)
 
-List only locked users.
+List only locked users with lock reason.
 
 ```
 list_locked_users(limit: int = 50)
 ```
-
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| limit | int | No | 50 | Maximum users to return |
-
-**Returns:** List of locked users with lock reason when available.
-
-**Example prompts:**
-- "Show me all locked users"
-- "Who is locked out?"
-- "List disabled accounts"
 
 ---
 
@@ -235,19 +470,9 @@ Search for users by any LDAP attribute.
 search_users_by_attribute(attr: str, value: str, limit: int = 50)
 ```
 
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| attr | str | Yes | - | Attribute name to search |
-| value | str | Yes | - | Value to match (supports wildcards) |
-| limit | int | No | 50 | Maximum users to return |
-
-**Returns:** Matching users with basic attributes.
-
 **Example prompts:**
 - "Find users in the Engineering department"
 - "Search for users with title Manager"
-- "Who has employeeNumber 12345?"
 
 ---
 
@@ -255,23 +480,11 @@ search_users_by_attribute(attr: str, value: str, limit: int = 50)
 
 ### list_all_groups(limit?)
 
-Enumerate all groups in the directory.
+Enumerate all groups with member counts.
 
 ```
 list_all_groups(limit: int = 50)
 ```
-
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| limit | int | No | 50 | Maximum groups to return |
-
-**Returns:** List of groups with member counts.
-
-**Example prompts:**
-- "Show me all groups"
-- "List the first 100 groups"
-- "What groups exist?"
 
 ---
 
@@ -285,24 +498,13 @@ Get server and backend monitor data.
 run_monitor(backend: str = "", suffix: str = "")
 ```
 
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| backend | str | No | "" | Specific backend to monitor |
-| suffix | str | No | "" | Suffix to filter by |
-
 **Returns:** Monitor metrics including connections, operations, and backend statistics.
-
-**Example prompts:**
-- "Show me server monitor"
-- "Get monitor data for userRoot backend"
-- "What are the current connection stats?"
 
 ---
 
-## Advanced
+## Advanced Search
 
-### ldap_search(base_dn, scope, filter, ...)
+### ldap_search(base_dn, scope?, filter?, attributes?, limit?)
 
 Full LDAP search with complete control over parameters.
 
@@ -325,13 +527,6 @@ ldap_search(
 | attributes | list | No | None (all) | Attributes to return |
 | limit | int | No | 100 | Maximum entries to return |
 
-**Returns:** Raw LDAP search results.
-
-**Example prompts:**
-- "Search for all entries under ou=People"
-- "Find objects with objectClass=groupOfNames"
-- "Show me entries matching (mail=*@example.com)"
-
 ---
 
 ## Resources
@@ -342,27 +537,43 @@ MCP resources provide read-only access to configuration data.
 
 Returns all `cn=config` attributes.
 
-**Example:** "Show me the server configuration"
-
 ### config://config-attribute/{attribute}
 
 Returns a single `cn=config` attribute.
 
-**Example:** "What is nsslapd-maxconnections set to?"
+---
+
+## Privacy Mode
+
+Set `LDAP_MCP_EXPOSE_SENSITIVE_DATA=false` to enable privacy mode. When enabled:
+- Server names, hostnames, and DNs are anonymized
+- Sensitive configuration values are redacted
+- Safe for sharing diagnostic output with external parties
 
 ---
 
-## Prompts
+## Local vs Remote Servers
 
-### Tool Navigator
+Most tools work via LDAP for all servers. However, some features require local server access:
 
-Guides tool selection for directory tasks. Helps you choose the right tool based on what you're trying to accomplish.
+| Feature | Requires Local |
+|---------|----------------|
+| Disk space monitoring | Yes |
+| Certificate checking | Yes |
+| Access log analysis | Yes |
+| Process memory/CPU | Yes |
 
-**Invocation:** The assistant uses this automatically to select appropriate tools.
+To enable local features, configure the server with:
+```json
+{
+  "is_local": true,
+  "serverid": "slapd-instance"
+}
+```
 
 ---
 
-## Example Usage
+## Example Workflows
 
 ### Health Check Workflow
 
@@ -372,11 +583,23 @@ Assistant: [Calls first_look()]
 Result: Summary of all server health status
 
 You: "ds-prod1 shows high load, investigate"
-Assistant: [Calls performance_summary("ds-prod1")]
+Assistant: [Calls get_performance_summary("ds-prod1")]
 Result: Detailed performance metrics and bottleneck analysis
 ```
 
-### User Investigation Workflow
+### Replication Troubleshooting
+
+```
+You: "Check replication status"
+Assistant: [Calls get_replication_status()]
+Result: Replica status with any lag or errors
+
+You: "Show me the topology"
+Assistant: [Calls get_replication_topology()]
+Result: Complete topology map with all agreements
+```
+
+### User Investigation
 
 ```
 You: "Show me all locked users"
@@ -388,10 +611,14 @@ Assistant: [Calls get_user_details("jdoe")]
 Result: Full user details including lock reason
 ```
 
-### Custom Search Workflow
+### Performance Tuning
 
 ```
-You: "Find all users in the Engineering department who are managers"
-Assistant: [Calls ldap_search with appropriate filter]
-Result: Matching entries
+You: "Is the cache configured well?"
+Assistant: [Calls get_cache_statistics()]
+Result: Cache hit ratios with recommendations
+
+You: "Are there unindexed searches?"
+Assistant: [Calls find_unindexed_searches()]
+Result: Search patterns needing indexes
 ```
