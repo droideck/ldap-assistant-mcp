@@ -30,6 +30,46 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize performance result for privacy mode.
+
+    Performance metrics are numeric and diagnostic - we keep them.
+    We only sanitize server names and backend names.
+    """
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize backend names in various places
+    if "backends" in sanitized and isinstance(sanitized["backends"], list):
+        for be in sanitized["backends"]:
+            if isinstance(be, dict) and "name" in be:
+                be["name"] = "[backend]"
+            if isinstance(be, dict) and "suffix" in be:
+                be["suffix"] = sanitizer.sanitize_suffix(be["suffix"])
+
+    # Sanitize findings
+    if "findings" in sanitized and isinstance(sanitized["findings"], list):
+        sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
+
+    # Sanitize resources (disk partitions, paths)
+    if "resources" in sanitized and isinstance(sanitized["resources"], dict):
+        if "disk" in sanitized["resources"] and isinstance(sanitized["resources"]["disk"], dict):
+            disk = sanitized["resources"]["disk"]
+            if "partitions" in disk and isinstance(disk["partitions"], list):
+                disk["partitions"] = [
+                    {**p, "partition": "[partition]"} for p in disk["partitions"]
+                ]
+
+    return sanitized
+
+
 def _calculate_hit_ratio(hits: int, tries: int) -> float:
     """Calculate cache hit ratio as percentage."""
     if tries == 0:
@@ -79,10 +119,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "cache_statistics",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -267,15 +307,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             cache_data["summary"] = summary
             cache_data["findings"] = findings
 
-            return cache_data
+            return _sanitize_performance_result(mcp, cache_data)
 
         except Exception as e:
             mcp.logger.error("Error getting cache statistics: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "cache_statistics",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -303,10 +343,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "connection_statistics",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -422,15 +462,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             conn_data["summary"] = summary
             conn_data["findings"] = findings
 
-            return conn_data
+            return _sanitize_performance_result(mcp, conn_data)
 
         except Exception as e:
             mcp.logger.error("Error getting connection statistics: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "connection_statistics",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -457,10 +497,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "operation_statistics",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -591,15 +631,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             op_data["summary"] = summary
             op_data["findings"] = findings
 
-            return op_data
+            return _sanitize_performance_result(mcp, op_data)
 
         except Exception as e:
             mcp.logger.error("Error getting operation statistics: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "operation_statistics",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -626,10 +666,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "thread_statistics",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -703,15 +743,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             thread_data["summary"] = summary
             thread_data["findings"] = findings
 
-            return thread_data
+            return _sanitize_performance_result(mcp, thread_data)
 
         except Exception as e:
             mcp.logger.error("Error getting thread statistics: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "thread_statistics",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -746,10 +786,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "resource_utilization",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -942,15 +982,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             resource_data["summary"] = summary
             resource_data["findings"] = findings
 
-            return resource_data
+            return _sanitize_performance_result(mcp, resource_data)
 
         except Exception as e:
             mcp.logger.error("Error getting resource utilization: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "resource_utilization",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -978,10 +1018,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         if not target:
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "performance_summary",
                 "error": "No server configured",
-            }
+            })
 
         ds = None
         try:
@@ -1152,15 +1192,15 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "low": sum(1 for f in all_findings if f.get("severity") == "low"),
             }
 
-            return summary_data
+            return _sanitize_performance_result(mcp, summary_data)
 
         except Exception as e:
             mcp.logger.error("Error getting performance summary: %s", e)
-            return {
+            return _sanitize_performance_result(mcp, {
                 "type": "performance_summary",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:

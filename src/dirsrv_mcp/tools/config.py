@@ -19,8 +19,88 @@ from lib389.config import Config
 from lib389.plugins import Plugins
 from lib389.replica import Replicas
 
+from src.lib.privacy import create_privacy_error
+
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+
+def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize configuration result for privacy mode."""
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize server1/server2 for comparison
+    if "server1" in sanitized:
+        sanitized["server1"] = sanitizer.sanitize_server_name(sanitized["server1"])
+    if "server2" in sanitized:
+        sanitized["server2"] = sanitizer.sanitize_server_name(sanitized["server2"])
+
+    # Sanitize config values - redact all values, keep attribute names
+    if "config" in sanitized and isinstance(sanitized["config"], dict):
+        sanitized["config"] = {
+            attr: "[REDACTED]" for attr in sanitized["config"].keys()
+        }
+
+    # Sanitize differences in comparison
+    if "differences" in sanitized and isinstance(sanitized["differences"], list):
+        sanitized["differences"] = [
+            {
+                "attribute": d.get("attribute"),
+                sanitized.get("server1", "server1"): "[REDACTED]",
+                sanitized.get("server2", "server2"): "[REDACTED]",
+            }
+            for d in sanitized["differences"]
+        ]
+
+    # Sanitize only_on_server lists (keep attribute names)
+    # These are just attribute names, not values, so they're ok
+
+    # Sanitize plugins - keep names but redact paths
+    if "plugins" in sanitized and isinstance(sanitized["plugins"], list):
+        for plugin in sanitized["plugins"]:
+            if "path" in plugin:
+                plugin["path"] = "[path]"
+
+    # Sanitize backends
+    if "backends" in sanitized and isinstance(sanitized["backends"], list):
+        sanitized["backends"] = [
+            _sanitize_backend(sanitizer, b) for b in sanitized["backends"]
+        ]
+
+    return sanitized
+
+
+def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize a backend configuration."""
+    result = {}
+    for key, value in backend.items():
+        if key == "name":
+            result[key] = "[backend]"
+        elif key == "suffix":
+            result[key] = sanitizer.sanitize_suffix(value)
+        elif key == "config" and isinstance(value, dict):
+            # Redact all config values
+            result[key] = {attr: "[REDACTED]" for attr in value.keys()}
+        elif key == "statistics" and isinstance(value, dict):
+            # Keep statistics as they're numeric/diagnostic
+            result[key] = value
+        elif key == "replication" and isinstance(value, dict):
+            # Keep replication status but sanitize role details
+            result[key] = {
+                "enabled": value.get("enabled"),
+                "role": value.get("role"),
+            }
+        else:
+            result[key] = value
+    return result
 
 
 def _parse_plugin_entry(plugin) -> Dict[str, Any]:
@@ -92,21 +172,21 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 else:
                     config_data[attr] = str(values)
 
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "server_configuration",
                 "server": target,
                 "pattern": pattern,
                 "attribute_count": len(config_data),
                 "config": config_data,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error getting server configuration: %s", e)
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "server_configuration",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -207,7 +287,7 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 else:
                     only_on_server2.append(attr)
 
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "config_comparison",
                 "server1": server1,
                 "server2": server2,
@@ -216,16 +296,16 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 "only_on_server1": only_on_server1,
                 "only_on_server2": only_on_server2,
                 "matching_count": matching_count,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error comparing configurations: %s", e)
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "config_comparison",
                 "server1": server1,
                 "server2": server2,
                 "error": str(e),
-            }
+            })
         finally:
             if ds1:
                 try:
@@ -280,21 +360,21 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
 
             plugin_list.sort(key=lambda p: p.get("name", "").lower())
 
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "plugin_list",
                 "server": target,
                 "enabled_only": enabled_only,
                 "count": len(plugin_list),
                 "plugins": plugin_list,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error listing plugins: %s", e)
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "plugin_list",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -405,25 +485,25 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 backend_list.append(backend_data)
 
             if backend and not backend_list:
-                return {
+                return _sanitize_config_result(mcp, {
                     "type": "backend_configuration",
                     "server": target,
                     "error": f"Backend '{backend}' not found",
-                }
+                })
 
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "backend_configuration",
                 "server": target,
                 "backends": backend_list,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error getting backend configuration: %s", e)
-            return {
+            return _sanitize_config_result(mcp, {
                 "type": "backend_configuration",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:

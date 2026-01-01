@@ -9,6 +9,7 @@ from lib389.idm.account import Accounts
 from lib389.idm.user import nsUserAccounts
 
 from src.lib.datetime_utils import convert_datetimes_to_strings
+from src.lib.privacy import create_count_only_response, create_privacy_error
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
@@ -19,11 +20,21 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_all_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
-        """List users in the directory with computed status."""
+        """List users in the directory with computed status.
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (name, ds):
             base_dn = mcp._get_base_dn(name)
             users = nsUserAccounts(ds, base_dn)
+
+            # In privacy mode, return count only
+            if mcp.privacy_enabled:
+                count = sum(1 for _ in users.list())
+                return create_count_only_response("user_list", name, count, mcp.sanitizer)
+
             results = _collect_entries(mcp, users.list(), ds, base_dn, limit)
             return {
                 "type": "user_list",
@@ -37,7 +48,11 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
     def search_users_by_name(
         name: str, limit: int = 50, server_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Search for users by name (uid, cn, givenName, sn, displayName, mail)."""
+        """Search for users by name (uid, cn, givenName, sn, displayName, mail).
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
@@ -52,6 +67,12 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                     f"(displayName=*{name}*)(mail=*{name}*))"
                 )
             users = nsUserAccounts(ds, base_dn)
+
+            # In privacy mode, return count only
+            if mcp.privacy_enabled:
+                count = sum(1 for _ in users.filter(search_filter))
+                return create_count_only_response("user_search", srv, count, mcp.sanitizer)
+
             results = _collect_entries(mcp, users.filter(search_filter), ds, base_dn, limit)
             return {
                 "type": "user_search",
@@ -65,7 +86,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_user_details(username: str, server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get detailed information about a specific user."""
+        """Get detailed information about a specific user.
+
+        Note: This tool is disabled in privacy mode (default).
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true to enable.
+        """
+        # Disabled in privacy mode
+        if mcp.privacy_enabled:
+            return create_privacy_error("get_user_details")
+
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
@@ -76,11 +105,28 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_active_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
-        """List active (unlocked) users."""
+        """List active (unlocked) users.
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
+
+            # In privacy mode, count active users only
+            if mcp.privacy_enabled:
+                count = 0
+                for entry in users.list():
+                    try:
+                        record = _build_user_record(mcp, entry, ds, base_dn)
+                        if record["attrs"].get("computed_status", {}).get("simple_status") == "active":
+                            count += 1
+                    except Exception:
+                        continue
+                return create_count_only_response("active_users", srv, count, mcp.sanitizer)
+
             records = _collect_filtered_users(
                 mcp, users.list(), ds, base_dn, limit, desired_status="active"
             )
@@ -94,11 +140,28 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_locked_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
-        """List locked users."""
+        """List locked users.
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
+
+            # In privacy mode, count locked users only
+            if mcp.privacy_enabled:
+                count = 0
+                for entry in users.list():
+                    try:
+                        record = _build_user_record(mcp, entry, ds, base_dn)
+                        if record["attrs"].get("computed_status", {}).get("simple_status") == "locked":
+                            count += 1
+                    except Exception:
+                        continue
+                return create_count_only_response("locked_users", srv, count, mcp.sanitizer)
+
             records = _collect_filtered_users(
                 mcp, users.list(), ds, base_dn, limit, desired_status="locked"
             )
@@ -114,12 +177,22 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
     def search_users_by_attribute(
         attribute: str, value: str, limit: int = 50, server_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Search for users by arbitrary attribute."""
+        """Search for users by arbitrary attribute.
+
+        Note: In privacy mode (default), returns count only.
+        Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
+        """
         target = server_name or mcp.default_server
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             search_filter = f"({attribute}={value})" if "*" in value else f"({attribute}=*{value}*)"
             users = nsUserAccounts(ds, base_dn)
+
+            # In privacy mode, return count only
+            if mcp.privacy_enabled:
+                count = sum(1 for _ in users.filter(search_filter))
+                return create_count_only_response("attribute_search", srv, count, mcp.sanitizer)
+
             results = _collect_entries(mcp, users.filter(search_filter), ds, base_dn, limit)
             return {
                 "type": "attribute_search",

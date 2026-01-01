@@ -31,7 +31,8 @@ from src.dirsrv_mcp.tools import (
     register_search_tools,
     register_user_tools,
 )
-from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPServerConfig
+from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPServerConfig, MCPSettings
+from src.lib.privacy import PrivacySanitizer, get_sanitizer
 
 __all__ = ["DirSrvMCP"]
 
@@ -45,12 +46,15 @@ class DirSrvMCP(LDAPAssistantMCP):
         config_path: Optional[str] = None,
         servers: Optional[Iterable[LDAPServerConfig]] = None,
         connection_manager: Optional[ConnectionManager] = None,
+        settings: Optional[MCPSettings] = None,
         name: str = "389 Directory Server MCP",
         instructions: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         self.logger = logging.getLogger(self.__class__.__name__)
-        merged_servers = self._collect_servers(config_path=config_path, extra_servers=servers)
+        merged_servers, loaded_settings = self._collect_servers_and_settings(
+            config_path=config_path, extra_servers=servers
+        )
 
         super().__init__(
             name=name,
@@ -59,31 +63,53 @@ class DirSrvMCP(LDAPAssistantMCP):
             **kwargs,
         )
 
+        # Use provided settings, loaded settings, or defaults
+        # Note: We use _mcp_settings to avoid conflict with FastMCP's settings property
+        self._mcp_settings = settings or loaded_settings or MCPSettings.from_env()
+        self._sanitizer = get_sanitizer()
+
         self.connection_manager = connection_manager or ConnectionManager()
         for cfg in self.server_configs.values():
             self.connection_manager.add_server(cfg)
 
         self.logger.info(
-            "DirSrv MCP initialized with %d server(s): %s",
+            "DirSrv MCP initialized with %d server(s): %s (privacy_mode=%s)",
             len(self.server_configs),
             ", ".join(self.server_configs.keys()),
+            not self._mcp_settings.expose_sensitive_data,
         )
 
         self._register_prompts()
         self._register_tools()
         self._register_resources()
 
+    @property
+    def privacy_enabled(self) -> bool:
+        """Return True if privacy mode is enabled (sensitive data is redacted)."""
+        return not self._mcp_settings.expose_sensitive_data
+
+    @property
+    def sanitizer(self) -> PrivacySanitizer:
+        """Return the privacy sanitizer instance."""
+        return self._sanitizer
+
     # --------------------------------------------------------------------- #
     # Initialization helpers
     # --------------------------------------------------------------------- #
 
-    def _collect_servers(
+    def _collect_servers_and_settings(
         self,
         *,
         config_path: Optional[str],
         extra_servers: Optional[Iterable[LDAPServerConfig]],
-    ) -> List[LDAPServerConfig]:
+    ) -> Tuple[List[LDAPServerConfig], Optional[MCPSettings]]:
+        """Collect server configurations and settings from config file.
+
+        Returns:
+            Tuple of (server list, settings or None if not loaded from config)
+        """
         merged: Dict[str, LDAPServerConfig] = {}
+        loaded_settings: Optional[MCPSettings] = None
 
         should_load_config = config_path or os.environ.get("LDAP_SERVERS_CONFIG")
         if should_load_config:
@@ -94,12 +120,13 @@ class DirSrvMCP(LDAPAssistantMCP):
             else:
                 for server in config.servers:
                     merged[server.name] = server
+                loaded_settings = config.settings
 
         if extra_servers:
             for server in extra_servers:
                 merged[server.name] = server
 
-        return list(merged.values())
+        return list(merged.values()), loaded_settings
 
     # --------------------------------------------------------------------- #
     # Registration
