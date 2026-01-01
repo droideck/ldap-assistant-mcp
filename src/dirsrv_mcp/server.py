@@ -47,7 +47,7 @@ class DirSrvMCP(LDAPAssistantMCP):
         servers: Optional[Iterable[LDAPServerConfig]] = None,
         connection_manager: Optional[ConnectionManager] = None,
         settings: Optional[MCPSettings] = None,
-        name: str = "389 Directory Server MCP",
+        name: str = "389ds-mcp",
         instructions: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
