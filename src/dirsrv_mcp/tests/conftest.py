@@ -23,12 +23,16 @@ def mock_env():
     """Ensure the LDAP connection environment variables are always defined.
 
     These can be overridden by setting real environment variables before running tests.
+    Note: LDAP_MCP_EXPOSE_SENSITIVE_DATA=true is set by default so existing tests
+    get full data access. Privacy-specific tests override this in their own fixtures.
     """
     env_vars = {
         "LDAP_URL": os.environ.get("LDAP_URL", "ldap://localhost:33891"),
         "LDAP_BASE_DN": os.environ.get("LDAP_BASE_DN", "dc=test,dc=com"),
         "LDAP_BIND_DN": os.environ.get("LDAP_BIND_DN", "cn=Directory Manager"),
         "LDAP_BIND_PASSWORD": os.environ.get("LDAP_BIND_PASSWORD", "TestPassword123"),
+        # Enable exposed mode for existing tests (privacy tests override this)
+        "LDAP_MCP_EXPOSE_SENSITIVE_DATA": "true",
     }
 
     with patch.dict(os.environ, env_vars):
@@ -55,10 +59,11 @@ def dirsrv_server(server_config) -> DirSrvMCP:
 
 
 @pytest.fixture
-def multiserver_config():
+def multiserver_config(mock_env):
     """Load multi-server configuration from tests-servers.json or environment.
 
     Returns None if no multi-server config is available.
+    Depends on mock_env to ensure LDAP_MCP_EXPOSE_SENSITIVE_DATA is set.
     """
     config_path = os.environ.get("LDAP_SERVERS_CONFIG")
     if config_path and os.path.exists(config_path):
