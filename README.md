@@ -1,5 +1,7 @@
 # LDAP Assistant MCP
 
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
+
 > **Experimental Project - Active Development**
 > This is an experimental MCP server in early development. Current focus: building foundational architecture and health diagnostics for 389 Directory Server. Not production-ready.
 
@@ -20,11 +22,31 @@ The assistant:
 ## Capabilities
 
 ### Health & Diagnostics
-- `first_look()` - Multi-server quick health overview
-- `replication_status()` - Replication agreement health and lag detection
-- `performance_summary()` - Thread/connection/cache metrics and bottlenecks
-- `indexing_analysis()` - Index configuration and unindexed search detection
-- `aci_audit()` - Access control validation and security checks
+- `first_look()` - Multi-server quick health overview with prioritized findings
+- `run_healthcheck()` - Full health check equivalent to `dsctl healthcheck`
+- Connection, thread, cache, disk, and certificate monitoring
+
+### Replication
+- `get_replication_status()` - Comprehensive status with RUV analysis
+- `get_replication_topology()` - Map complete topology across all servers
+- `check_replication_lag()` - CSN comparison and lag detection
+- `list_replication_conflicts()` - Find conflict and glue entries
+
+### Performance
+- `get_performance_summary()` - Combined metrics with recommendations
+- Cache, connection, operation, thread, and resource statistics
+- Automatic bottleneck detection and tuning recommendations
+
+### Index Analysis
+- `list_indexes()` - Index listing with VLV support
+- `analyze_index_configuration()` - Best practices analysis
+- `find_unindexed_searches()` - Access log parsing for optimization
+
+### Configuration
+- `get_server_configuration()` - Dynamic cn=config retrieval
+- `compare_server_configurations()` - Multi-server comparison
+- `list_plugins()` - Plugin enumeration with status
+- `get_backend_configuration()` - Backend-specific settings
 
 ### User & Group Management
 - List, search, and inspect users
@@ -32,10 +54,10 @@ The assistant:
 - Search by any LDAP attribute
 - Enumerate groups
 
-### Monitoring & Advanced
-- Server and backend monitor data
+### Advanced
 - Generic LDAP search with full control
 - Configuration resource access
+- Privacy mode for sensitive data protection
 
 **Tools documentation:** [389 DS](src/dirsrv_mcp/TOOLS.md) | [OpenLDAP](src/openldap_mcp/TOOLS.md)
 
@@ -48,7 +70,19 @@ The assistant:
 - MCP client (Claude Desktop, Claude Code, Cursor, Gemini CLI, etc.)
 - Access to LDAP server(s) (389 Directory Server only, for now)
 
-### Step 1: Configure Your Servers
+### Step 1: Clone and Install Dependencies
+
+```bash
+git clone https://github.com/droideck/ldap-assistant-mcp.git
+cd ldap-assistant-mcp
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
+```
+
+### Step 2: Configure Your Servers
 
 Create a `servers.json` file with your LDAP server(s):
 
@@ -56,7 +90,17 @@ Create a `servers.json` file with your LDAP server(s):
 {
   "servers": [
     {
-      "name": "my-server",
+      "name": "local-ds",
+      "ldap_url": "ldap://localhost:389",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=Directory Manager",
+      "bind_password": "your-password",
+      "provider_type": "389ds",
+      "is_local": true,
+      "serverid": "slapd-localhost"
+    },
+    {
+      "name": "remote-ds",
       "ldap_url": "ldap://ldap.example.com:389",
       "base_dn": "dc=example,dc=com",
       "bind_dn": "cn=Directory Manager",
@@ -67,15 +111,54 @@ Create a `servers.json` file with your LDAP server(s):
 }
 ```
 
-### Step 2: Install to Claude Desktop
+**Local vs Remote servers:**
+- **Local servers** (`is_local: true` + `serverid`) enable additional diagnostics: disk space monitoring, certificate checking, access log analysis, and process metrics
+- **Remote servers** work via LDAP only - most tools work, but some local-only features are unavailable
+
+### Step 3: Install to MCP Client
 
 ```bash
+# For Claude Desktop
 fastmcp install claude-desktop fastmcp.json
+
+# For Claude Code
+fastmcp install claude-code fastmcp.json
 ```
 
-### Step 3: Restart Claude Desktop
+### Step 4: Configure the MCP Client
 
-Restart to load the new MCP server. You should now see LDAP Assistant tools available.
+After installation, edit your MCP client configuration to include the path to your `servers.json`:
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+```json
+{
+  "mcpServers": {
+    "ldap-assistant-mcp": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/ldap-assistant-mcp", "fastmcp", "run", "src/main.py:create_server"],
+      "env": {
+        "LDAP_SERVERS_CONFIG": "/path/to/your/servers.json"
+      }
+    }
+  }
+}
+```
+
+Alternatively, for a single server you can use environment variables instead of `servers.json`:
+```json
+{
+  "env": {
+    "LDAP_URL": "ldap://localhost:389",
+    "LDAP_BASE_DN": "dc=example,dc=com",
+    "LDAP_BIND_DN": "cn=Directory Manager",
+    "LDAP_BIND_PASSWORD": "your-password"
+  }
+}
+```
+
+### Step 5: Restart Your MCP Client
+
+Restart Claude Desktop or Claude Code to load the new MCP server. You should now see LDAP Assistant tools available.
 
 ### Verify Connection
 
@@ -105,6 +188,23 @@ If you don't have an LDAP server to connect to, see the [Development Guide](docs
 - Performance tuning with metrics
 - Access control security audits
 
+## Privacy Mode
+
+By default, sensitive data (server names, DNs, hostnames) is exposed in tool outputs. To anonymize this data when sharing diagnostics with external parties, set:
+
+```json
+{
+  "env": {
+    "LDAP_MCP_EXPOSE_SENSITIVE_DATA": "false"
+  }
+}
+```
+
+When privacy mode is enabled:
+- Server names, hostnames, and DNs are anonymized
+- Configuration values are redacted
+- Diagnostic metrics (counts, ratios, percentages) remain visible
+
 ## Limitations
 
 - **Experimental** - APIs subject to change
@@ -117,6 +217,7 @@ If you don't have an LDAP server to connect to, see the [Development Guide](docs
 
 | Document | Description |
 |----------|-------------|
+| [Changelog](CHANGELOG.md) | Version history and release notes |
 | [Development Guide](docs/DEVELOPMENT.md) | Dev environment setup, configuration, architecture |
 | [Testing Guide](docs/TESTING.md) | Running and writing tests |
 | [Contributing Guide](docs/CONTRIBUTING.md) | How to contribute |
