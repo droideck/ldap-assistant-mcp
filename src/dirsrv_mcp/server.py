@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.prompts import PromptMessage
+from mcp.types import TextContent
 from lib389.config import Config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -138,39 +139,42 @@ class DirSrvMCP(LDAPAssistantMCP):
             """Guide users through available tools and their usage."""
 
             return [
-                PromptMessage(role="user", content=f"Directory task: {goal}"),
+                PromptMessage(role="user", content=TextContent(type="text", text=f"Directory task: {goal}")),
                 PromptMessage(
                     role="assistant",
-                    content=(
-                        "Use the available MCP tools to accomplish the task. "
-                        "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
-                        "**Health & Diagnostics:**\n"
-                        "- first_look: Comprehensive health overview across all servers.\n"
-                        "- run_healthcheck: Deep health checks with lint rules.\n\n"
-                        "**Performance:**\n"
-                        "- get_performance_summary: Combined performance overview.\n"
-                        "- get_cache_statistics: Entry/DN/DB cache analysis.\n"
-                        "- get_connection_statistics: Connection patterns and FD usage.\n"
-                        "- get_operation_statistics: Operation counts by type.\n"
-                        "- get_thread_statistics: Thread pool utilization.\n"
-                        "- get_resource_utilization: Memory, CPU, disk usage.\n\n"
-                        "**Replication:**\n"
-                        "- get_replication_status: Comprehensive replica and agreement status.\n"
-                        "- get_replication_topology: Map topology across all servers.\n"
-                        "- check_replication_lag: Analyze sync status and CSN lag.\n"
-                        "- list_replication_conflicts: Find conflict and glue entries.\n"
-                        "- get_agreement_status: Detailed agreement information.\n\n"
-                        "**User Management:**\n"
-                        "- list_active_users / list_locked_users / list_all_users\n"
-                        "- search_users_by_name / search_users_by_attribute\n"
-                        "- get_user_details\n\n"
-                        "**Group Management:**\n"
-                        "- list_all_groups\n\n"
-                        "**Monitoring:**\n"
-                        "- run_monitor\n\n"
-                        "**Advanced:**\n"
-                        "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
-                        "State which tool you'll call next and why; keep outputs concise."
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "Use the available MCP tools to accomplish the task. "
+                            "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
+                            "**Health & Diagnostics:**\n"
+                            "- first_look: Comprehensive health overview across all servers.\n"
+                            "- run_healthcheck: Deep health checks with lint rules.\n\n"
+                            "**Performance:**\n"
+                            "- get_performance_summary: Combined performance overview.\n"
+                            "- get_cache_statistics: Entry/DN/DB cache analysis.\n"
+                            "- get_connection_statistics: Connection patterns and FD usage.\n"
+                            "- get_operation_statistics: Operation counts by type.\n"
+                            "- get_thread_statistics: Thread pool utilization.\n"
+                            "- get_resource_utilization: Memory, CPU, disk usage.\n\n"
+                            "**Replication:**\n"
+                            "- get_replication_status: Comprehensive replica and agreement status.\n"
+                            "- get_replication_topology: Map topology across all servers.\n"
+                            "- check_replication_lag: Analyze sync status and CSN lag.\n"
+                            "- list_replication_conflicts: Find conflict and glue entries.\n"
+                            "- get_agreement_status: Detailed agreement information.\n\n"
+                            "**User Management:**\n"
+                            "- list_active_users / list_locked_users / list_all_users\n"
+                            "- search_users_by_name / search_users_by_attribute\n"
+                            "- get_user_details\n\n"
+                            "**Group Management:**\n"
+                            "- list_all_groups\n\n"
+                            "**Monitoring:**\n"
+                            "- run_monitor\n\n"
+                            "**Advanced:**\n"
+                            "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
+                            "State which tool you'll call next and why; keep outputs concise."
+                        ),
                     ),
                 ),
             ]
@@ -182,21 +186,24 @@ class DirSrvMCP(LDAPAssistantMCP):
             return [
                 PromptMessage(
                     role="user",
-                    content="I need help diagnosing replication issues in my directory.",
+                    content=TextContent(type="text", text="I need help diagnosing replication issues in my directory."),
                 ),
                 PromptMessage(
                     role="assistant",
-                    content=(
-                        "I'll help you diagnose replication issues. Let me perform a systematic analysis:\n\n"
-                        "**Step 1: Check replication topology and agreement status**\n"
-                        "I'll use `get_replication_status` to get an overview of all replicas and agreements.\n\n"
-                        "**Step 2: Look for replication conflicts**\n"
-                        "I'll use `list_replication_conflicts` to find any conflict or glue entries that need resolution.\n\n"
-                        "**Step 3: Analyze replication lag**\n"
-                        "I'll use `check_replication_lag` to identify any sync delays between servers.\n\n"
-                        "**Step 4: Examine specific agreements if needed**\n"
-                        "I'll use `get_agreement_status` to dive deeper into any problematic agreements.\n\n"
-                        "Let me start by getting the replication status across your servers..."
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "I'll help you diagnose replication issues. Let me perform a systematic analysis:\n\n"
+                            "**Step 1: Check replication topology and agreement status**\n"
+                            "I'll use `get_replication_status` to get an overview of all replicas and agreements.\n\n"
+                            "**Step 2: Look for replication conflicts**\n"
+                            "I'll use `list_replication_conflicts` to find any conflict or glue entries that need resolution.\n\n"
+                            "**Step 3: Analyze replication lag**\n"
+                            "I'll use `check_replication_lag` to identify any sync delays between servers.\n\n"
+                            "**Step 4: Examine specific agreements if needed**\n"
+                            "I'll use `get_agreement_status` to dive deeper into any problematic agreements.\n\n"
+                            "Let me start by getting the replication status across your servers..."
+                        ),
                     ),
                 ),
             ]
@@ -208,23 +215,26 @@ class DirSrvMCP(LDAPAssistantMCP):
             return [
                 PromptMessage(
                     role="user",
-                    content="I need help investigating performance issues with my directory server.",
+                    content=TextContent(type="text", text="I need help investigating performance issues with my directory server."),
                 ),
                 PromptMessage(
                     role="assistant",
-                    content=(
-                        "I'll help investigate performance issues. Here's my systematic approach:\n\n"
-                        "**Step 1: Get performance overview**\n"
-                        "I'll use `get_performance_summary` for a quick view of key metrics and any obvious issues.\n\n"
-                        "**Step 2: Check connection and operation load**\n"
-                        "I'll use `get_connection_statistics` and `get_operation_statistics` to understand the workload.\n\n"
-                        "**Step 3: Analyze cache efficiency**\n"
-                        "I'll use `get_cache_statistics` to check if cache sizes are adequate - low hit ratios cause disk I/O.\n\n"
-                        "**Step 4: Check thread utilization**\n"
-                        "I'll use `get_thread_statistics` to identify thread pool contention.\n\n"
-                        "**Step 5: Review resource usage**\n"
-                        "I'll use `get_resource_utilization` to check memory, CPU, and disk space.\n\n"
-                        "Let me start by getting a performance summary..."
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "I'll help investigate performance issues. Here's my systematic approach:\n\n"
+                            "**Step 1: Get performance overview**\n"
+                            "I'll use `get_performance_summary` for a quick view of key metrics and any obvious issues.\n\n"
+                            "**Step 2: Check connection and operation load**\n"
+                            "I'll use `get_connection_statistics` and `get_operation_statistics` to understand the workload.\n\n"
+                            "**Step 3: Analyze cache efficiency**\n"
+                            "I'll use `get_cache_statistics` to check if cache sizes are adequate - low hit ratios cause disk I/O.\n\n"
+                            "**Step 4: Check thread utilization**\n"
+                            "I'll use `get_thread_statistics` to identify thread pool contention.\n\n"
+                            "**Step 5: Review resource usage**\n"
+                            "I'll use `get_resource_utilization` to check memory, CPU, and disk space.\n\n"
+                            "Let me start by getting a performance summary..."
+                        ),
                     ),
                 ),
             ]
@@ -236,27 +246,30 @@ class DirSrvMCP(LDAPAssistantMCP):
             return [
                 PromptMessage(
                     role="user",
-                    content="Please perform a daily health check of my directory infrastructure.",
+                    content=TextContent(type="text", text="Please perform a daily health check of my directory infrastructure."),
                 ),
                 PromptMessage(
                     role="assistant",
-                    content=(
-                        "I'll perform a comprehensive daily health check covering all critical areas:\n\n"
-                        "**1. Overall Health Assessment**\n"
-                        "I'll use `first_look` to get a complete health overview including:\n"
-                        "- Server connectivity\n"
-                        "- Connection/thread utilization\n"
-                        "- Replication status\n"
-                        "- Cache efficiency\n"
-                        "- Disk space\n"
-                        "- Certificate expiration\n\n"
-                        "**2. Detailed Health Checks**\n"
-                        "I'll use `run_healthcheck` to run the full lint suite for configuration issues.\n\n"
-                        "**3. Replication Verification** (if applicable)\n"
-                        "I'll check for any replication lag or conflicts.\n\n"
-                        "**4. Performance Baseline**\n"
-                        "I'll capture current performance metrics for trending.\n\n"
-                        "Let me start with the comprehensive health overview..."
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "I'll perform a comprehensive daily health check covering all critical areas:\n\n"
+                            "**1. Overall Health Assessment**\n"
+                            "I'll use `first_look` to get a complete health overview including:\n"
+                            "- Server connectivity\n"
+                            "- Connection/thread utilization\n"
+                            "- Replication status\n"
+                            "- Cache efficiency\n"
+                            "- Disk space\n"
+                            "- Certificate expiration\n\n"
+                            "**2. Detailed Health Checks**\n"
+                            "I'll use `run_healthcheck` to run the full lint suite for configuration issues.\n\n"
+                            "**3. Replication Verification** (if applicable)\n"
+                            "I'll check for any replication lag or conflicts.\n\n"
+                            "**4. Performance Baseline**\n"
+                            "I'll capture current performance metrics for trending.\n\n"
+                            "Let me start with the comprehensive health overview..."
+                        ),
                     ),
                 ),
             ]
@@ -268,24 +281,27 @@ class DirSrvMCP(LDAPAssistantMCP):
             return [
                 PromptMessage(
                     role="user",
-                    content="I'm having trouble connecting to my directory server or clients are reporting connection issues.",
+                    content=TextContent(type="text", text="I'm having trouble connecting to my directory server or clients are reporting connection issues."),
                 ),
                 PromptMessage(
                     role="assistant",
-                    content=(
-                        "I'll help troubleshoot connectivity issues. Let me check several areas:\n\n"
-                        "**Step 1: Basic connectivity check**\n"
-                        "I'll use `first_look` to verify server accessibility and basic health.\n\n"
-                        "**Step 2: Connection capacity analysis**\n"
-                        "I'll use `get_connection_statistics` to check:\n"
-                        "- Current connection count vs. limits\n"
-                        "- File descriptor utilization\n"
-                        "- Connection states (CLOSE_WAIT can indicate client issues)\n\n"
-                        "**Step 3: Thread availability**\n"
-                        "I'll use `get_thread_statistics` to see if thread exhaustion is causing connection issues.\n\n"
-                        "**Step 4: Resource constraints**\n"
-                        "I'll use `get_resource_utilization` to check for resource exhaustion.\n\n"
-                        "Let me start by checking basic connectivity..."
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "I'll help troubleshoot connectivity issues. Let me check several areas:\n\n"
+                            "**Step 1: Basic connectivity check**\n"
+                            "I'll use `first_look` to verify server accessibility and basic health.\n\n"
+                            "**Step 2: Connection capacity analysis**\n"
+                            "I'll use `get_connection_statistics` to check:\n"
+                            "- Current connection count vs. limits\n"
+                            "- File descriptor utilization\n"
+                            "- Connection states (CLOSE_WAIT can indicate client issues)\n\n"
+                            "**Step 3: Thread availability**\n"
+                            "I'll use `get_thread_statistics` to see if thread exhaustion is causing connection issues.\n\n"
+                            "**Step 4: Resource constraints**\n"
+                            "I'll use `get_resource_utilization` to check for resource exhaustion.\n\n"
+                            "Let me start by checking basic connectivity..."
+                        ),
                     ),
                 ),
             ]
