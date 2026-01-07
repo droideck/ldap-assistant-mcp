@@ -172,7 +172,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                                 severity=severity,
                                 impact=f"Database cache hit ratio is {ratio}% - frequent disk reads slow operations",
                                 details=f"Hits: {hits}, Tries: {tries}, Evictions: {db_cache['ro_evictions'] + db_cache['rw_evictions']}",
-                                remediation="Consider increasing nsslapd-dbcachesize in cn=config,cn=ldbm database,cn=plugins,cn=config",
+                                remediation="Investigate database cache efficiency. If sufficient memory is available and this pattern persists under typical load, review nsslapd-dbcachesize tuning. Monitor cache evictions before and after any changes.",
                                 server=target,
                                 metadata={"hit_ratio": ratio, "tries": tries},
                             )
@@ -252,7 +252,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                                     severity=severity,
                                     impact=f"Entry cache hit ratio for {be_name} is {entry_ratio}% - entries frequently read from disk",
                                     details=f"Hits: {entry_hits}, Tries: {entry_tries}, Utilization: {entry_cache['utilization_pct']}%",
-                                    remediation=f"Consider increasing nsslapd-cachememsize for backend {be_name}",
+                                    remediation=f"Investigate entry cache utilization for backend {be_name}. If sufficient memory is available and low hit ratio persists under normal operations, review nsslapd-cachememsize tuning. Verify current memory usage before making changes.",
                                     server=target,
                                     metadata={"backend": be_name, "hit_ratio": entry_ratio},
                                 )
@@ -409,7 +409,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact=f"Server is using {fd_utilization}% of available file descriptors",
                         details=f"Current: {current_conns}, Max: {dtable_size}",
-                        remediation="Increase nsslapd-maxdescriptors or investigate connection leaks",
+                        remediation="Investigate connection patterns - check for client connection leaks or unexpected growth. Verify system ulimits before considering nsslapd-maxdescriptors adjustments. Monitor trends to identify root cause.",
                         server=target,
                         metadata={"utilization": fd_utilization, "current": current_conns},
                     )
@@ -421,7 +421,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.MEDIUM,
                         impact=f"Server is using {fd_utilization}% of file descriptors",
                         details=f"Current: {current_conns}, Max: {dtable_size}",
-                        remediation="Monitor connection growth; consider increasing nsslapd-maxdescriptors",
+                        remediation="Monitor connection growth trends. Investigate whether this is normal load growth or an issue with client connection handling before considering descriptor limit changes.",
                         server=target,
                         metadata={"utilization": fd_utilization},
                     )
@@ -715,7 +715,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact=f"{conns_at_max_threads} connections are at max thread limit",
                         details="Connections are being throttled due to thread limits",
-                        remediation="Increase nsslapd-threadnumber to allow more concurrent operations",
+                        remediation="Investigate server load patterns and CPU availability. If resources permit and thread contention persists under normal load, review nsslapd-threadnumber configuration. Consult server documentation for tuning best practices.",
                         server=target,
                         metadata={"at_max": conns_at_max_threads, "configured": threads},
                     )
@@ -963,7 +963,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.MEDIUM,
                         impact=f"Server has {format_bytes(swap)} in swap ({mem_swap_pct}%)",
                         details="Swap usage degrades performance significantly",
-                        remediation="Reduce cache sizes or add physical memory",
+                        remediation="Investigate memory allocation - swap usage indicates memory pressure. Review cache configurations (entry cache, database cache) relative to available physical memory. Consider memory capacity planning if workload requires current cache sizes.",
                         server=target,
                         metadata={"swap": swap, "swap_pct": mem_swap_pct},
                     )
@@ -1071,7 +1071,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact=f"{fd_util}% of file descriptors in use",
                         details=f"Current: {current_conns}, Max: {dtable_size}",
-                        remediation="Increase nsslapd-maxdescriptors",
+                        remediation="Investigate connection usage patterns before adjusting limits",
                         server=target,
                     ))
 
@@ -1110,7 +1110,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact=f"{conns_at_max} connections at thread limit",
                         details="Connections being throttled",
-                        remediation="Increase nsslapd-threadnumber",
+                        remediation="Investigate thread contention patterns and available resources",
                         server=target,
                     ))
 
@@ -1131,7 +1131,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact=f"{mem_rss_pct}% of system memory",
                         details=f"RSS: {format_bytes(rss)}",
-                        remediation="Review cache sizes or add memory",
+                        remediation="Investigate memory usage patterns and cache efficiency",
                         server=target,
                     ))
 
@@ -1154,7 +1154,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.MEDIUM,
                         impact=f"DB cache hit ratio is {db_ratio}%",
                         details="Frequent disk reads",
-                        remediation="Increase cache sizes",
+                        remediation="Investigate cache configuration relative to workload",
                         server=target,
                     ))
 

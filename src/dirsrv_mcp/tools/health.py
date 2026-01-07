@@ -950,7 +950,7 @@ def _check_cache_health(
                             severity=severity,
                             impact=f"Entry cache hit ratio is {entry_ratio}% - frequent disk reads",
                             details=f"Backend {be_name}: {entry_hits} hits / {entry_tries} tries",
-                            remediation=f"Consider increasing nsslapd-cachememsize for backend {be_name}",
+                            remediation=f"Investigate cache sizing for backend {be_name}. If memory is available and hit ratio remains low under normal load, consider adjusting nsslapd-cachememsize. Verify with monitoring before and after any changes.",
                             server=server_name,
                             metadata={"backend": be_name, "hit_ratio": entry_ratio},
                         )
@@ -1207,7 +1207,7 @@ def _check_connection_health(
                     severity=Severity.HIGH,
                     impact=f"Server using {fd_util}% of available file descriptors",
                     details=f"Current: {current_conns}, Max: {dtable_size}",
-                    remediation="Increase nsslapd-maxdescriptors or investigate connection leaks",
+                    remediation="Investigate connection patterns to determine root cause. Check for connection leaks in client applications, consider whether current descriptor limits match system ulimits before adjusting nsslapd-maxdescriptors.",
                     server=server_name,
                     metadata={"utilization": fd_util},
                 )
@@ -1220,7 +1220,7 @@ def _check_connection_health(
                     severity=Severity.HIGH,
                     impact=f"{conns_at_max} connections hitting thread limit",
                     details="Connections are being throttled due to thread limits",
-                    remediation="Increase nsslapd-threadnumber",
+                    remediation="Investigate thread utilization patterns and server load. If CPU resources are available and contention persists under normal load, nsslapd-threadnumber may need adjustment. Review server documentation for tuning guidance.",
                     server=server_name,
                     metadata={"at_max_threads": conns_at_max},
                 )

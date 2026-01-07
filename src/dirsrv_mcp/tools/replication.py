@@ -257,7 +257,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                 severity=Severity.HIGH,
                                 impact="Replica has no RUV - replication is not working",
                                 details=f"The replica for suffix {suffix} has an empty RUV, indicating it has never been initialized",
-                                remediation="Initialize the replica from a supplier using dsconf replication init or similar",
+                                remediation="Investigate why the replica is uninitialized. This could indicate a new replica that needs initialization, or a configuration issue. Consult documentation before performing replica initialization as it involves data transfer.",
                                 server=target,
                                 metadata={"suffix": suffix},
                             )
@@ -318,7 +318,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                         severity=Severity.MEDIUM,
                                         impact=f"Replication to {agmt_details.get('consumer_host')} is disabled",
                                         details="The replication agreement is configured but disabled",
-                                        remediation="Enable the agreement if replication should be active",
+                                        remediation="Verify whether this agreement was intentionally disabled. If replication to this consumer is required, investigate why it was disabled before re-enabling.",
                                         server=target,
                                         metadata={"agreement": agmt_details.get("name"), "suffix": suffix},
                                     )
@@ -542,7 +542,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact="Consumer replicas exist but no suppliers are configured",
                         details=f"Consumers {roles['consumers']} have no supplier for {suffix}",
-                        remediation="Configure a supplier or check if replication is misconfigured",
+                        remediation="Investigate the replication topology configuration. Consumers exist without corresponding suppliers in the configured servers, which may indicate misconfiguration or incomplete topology setup.",
                         metadata={"suffix": suffix, "consumers": roles["consumers"]},
                     )
                 )
@@ -841,7 +841,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         severity=Severity.HIGH,
                         impact="Conflict entries indicate replication issues that may cause data inconsistency",
                         details=f"Found {len(all_conflicts)} conflict entries across {len(suffixes_to_check)} suffix(es)",
-                        remediation="Review conflict entries and resolve using dsconf or ldapmodify. Options: swap, convert, or delete",
+                        remediation="Review each conflict entry to understand the cause. Conflict resolution requires careful analysis of both the conflict and valid entries to determine the correct action. Consult documentation for conflict resolution procedures.",
                         server=target,
                         metadata={"count": len(all_conflicts)},
                     )

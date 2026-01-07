@@ -109,15 +109,23 @@ def _parse_vlv_entry(vlv) -> Dict[str, Any]:
 
 
 def _generate_add_index_command(backend: str, attr: str, types: List[str]) -> str:
-    """Generate dsconf command to add a new index."""
+    """Generate dsconf command suggestion to add a new index."""
     types_args = " ".join(f"--index-type {t}" for t in types)
-    return f"dsconf <instance> backend index add --attr {attr} {types_args} {backend}"
+    return (
+        f"Review whether indexing '{attr}' would benefit your specific workload. "
+        f"If confirmed needed, a reindex will be required after adding. "
+        f"Example command: dsconf <instance> backend index add --attr {attr} {types_args} {backend}"
+    )
 
 
 def _generate_add_index_type_command(backend: str, attr: str, types: List[str]) -> str:
-    """Generate dsconf command to add index types to existing index."""
+    """Generate dsconf command suggestion to add index types to existing index."""
     types_args = " ".join(f"--add-type {t}" for t in types)
-    return f"dsconf <instance> backend index set --attr {attr} {types_args} {backend}"
+    return (
+        f"Review whether additional index types for '{attr}' would benefit your workload. "
+        f"A reindex may be required after modification. "
+        f"Example command: dsconf <instance> backend index set --attr {attr} {types_args} {backend}"
+    )
 
 
 def _generate_index_recommendations(analysis_data: Dict[str, Any]) -> List[str]:
@@ -673,7 +681,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                             severity=severity,
                             impact=f"Search pattern executed {count} times without index",
                             details=f"Filter: {pattern_examples.get((normalized_filter, base_dn), normalized_filter)}\nBase: {base_dn}",
-                            remediation=f"Add index for attribute(s): {', '.join(attrs)}",
+                            remediation=f"Investigate whether indexing '{', '.join(attrs)}' would benefit performance. Verify this pattern represents legitimate search traffic before adding indexes. A reindex is required after adding new indexes.",
                             server=target,
                             metadata={
                                 "filter": normalized_filter,
