@@ -309,18 +309,36 @@ class DirSrvMCP(LDAPAssistantMCP):
     def _register_resources(self) -> None:
         @self.resource("config://config-all")
         def get_cn_config_all_attributes() -> str:
-            """Return all attributes for cn=config as JSON."""
+            """Return all attributes for cn=config as JSON.
+
+            Note: In privacy mode (default), sensitive values like hostnames,
+            paths, and suffixes are redacted.
+            """
+            import json as _json
+
             with self._connection() as (_, ds):
                 try:
                     config_entry = Config(ds)
-                    return config_entry.get_all_attrs_json()
+                    raw_json = config_entry.get_all_attrs_json()
+
+                    if not self.privacy_enabled:
+                        return raw_json
+
+                    # Sanitize in privacy mode
+                    data = _json.loads(raw_json)
+                    sanitized = self._sanitizer.sanitize_dict(data)
+                    return _json.dumps(sanitized, indent=2)
                 except Exception as exc:
                     self.logger.error("Error getting cn=config attributes: %s", exc)
                     raise ResourceError(f"Failed to retrieve cn=config attributes: {exc}") from exc
 
         @self.resource("config://config-attribute/{attribute}")
         def get_cn_config_attribute(attribute: str) -> Dict[str, Any]:
-            """Return a specific attribute from cn=config."""
+            """Return a specific attribute from cn=config.
+
+            Note: In privacy mode (default), sensitive values like hostnames,
+            paths, and suffixes are redacted.
+            """
             attr_name = attribute.strip()
             with self._connection() as (_, ds):
                 try:
@@ -338,12 +356,25 @@ class DirSrvMCP(LDAPAssistantMCP):
                     except Exception:
                         single_value = None
 
-                    return {
+                    result = {
                         "type": "cn_config_attribute",
                         "attribute": attr_name,
                         "values": values_list if isinstance(values_list, list) else [],
                         "value": single_value,
                     }
+
+                    if self.privacy_enabled:
+                        # Sanitize the attribute values based on attribute name
+                        result["values"] = [
+                            self._sanitizer.sanitize_attribute_value(attr_name, v)
+                            for v in result["values"]
+                        ]
+                        if result["value"] is not None:
+                            result["value"] = self._sanitizer.sanitize_attribute_value(
+                                attr_name, result["value"]
+                            )
+
+                    return result
                 except Exception as exc:
                     self.logger.error("Error getting cn=config attribute '%s': %s", attribute, exc)
                     raise ResourceError(
@@ -383,5 +414,36 @@ class DirSrvMCP(LDAPAssistantMCP):
     def _get_base_dn(self, server_name: str) -> str:
         config = self.get_server_config(server_name)
         if not config.base_dn:
-            raise ToolError(f"Server '{server_name}' does not have a base DN configured")
+            display_name = (
+                self._sanitizer.sanitize_server_name(server_name)
+                if self.privacy_enabled else server_name
+            )
+            raise ToolError(f"Server '{display_name}' does not have a base DN configured")
         return config.base_dn
+
+    def describe_servers(self) -> List[Dict[str, Any]]:
+        """Return a list of server descriptions (sanitized in privacy mode)."""
+        descriptions = super().describe_servers()
+
+        if not self.privacy_enabled:
+            return descriptions
+
+        # Sanitize sensitive information when privacy is enabled
+        sanitized = []
+        for desc in descriptions:
+            sanitized_desc = {
+                "name": self._sanitizer.sanitize_server_name(desc.get("name")),
+                "hostname": self._sanitizer.sanitize_hostname(desc.get("hostname")),
+                "port": "[port]",
+                "use_ssl": desc.get("use_ssl"),
+                "base_dn": self._sanitizer.sanitize_suffix(desc.get("base_dn")),
+                "auth_method": desc.get("auth_method"),
+                "provider_type": desc.get("provider_type"),
+                "is_default": desc.get("is_default"),
+                "is_local": desc.get("is_local"),
+            }
+            if desc.get("is_local") and desc.get("serverid"):
+                sanitized_desc["serverid"] = "[serverid]"
+                sanitized_desc["use_ldapi"] = desc.get("use_ldapi")
+            sanitized.append(sanitized_desc)
+        return sanitized

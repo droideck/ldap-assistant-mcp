@@ -62,6 +62,10 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
                     "item": result,
                 })
             except Exception as exc:
-                mcp.logger.error("Error accessing monitor on %s: %s", srv, exc)
-                raise ToolError(f"Error accessing monitor on {srv}: {exc}") from exc
+                display_name = (
+                    mcp.sanitizer.sanitize_server_name(srv)
+                    if mcp.privacy_enabled else srv
+                )
+                mcp.logger.error("Error accessing monitor on %s: %s", display_name, exc)
+                raise ToolError(f"Error accessing monitor on {display_name}: {exc}") from exc
 
