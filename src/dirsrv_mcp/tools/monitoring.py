@@ -13,6 +13,29 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize monitor result for privacy mode."""
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize backend name
+    if "backend" in sanitized and sanitized["backend"] != "main":
+        sanitized["backend"] = "[backend]"
+
+    # Sanitize suffix in parameters
+    if "suffix" in sanitized:
+        sanitized["suffix"] = sanitizer.sanitize_suffix(sanitized["suffix"])
+
+    return sanitized
+
+
 def register_monitoring_tools(mcp: DirSrvMCP) -> None:
     """Register monitoring tools with the MCP server."""
 
@@ -32,12 +55,12 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
                     monitor = Monitor(ds)
                 data_json = monitor.get_all_attrs_json()
                 result = json.loads(data_json)
-                return {
+                return _sanitize_monitor_result(mcp, {
                     "type": "monitor",
                     "server": srv,
                     "backend": backend or suffix or "main",
                     "item": result,
-                }
+                })
             except Exception as exc:
                 mcp.logger.error("Error accessing monitor on %s: %s", srv, exc)
                 raise ToolError(f"Error accessing monitor on {srv}: {exc}") from exc

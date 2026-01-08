@@ -265,6 +265,18 @@ class PrivacySanitizer:
         """Sanitize a list of LDAP entries."""
         return [self.sanitize_entry(e) for e in entries]
 
+    def _sanitize_text_field(self, text: str) -> str:
+        """Sanitize a text field by replacing DNs and hostnames."""
+        if not text:
+            return text
+        # Replace DNs (e.g., dc=example,dc=com, cn=admin)
+        text = re.sub(r'\b[a-zA-Z]+=[\w\s,=]+', '[dn]', text)
+        # Replace hostnames
+        text = re.sub(r'\b[\w.-]+\.(com|org|net|local|internal)\b', '[hostname]', text)
+        # Replace port numbers that follow hostnames (e.g., :389, :636)
+        text = re.sub(r'\[hostname\]:\d+', '[hostname]:[port]', text)
+        return text
+
     def sanitize_finding(self, finding: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize a finding dictionary.
 
@@ -276,14 +288,17 @@ class PrivacySanitizer:
         if "server" in result:
             result["server"] = self.sanitize_server_name(result["server"])
 
+        # Sanitize title - may contain agreement names, suffixes, etc.
+        if "title" in result and isinstance(result["title"], str):
+            result["title"] = self._sanitize_text_field(result["title"])
+
+        # Sanitize impact - may contain hostnames, suffixes, ports
+        if "impact" in result and isinstance(result["impact"], str):
+            result["impact"] = self._sanitize_text_field(result["impact"])
+
         # Sanitize details - redact specific values but keep structure
         if "details" in result and isinstance(result["details"], str):
-            # Replace DNs in details text
-            details = result["details"]
-            # Simple pattern replacement for common patterns
-            details = re.sub(r'\b[a-zA-Z]+=[\w\s,=]+', '[dn]', details)
-            details = re.sub(r'\b[\w.-]+\.(com|org|net|local|internal)\b', '[hostname]', details)
-            result["details"] = details
+            result["details"] = self._sanitize_text_field(result["details"])
 
         # Sanitize metadata
         if "metadata" in result and isinstance(result["metadata"], dict):

@@ -835,26 +835,49 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             # Generate findings
             total_issues = len(all_conflicts) + len(all_glue)
             if all_conflicts:
+                # Generate dsconf command examples for the first conflict
+                first_conflict_dn = all_conflicts[0].get("dn", "<conflict_dn>") if all_conflicts else "<conflict_dn>"
+                first_suffix = all_conflicts[0].get("suffix", suffixes_to_check[0]) if all_conflicts else suffixes_to_check[0]
+
+                remediation_text = (
+                    f"Review each conflict before resolution. Use dsconf repl-conflict commands:\n"
+                    f"  1. Compare conflict with valid entry:\n"
+                    f"     dsconf <instance> repl-conflict compare \"{first_conflict_dn}\"\n"
+                    f"  2. Resolution options (choose based on comparison):\n"
+                    f"     - Delete conflict (keep valid): dsconf <instance> repl-conflict delete \"<dn>\"\n"
+                    f"     - Swap (replace valid with conflict): dsconf <instance> repl-conflict swap \"<dn>\"\n"
+                    f"     - Convert (rename conflict): dsconf <instance> repl-conflict convert \"<dn>\" --new-rdn=cn=newname\n"
+                    f"  3. List all conflicts: dsconf <instance> repl-conflict list {first_suffix}"
+                )
+
                 findings.append(
                     format_finding(
                         title=f"Replication Conflicts Found: {len(all_conflicts)}",
                         severity=Severity.HIGH,
                         impact="Conflict entries indicate replication issues that may cause data inconsistency",
                         details=f"Found {len(all_conflicts)} conflict entries across {len(suffixes_to_check)} suffix(es)",
-                        remediation="Review each conflict entry to understand the cause. Conflict resolution requires careful analysis of both the conflict and valid entries to determine the correct action. Consult documentation for conflict resolution procedures.",
+                        remediation=remediation_text,
                         server=target,
                         metadata={"count": len(all_conflicts)},
                     )
                 )
 
             if all_glue:
+                first_glue_dn = all_glue[0].get("dn", "<glue_dn>") if all_glue else "<glue_dn>"
+
+                glue_remediation = (
+                    f"Glue entries are placeholders that may indicate orphaned entries. Review each glue entry:\n"
+                    f"  - To delete if orphaned: ldapdelete -D \"cn=Directory Manager\" -W \"{first_glue_dn}\"\n"
+                    f"  - To convert to real entry: Remove 'glue' objectclass and add appropriate attributes"
+                )
+
                 findings.append(
                     format_finding(
                         title=f"Glue Entries Found: {len(all_glue)}",
                         severity=Severity.MEDIUM,
                         impact="Glue entries are placeholders created during replication that may need attention",
                         details=f"Found {len(all_glue)} glue entries across {len(suffixes_to_check)} suffix(es)",
-                        remediation="Review glue entries - they may be converted to real entries or deleted if orphaned",
+                        remediation=glue_remediation,
                         server=target,
                         metadata={"count": len(all_glue)},
                     )

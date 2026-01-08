@@ -4,6 +4,8 @@ Complete reference for all 389 DS MCP tools, resources, and prompts.
 
 This documentation covers the `dirsrv_mcp` provider which uses [lib389](https://lib389.readthedocs.io/) for 389 Directory Server operations.
 
+> **Note:** Tools return accurate data from the server, but the LLM interprets that data. Hallucinations are possible - always verify recommendations before acting on them.
+
 ---
 
 ## Health & Diagnostics
@@ -545,10 +547,16 @@ Returns a single `cn=config` attribute.
 
 ## Privacy Mode
 
-Set `LDAP_MCP_EXPOSE_SENSITIVE_DATA=false` to enable privacy mode. When enabled:
+**Privacy mode is enabled by default.** Set `LDAP_MCP_EXPOSE_SENSITIVE_DATA=true` only in trusted environments (local models or approved private cloud instances).
+
+When privacy mode is enabled (default):
 - Server names, hostnames, and DNs are anonymized
 - Sensitive configuration values are redacted
-- Safe for sharing diagnostic output with external parties
+- Tools like `get_user_details` and `ldap_search` are disabled
+- List tools return counts only
+- Safe for use with cloud-hosted LLMs
+
+**Warning:** Avoid enabling with public LLMs when connected to production directories. Test/sample data is fine.
 
 ---
 

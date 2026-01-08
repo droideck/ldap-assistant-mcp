@@ -190,25 +190,30 @@ If you don't have an LDAP server to connect to, see the [Development Guide](docs
 
 ## Privacy Mode
 
-By default, sensitive data (server names, DNs, hostnames) is exposed in tool outputs. To anonymize this data when sharing diagnostics with external parties, set:
+By default, **privacy mode is enabled** - sensitive data (server names, DNs, hostnames, user details) is redacted from tool outputs. Tools that expose individual entries (`get_user_details`, `ldap_search`) are disabled; list tools return counts only.
+
+To enable full data access in **trusted environments only**:
 
 ```json
 {
   "env": {
-    "LDAP_MCP_EXPOSE_SENSITIVE_DATA": "false"
+    "LDAP_MCP_EXPOSE_SENSITIVE_DATA": "true"
   }
 }
 ```
 
-When privacy mode is enabled:
+**Important:** Only enable this with local models, private cloud LLM instances, or when working with test/sample data. Avoid enabling with public LLMs when connected to production directories - your directory information could be included in their training data or logs.
+
+When privacy mode is enabled (default):
 - Server names, hostnames, and DNs are anonymized
 - Configuration values are redacted
+- Sensitive tools are disabled
 - Diagnostic metrics (counts, ratios, percentages) remain visible
 
 ## Limitations
 
-- **Experimental** - APIs subject to change
-- **Not production-ready** - Designed for local/testing/support scenarios
+- **Experimental** - APIs subject to change, early-stage software
+- **LLM interpretation** - Tools return accurate data, but the LLM interprets it. Hallucinations are possible. Always verify recommendations before acting.
 - **Read-only** - No write operations yet
 - **Plain text passwords** - Use restrictive file permissions on config files
 - **STDIO transport only** - No HTTP/SSE support yet

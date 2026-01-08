@@ -28,6 +28,59 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize index result for privacy mode."""
+    if not mcp.privacy_enabled:
+        return result
+
+    sanitizer = mcp.sanitizer
+    sanitized = dict(result)
+
+    # Sanitize server name
+    if "server" in sanitized:
+        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+
+    # Sanitize backends list
+    if "backends" in sanitized and isinstance(sanitized["backends"], list):
+        sanitized["backends"] = [
+            _sanitize_backend(sanitizer, b) for b in sanitized["backends"]
+        ]
+
+    # Sanitize findings
+    if "findings" in sanitized and isinstance(sanitized["findings"], list):
+        sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
+
+    # Sanitize patterns (unindexed searches)
+    if "patterns" in sanitized and isinstance(sanitized["patterns"], list):
+        sanitized["patterns"] = [
+            _sanitize_pattern(sanitizer, p) for p in sanitized["patterns"]
+        ]
+
+    return sanitized
+
+
+def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize a backend entry in index results."""
+    result = dict(backend)
+    if "name" in result:
+        result["name"] = "[backend]"
+    if "suffix" in result:
+        result["suffix"] = sanitizer.sanitize_suffix(result["suffix"])
+    return result
+
+
+def _sanitize_pattern(sanitizer, pattern: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize an unindexed search pattern entry."""
+    result = dict(pattern)
+    # Base DN should be sanitized
+    if "base_dn" in result:
+        result["base_dn"] = sanitizer.sanitize_dn(result["base_dn"])
+    # Example filter may contain user data - redact values
+    if "example_filter" in result:
+        result["example_filter"] = "[filter]"
+    return result
+
+
 # Recommended indexes for common LDAP deployments
 # Format: attribute -> list of recommended index types
 RECOMMENDED_INDEXES: Dict[str, List[str]] = {
@@ -309,15 +362,15 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "backends_checked": len(index_data["backends"]),
             }
 
-            return index_data
+            return _sanitize_index_result(mcp, index_data)
 
         except Exception as e:
             mcp.logger.error("Error listing indexes: %s", e)
-            return {
+            return _sanitize_index_result(mcp, {
                 "type": "index_list",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -505,15 +558,15 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 analysis_data
             )
 
-            return analysis_data
+            return _sanitize_index_result(mcp, analysis_data)
 
         except Exception as e:
             mcp.logger.error("Error analyzing index configuration: %s", e)
-            return {
+            return _sanitize_index_result(mcp, {
                 "type": "index_analysis",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:
@@ -561,7 +614,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         # Check if this is a local server
         if not is_local_server(mcp.connection_manager, target):
-            return {
+            return _sanitize_index_result(mcp, {
                 "type": "unindexed_searches",
                 "server": target,
                 "error": "Log analysis requires local server access",
@@ -580,7 +633,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     )
                 ],
-            }
+            })
 
         ds = None
         try:
@@ -631,11 +684,11 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
             except Exception as e:
                 mcp.logger.warning("Error parsing access log: %s", e)
-                return {
+                return _sanitize_index_result(mcp, {
                     "type": "unindexed_searches",
                     "server": target,
                     "error": f"Failed to parse access log: {e}",
-                }
+                })
 
             # Sort by frequency and limit
             sorted_patterns = sorted(
@@ -704,7 +757,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 summary = f"FAIR: {len(patterns)} low-frequency unindexed search pattern(s) found"
                 status = "fair"
 
-            return {
+            return _sanitize_index_result(mcp, {
                 "type": "unindexed_searches",
                 "server": target,
                 "time_range": time_range,
@@ -714,15 +767,15 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "unique_patterns": len(patterns),
                 "patterns": patterns,
                 "findings": findings,
-            }
+            })
 
         except Exception as e:
             mcp.logger.error("Error finding unindexed searches: %s", e)
-            return {
+            return _sanitize_index_result(mcp, {
                 "type": "unindexed_searches",
                 "server": target,
                 "error": str(e),
-            }
+            })
         finally:
             if ds:
                 try:

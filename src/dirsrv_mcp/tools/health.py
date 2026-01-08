@@ -876,8 +876,10 @@ def _check_replication_health(
                     # Check for replication errors
                     if last_result:
                         # Error status typically starts with "Error" or has non-zero code
+                        # Note: "Error (0)" means success - error code 0 = no error
+                        last_result_lower = last_result.lower()
                         is_error = (
-                            "error" in last_result.lower() or
+                            ("error" in last_result_lower and not last_result_lower.startswith("error (0)")) or
                             last_result.startswith("(-") or
                             (last_result.startswith("(") and not last_result.startswith("(0)"))
                         )
