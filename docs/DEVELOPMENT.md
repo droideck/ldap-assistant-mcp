@@ -105,6 +105,17 @@ The `fastmcp.json` configures the MCP server runtime:
 }
 ```
 
+### Offline Server (Environment Variables)
+
+For analyzing a stopped local instance without LDAP connection:
+
+```bash
+export LDAP_IS_OFFLINE="true"
+export LDAP_IS_LOCAL="true"
+export LDAP_SERVERID="slapd-localhost"
+export LDAP_BASE_DN="dc=example,dc=com"
+```
+
 ### Single Server (Environment Variables)
 
 For a single server without `servers.json`:

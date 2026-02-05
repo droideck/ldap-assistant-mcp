@@ -441,9 +441,12 @@ class DirSrvMCP(LDAPAssistantMCP):
                 "provider_type": desc.get("provider_type"),
                 "is_default": desc.get("is_default"),
                 "is_local": desc.get("is_local"),
+                "mode": desc.get("mode"),
             }
             if desc.get("is_local") and desc.get("serverid"):
                 sanitized_desc["serverid"] = "[serverid]"
                 sanitized_desc["use_ldapi"] = desc.get("use_ldapi")
+            if desc.get("is_offline"):
+                sanitized_desc["is_offline"] = True
             sanitized.append(sanitized_desc)
         return sanitized

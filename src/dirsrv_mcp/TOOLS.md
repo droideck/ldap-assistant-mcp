@@ -579,6 +579,23 @@ To enable local features, configure the server with:
 }
 ```
 
+## Offline Mode
+
+Offline mode allows analyzing a stopped DS instance's configuration and logs without any LDAP connection. This is useful for post-mortem analysis or examining instances that cannot be started.
+
+To configure a server for offline mode:
+```json
+{
+  "is_local": true,
+  "serverid": "slapd-instance",
+  "is_offline": true
+}
+```
+
+In offline mode:
+- **Available:** Health checks (`first_look`, `run_healthcheck`), configuration tools (`get_server_configuration`, `compare_server_configurations`, `list_plugins`, `get_backend_configuration`), and index tools (`list_indexes`, `analyze_index_configuration`, `find_unindexed_searches`)
+- **Unavailable:** Tools requiring a live LDAP connection (user/group management, monitoring, performance metrics, replication, search) will return a `LiveServerRequired` error
+
 ---
 
 ## Example Workflows

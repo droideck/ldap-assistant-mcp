@@ -94,6 +94,12 @@ class LDAPServerConfig:
     - Uses SASL EXTERNAL authentication (no password needed)
     - Authenticates based on Unix socket peer credentials
     - Requires the process to run as root or the dirsrv user
+
+    Offline instance mode (is_offline=True):
+    - Requires is_local=True and serverid
+    - Uses local_simple_allocate() but skips ds.open() (no LDAP bind)
+    - Allows offline analysis via DSEldif, DirsrvAccessLog, etc.
+    - Tools requiring live LDAP will return clear error messages
     """
 
     name: str
@@ -110,6 +116,8 @@ class LDAPServerConfig:
     serverid: Optional[str] = None
     # LDAPI socket connection (requires is_local=True and serverid)
     use_ldapi: bool = False
+    # Offline instance mode (stopped local server, no LDAP connection)
+    is_offline: bool = False
 
     @property
     def ldap_url(self) -> str:
@@ -138,6 +146,8 @@ class LDAPServerConfig:
                 result["serverid"] = self.serverid
             if self.use_ldapi:
                 result["use_ldapi"] = self.use_ldapi
+            if self.is_offline:
+                result["is_offline"] = self.is_offline
         return result
 
     def copy_with(self, **overrides: Any) -> LDAPServerConfig:
@@ -297,6 +307,11 @@ class LDAPAssistantMCP(FastMCP):
             if config.is_local and config.serverid:
                 desc["serverid"] = config.serverid
                 desc["use_ldapi"] = config.use_ldapi
+            if config.is_offline:
+                desc["is_offline"] = True
+                desc["mode"] = "offline"
+            else:
+                desc["mode"] = "live"
             descriptions.append(desc)
         return descriptions
 

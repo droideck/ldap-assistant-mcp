@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 from lib389.idm.account import Accounts
 from lib389.idm.user import nsUserAccounts
 
+from src.dirsrv_mcp.connection import require_live_server
 from src.lib.datetime_utils import convert_datetimes_to_strings
 from src.lib.privacy import create_count_only_response, create_privacy_error
 
@@ -26,6 +27,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "list_all_users")
         with mcp._connection(target) as (name, ds):
             base_dn = mcp._get_base_dn(name)
             users = nsUserAccounts(ds, base_dn)
@@ -54,6 +56,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "search_users_by_name")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             if "*" in name:
@@ -96,6 +99,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
             return create_privacy_error("get_user_details")
 
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "get_user_details")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -111,6 +115,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "list_active_users")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -146,6 +151,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "list_locked_users")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -183,6 +189,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "search_users_by_attribute")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             search_filter = f"({attribute}={value})" if "*" in value else f"({attribute}=*{value}*)"

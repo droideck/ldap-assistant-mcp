@@ -6,12 +6,14 @@ This directory contains pytest-based tests for the 389 Directory Server MCP tool
 
 ```
 tests/
-├── conftest.py          # Shared pytest fixtures (server config, expected data)
-├── test_users.py        # User management tool tests
-├── test_groups.py       # Group management tool tests
-├── test_monitoring.py   # Monitoring tool tests
-├── test_search.py       # LDAP search tool tests
-└── test_multiserver.py  # Multi-server testing
+├── conftest.py              # Shared pytest fixtures (server config, expected data)
+├── test_users.py            # User management tool tests
+├── test_groups.py           # Group management tool tests
+├── test_monitoring.py       # Monitoring tool tests
+├── test_search.py           # LDAP search tool tests
+├── test_multiserver.py      # Multi-server testing
+├── test_local_connection.py # Local/LDAPI connection tests (run inside DS container)
+└── test_offline_mode.py     # Offline instance mode tests (no LDAP connection needed)
 ```
 
 ## Testing Patterns

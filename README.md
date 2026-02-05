@@ -106,14 +106,26 @@ Create a `servers.json` file with your LDAP server(s):
       "bind_dn": "cn=Directory Manager",
       "bind_password": "your-password",
       "provider_type": "389ds"
+    },
+    {
+      "name": "stopped-ds",
+      "ldap_url": "ldap://localhost:389",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=Directory Manager",
+      "bind_password": "unused-in-offline-mode",
+      "provider_type": "389ds",
+      "is_local": true,
+      "serverid": "slapd-localhost",
+      "is_offline": true
     }
   ]
 }
 ```
 
-**Local vs Remote servers:**
-- **Local servers** (`is_local: true` + `serverid`) enable additional diagnostics: disk space monitoring, certificate checking, access log analysis, and process metrics
+**Server modes:**
 - **Remote servers** work via LDAP only - most tools work, but some local-only features are unavailable
+- **Local servers** (`is_local: true` + `serverid`) enable additional diagnostics: disk space monitoring, certificate checking, access log analysis, and process metrics
+- **Offline servers** (`is_offline: true` + `is_local: true` + `serverid`) analyze a stopped instance's configuration and logs without any LDAP connection. Useful for post-mortem analysis or examining instances that can't be started
 
 ### Step 3: Install to MCP Client
 

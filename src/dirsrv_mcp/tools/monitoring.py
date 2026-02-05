@@ -9,6 +9,8 @@ from fastmcp.exceptions import ToolError
 from lib389.backend import Backends
 from lib389.monitor import Monitor
 
+from src.dirsrv_mcp.connection import require_live_server
+
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
@@ -45,6 +47,7 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
     ) -> Dict[str, Any]:
         """Return server or backend monitor information."""
         target = server_name or mcp.default_server
+        require_live_server(mcp.connection_manager, target, "run_monitor")
         with mcp._connection(target) as (srv, ds):
             try:
                 if backend or suffix:

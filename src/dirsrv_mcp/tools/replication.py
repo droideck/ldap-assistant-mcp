@@ -13,6 +13,7 @@ from lib389._constants import ReplicaRole
 from lib389.conflicts import ConflictEntries, GlueEntries
 from lib389.replica import Replicas, RUV
 
+from src.dirsrv_mcp.connection import require_live_server
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -205,6 +206,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "error": "No server configured",
                 "replicas": [],
             }
+        require_live_server(mcp.connection_manager, target, "get_replication_status")
 
         ds = None
         try:
@@ -435,10 +437,25 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         servers_failed = []
 
         for server_name in server_names:
+            # Skip offline servers - they can't provide live replication status
+            config = mcp.connection_manager.get_config(server_name)
+            if config.is_offline:
+                servers_failed.append(server_name)
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Skipped Offline Server: {server_name}",
+                        severity=Severity.INFO,
+                        impact="Offline servers cannot provide live replication topology data",
+                        details=f"Server '{server_name}' is in offline mode (is_offline=True)",
+                        remediation="Use a live server for replication topology analysis",
+                        server=server_name,
+                    )
+                )
+                continue
+
             ds = None
             try:
                 ds = mcp.connection_manager.connect(server_name)
-                config = mcp.connection_manager.get_config(server_name)
                 servers_checked.append(server_name)
 
                 server_info = {
@@ -587,6 +604,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "replication_lag",
                 "error": "No server configured",
             }
+        require_live_server(mcp.connection_manager, target, "check_replication_lag")
 
         ds = None
         try:
@@ -757,6 +775,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "replication_conflicts",
                 "error": "No server configured",
             }
+        require_live_server(mcp.connection_manager, target, "list_replication_conflicts")
 
         ds = None
         try:
@@ -947,6 +966,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "agreement_status",
                 "error": "No server configured",
             }
+        require_live_server(mcp.connection_manager, target, "get_agreement_status")
 
         ds = None
         try:
