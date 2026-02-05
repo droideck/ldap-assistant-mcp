@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import ldap
 from fastmcp.exceptions import ToolError
 
+from src.dirsrv_mcp.connection import require_live_server
 from src.lib.privacy import create_privacy_error
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
         if mcp.privacy_enabled:
             return create_privacy_error("ldap_search")
         target = str(server_name) if server_name is not None else mcp.default_server
+        require_live_server(mcp.connection_manager, target, "ldap_search")
         with mcp._connection(target) as (srv, ds):
             try:
                 base_dn_value = str(base_dn)

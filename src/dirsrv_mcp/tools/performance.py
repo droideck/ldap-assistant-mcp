@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from lib389.backend import Backends
 from lib389.monitor import Monitor, MonitorLDBM, MonitorDiskSpace, MonitorSNMP
 
-from src.dirsrv_mcp.connection import is_local_server
+from src.dirsrv_mcp.connection import is_local_server, require_live_server
 from src.lib.result_formatter import Severity, format_finding
 from src.lib.value_utils import format_bytes, safe_float, safe_int
 
@@ -123,6 +123,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "cache_statistics",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_cache_statistics")
 
         ds = None
         try:
@@ -347,6 +348,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "connection_statistics",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_connection_statistics")
 
         ds = None
         try:
@@ -501,6 +503,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "operation_statistics",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_operation_statistics")
 
         ds = None
         try:
@@ -670,6 +673,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "thread_statistics",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_thread_statistics")
 
         ds = None
         try:
@@ -790,6 +794,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "resource_utilization",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_resource_utilization")
 
         ds = None
         try:
@@ -1022,6 +1027,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "performance_summary",
                 "error": "No server configured",
             })
+        require_live_server(mcp.connection_manager, target, "get_performance_summary")
 
         ds = None
         try:

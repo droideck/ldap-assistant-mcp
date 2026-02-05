@@ -348,3 +348,159 @@ jobs:
 
           echo "=== Network connectivity ==="
           docker exec ds-multi-local ping -c 1 ds-multi-remote || true
+
+  # Offline mode tests - seeds data in one container, runs offline tests in another
+  # that never starts DS (guaranteeing no LDAP connection is possible)
+  test-offline:
+    name: Offline Mode Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone ldap-assistant-mcp repository
+        uses: actions/checkout@v4
+
+      - name: Create and seed DS instance
+        run: |
+          # Create a shared volume for DS data
+          docker volume create ds-offline-ci-data
+
+          # Start DS container to seed data
+          docker run -d \
+            --name ds-offline-seed \
+            --hostname localhost \
+            -v ds-offline-ci-data:/data \
+            -e DS_DM_PASSWORD=TestPassword123 \
+            -e DS_SUFFIX_NAME=dc=test,dc=com \
+            -e DS_CREATE_SUFFIX_ENTRY=True \
+            -p 36891:3389 \
+            "$DS_IMAGE"
+
+          # Wait for DS to be ready
+          echo "Waiting for DS to start..."
+          for i in {1..30}; do
+            if docker exec ds-offline-seed ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
+              echo "DS is ready"
+              break
+            fi
+            sleep 5
+          done
+
+          # Wait for auth
+          sleep 3
+          for i in {1..10}; do
+            if docker exec ds-offline-seed ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w TestPassword123 > /dev/null 2>&1; then
+              echo "Auth is ready"
+              break
+            fi
+            sleep 5
+          done
+
+          # Create backend
+          docker exec ds-offline-seed dsconf localhost backend create \
+            --suffix="dc=test,dc=com" \
+            --be-name=userroot \
+            --create-entries \
+            --create-suffix 2>/dev/null || true
+
+          # Create OUs and test data
+          docker exec -i ds-offline-seed ldapadd \
+            -H ldap://localhost:3389 \
+            -D "cn=Directory Manager" \
+            -w TestPassword123 \
+            -x <<EOF || true
+          dn: ou=people,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: people
+
+          dn: ou=groups,dc=test,dc=com
+          objectClass: top
+          objectClass: organizationalUnit
+          ou: groups
+          EOF
+
+          echo "DS seeded successfully"
+
+      - name: Stop seed container and start offline test container
+        run: |
+          # Stop the seed container (DS is no longer running)
+          docker stop ds-offline-seed
+          echo "Seed container stopped"
+
+          # Start a new container from the same image and volume,
+          # but override entrypoint so DS never starts
+          docker run -d \
+            --name ds-offline-ci \
+            --hostname localhost \
+            --entrypoint /bin/bash \
+            -v ds-offline-ci-data:/data \
+            -v ${{ github.workspace }}:/mcp:ro \
+            "$DS_IMAGE" \
+            -c "sleep infinity"
+
+          # Wait for container to be running
+          sleep 2
+
+          # Verify DS is NOT running (no LDAP port)
+          if docker exec ds-offline-ci ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
+            echo "ERROR: DS should not be running!"
+            exit 1
+          else
+            echo "Confirmed: DS is not running - offline mode ready"
+          fi
+
+          # Verify instance files exist from the seed step
+          docker exec ds-offline-ci test -f /etc/dirsrv/slapd-localhost/dse.ldif
+          echo "dse.ldif exists - filesystem access verified"
+
+      - name: Install test dependencies in container
+        run: |
+          docker exec ds-offline-ci bash -c "
+            python3 -m ensurepip --upgrade 2>/dev/null || true
+            cd /mcp
+            python3 -m pip install --quiet pytest pytest-asyncio
+            python3 -m pip install --quiet -r requirements.txt
+          "
+
+      - name: Run offline mode unit tests
+        run: |
+          docker exec \
+            -e LDAP_MCP_EXPOSE_SENSITIVE_DATA="true" \
+            ds-offline-ci bash -c "
+              cd /mcp
+              python3 -m pytest src/dirsrv_mcp/tests/test_offline_mode.py -v -s --tb=short \
+                -k 'not Integration'
+            "
+
+      - name: Run offline mode integration tests
+        run: |
+          docker exec \
+            -e LDAP_IS_OFFLINE="true" \
+            -e LDAP_SERVERID="localhost" \
+            -e LDAP_PORT="3389" \
+            -e LDAP_BASE_DN="dc=test,dc=com" \
+            -e LDAP_BIND_DN="cn=Directory Manager" \
+            -e LDAP_BIND_PASSWORD="TestPassword123" \
+            -e LDAP_MCP_EXPOSE_SENSITIVE_DATA="true" \
+            ds-offline-ci bash -c "
+              cd /mcp
+              python3 -m pytest src/dirsrv_mcp/tests/test_offline_mode.py::TestOfflineConnectionIntegration -v -s --tb=short
+            "
+
+      - name: Debug offline test environment
+        if: failure()
+        run: |
+          echo "=== Docker containers ==="
+          docker ps -a
+
+          echo "=== Seed container logs ==="
+          docker logs ds-offline-seed || true
+
+          echo "=== Offline test container logs ==="
+          docker logs ds-offline-ci || true
+
+          echo "=== DS instance files ==="
+          docker exec ds-offline-ci ls -la /etc/dirsrv/slapd-localhost/ || true
+          docker exec ds-offline-ci ls -la /var/log/dirsrv/slapd-localhost/ || true
+
+          echo "=== dse.ldif head ==="
+          docker exec ds-offline-ci head -50 /etc/dirsrv/slapd-localhost/dse.ldif || true

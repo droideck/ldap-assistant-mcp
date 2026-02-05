@@ -20,6 +20,9 @@ __all__ = [
     "is_local_server",
     "require_local_server",
     "LocalServerRequired",
+    "is_offline_server",
+    "require_live_server",
+    "LiveServerRequired",
 ]
 
 
@@ -69,6 +72,8 @@ class ServerConfig:
     serverid: Optional[str] = None
     # LDAPI socket connection (requires is_local=True and serverid)
     use_ldapi: bool = False
+    # Offline instance mode (stopped local server, no LDAP connection)
+    is_offline: bool = False
 
     @classmethod
     def from_env(cls, name: str = "default") -> ServerConfig:
@@ -125,6 +130,7 @@ class ConnectionManager:
                 is_local=config.is_local,
                 serverid=config.serverid,
                 use_ldapi=config.use_ldapi,
+                is_offline=config.is_offline,
             )
         else:
             server_config = config
@@ -133,7 +139,8 @@ class ConnectionManager:
         local_info = ""
         if server_config.is_local:
             ldapi_info = ", ldapi=True" if server_config.use_ldapi else ""
-            local_info = f", local=True, serverid={server_config.serverid}{ldapi_info}"
+            offline_info = ", offline=True" if server_config.is_offline else ""
+            local_info = f", local=True, serverid={server_config.serverid}{ldapi_info}{offline_info}"
         logger.info(
             "Added DirSrv server '%s' (%s, auth=%s%s)",
             server_config.name,
@@ -171,14 +178,23 @@ class ConnectionManager:
         local_info = ""
         if config.is_local:
             ldapi_info = ", ldapi=True" if config.use_ldapi else ""
-            local_info = f", local=True, serverid={config.serverid}{ldapi_info}"
-        logger.info(
-            "Connecting to %s at %s (auth=%s%s)",
-            server_name,
-            config.ldap_url,
-            config.auth_method,
-            local_info,
-        )
+            offline_info = ", offline=True" if config.is_offline else ""
+            local_info = f", local=True, serverid={config.serverid}{ldapi_info}{offline_info}"
+
+        if config.is_offline:
+            logger.info(
+                "Allocating offline DirSrv for %s (serverid=%s)",
+                server_name,
+                config.serverid,
+            )
+        else:
+            logger.info(
+                "Connecting to %s at %s (auth=%s%s)",
+                server_name,
+                config.ldap_url,
+                config.auth_method,
+                local_info,
+            )
 
         ds = DirSrv(verbose=False)
 
@@ -207,7 +223,7 @@ class ConnectionManager:
                     ldapi_uri,
                 )
             else:
-                # Local with TCP connection
+                # Local with TCP connection (or offline allocation)
                 ds.local_simple_allocate(
                     serverid=config.serverid,
                     ldapuri=config.ldap_url,
@@ -219,6 +235,14 @@ class ConnectionManager:
                     server_name,
                     config.serverid,
                 )
+
+            # Offline mode: return allocated DirSrv without opening LDAP connection
+            if config.is_offline:
+                logger.info(
+                    "Offline mode: skipping open() for %s (paths available for offline analysis)",
+                    server_name,
+                )
+                return ds
         elif config.auth_method == "anonymous":
             # Anonymous bind: use empty credentials
             ds.remote_simple_allocate(config.ldap_url, "", "")
@@ -323,3 +347,67 @@ def require_local_server(
     """
     if not is_local_server(manager, server_name):
         raise LocalServerRequired(feature, server_name)
+
+
+class LiveServerRequired(Exception):
+    """Raised when a live (running) server is required but an offline connection is used."""
+
+    def __init__(self, feature: str, server_name: str):
+        self.feature = feature
+        self.server_name = server_name
+        super().__init__(
+            f"'{feature}' requires a running server with a live LDAP connection. "
+            f"Server '{server_name}' is configured in offline mode (is_offline=True). "
+            f"Offline mode only supports configuration analysis via dse.ldif, "
+            f"log file parsing, and filesystem checks."
+        )
+
+
+def is_offline_server(manager: ConnectionManager, server_name: str) -> bool:
+    """Check if a server is configured in offline mode.
+
+    Offline servers are locally installed instances that are analyzed
+    without opening an LDAP connection. They support:
+    - DSEldif (dse.ldif parsing)
+    - DirsrvAccessLog / DirsrvErrorLog (log parsing)
+    - FSChecks (file permission checks)
+
+    They do NOT support:
+    - LDAP searches (user/group queries)
+    - cn=monitor (performance/connection stats)
+    - Live replication status
+
+    Args:
+        manager: The connection manager
+        server_name: Name of the server to check
+
+    Returns:
+        True if the server is configured with is_offline=True
+    """
+    try:
+        config = manager.get_config(server_name)
+        return config.is_offline
+    except KeyError:
+        return False
+
+
+def require_live_server(
+    manager: ConnectionManager,
+    server_name: str,
+    feature: str,
+) -> None:
+    """Raise LiveServerRequired if the server is offline.
+
+    Use this at the start of tools that require a live LDAP connection
+    (e.g., user queries, monitoring, performance stats).
+
+    Args:
+        manager: The connection manager
+        server_name: Name of the server to check
+        feature: Description of the feature requiring a live connection
+
+    Raises:
+        LiveServerRequired: If the server is configured in offline mode
+    """
+    if is_offline_server(manager, server_name):
+        raise LiveServerRequired(feature, server_name)

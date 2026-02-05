@@ -80,12 +80,14 @@ uv run pytest -k "test_user" -v -s
 
 ```
 src/dirsrv_mcp/tests/
-├── conftest.py          # Shared fixtures
-├── test_users.py        # User management tool tests
-├── test_groups.py       # Group management tool tests
-├── test_monitoring.py   # Monitoring tool tests
-├── test_search.py       # LDAP search tool tests
-└── test_multiserver.py  # Multi-server testing
+├── conftest.py              # Shared fixtures
+├── test_users.py            # User management tool tests
+├── test_groups.py           # Group management tool tests
+├── test_monitoring.py       # Monitoring tool tests
+├── test_search.py           # LDAP search tool tests
+├── test_multiserver.py      # Multi-server testing
+├── test_local_connection.py # Local/LDAPI connection tests
+└── test_offline_mode.py     # Offline instance mode tests
 ```
 
 ## Writing Tests
@@ -139,7 +141,11 @@ uv run pytest -x -v -s
 
 ## Continuous Integration
 
-Tests run automatically on pull requests. The CI:
-- Creates 3 DS containers using `ds-test.sh --no-pytest`
-- Runs the full test suite including multi-server tests
-- Reports failures with container logs for debugging
+Tests run automatically on pull requests. The CI runs four jobs:
+
+1. **Pytest Tests** - Standard remote connection tests against 3 DS containers
+2. **Local Connection Tests** - Tests run inside a DS container for local/LDAPI access
+3. **Multi-Server Local Tests** - Mixed local + remote server configuration tests
+4. **Offline Mode Tests** - Tests run in a container where DS is never started (verifying offline analysis works without any LDAP connection)
+
+Each job reports failures with container logs for debugging.

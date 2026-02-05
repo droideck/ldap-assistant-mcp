@@ -41,6 +41,8 @@ class ServerListConfig:
                     server_dict["serverid"] = s.serverid
                 if s.use_ldapi:
                     server_dict["use_ldapi"] = s.use_ldapi
+                if s.is_offline:
+                    server_dict["is_offline"] = s.is_offline
             server_list.append(server_dict)
         result = {"servers": server_list}
         # Include settings if non-default
@@ -228,7 +230,12 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
             port = parsed.port or (636 if inferred_ssl else 389)
 
     if hostname is None:
-        raise KeyError("Server definition must include either hostname or ldap_url")
+        # Offline mode doesn't require hostname (no LDAP connection)
+        is_offline_check = _coerce_bool(data.get("is_offline", False))
+        if is_offline_check:
+            hostname = "localhost"
+        else:
+            raise KeyError("Server definition must include either hostname or ldap_url")
 
     ssl_bool = _coerce_bool(use_ssl)
     if port is None:
@@ -245,6 +252,17 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
     is_local = _coerce_bool(data.get("is_local", False))
     serverid = data.get("serverid")
     use_ldapi = _coerce_bool(data.get("use_ldapi", False))
+    is_offline = _coerce_bool(data.get("is_offline", False))
+
+    # Offline mode implies is_local
+    if is_offline:
+        if not is_local:
+            is_local = True
+        if not serverid:
+            raise ValueError(
+                f"Server '{data.get('name', hostname)}': offline mode (is_offline=true) "
+                f"requires serverid to be set."
+            )
 
     # Validate: if is_local is True, serverid should be provided
     if is_local and not serverid:
@@ -275,6 +293,7 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         is_local=is_local,
         serverid=serverid,
         use_ldapi=use_ldapi,
+        is_offline=is_offline,
     )
 
 
