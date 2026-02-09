@@ -13,7 +13,7 @@ from lib389._constants import ReplicaRole
 from lib389.conflicts import ConflictEntries, GlueEntries
 from lib389.replica import Replicas, RUV
 
-from src.dirsrv_mcp.connection import require_live_server
+from src.dirsrv_mcp.connection import is_offline_or_archive, require_live_server
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -437,16 +437,17 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         servers_failed = []
 
         for server_name in server_names:
-            # Skip offline servers - they can't provide live replication status
-            config = mcp.connection_manager.get_config(server_name)
-            if config.is_offline:
+            # Skip offline/archive servers - they can't provide live replication status
+            if is_offline_or_archive(mcp.connection_manager, server_name):
+                config = mcp.connection_manager.get_config(server_name)
+                mode = "archive" if config.is_archive else "offline"
                 servers_failed.append(server_name)
                 topology["findings"].append(
                     format_finding(
-                        title=f"Skipped Offline Server: {server_name}",
+                        title=f"Skipped {mode.title()} Server: {server_name}",
                         severity=Severity.INFO,
-                        impact="Offline servers cannot provide live replication topology data",
-                        details=f"Server '{server_name}' is in offline mode (is_offline=True)",
+                        impact=f"{mode.title()} servers cannot provide live replication topology data",
+                        details=f"Server '{server_name}' is in {mode} mode",
                         remediation="Use a live server for replication topology analysis",
                         server=server_name,
                     )

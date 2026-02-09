@@ -13,6 +13,7 @@ Note on local vs remote servers:
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -21,7 +22,7 @@ from lib389.backend import Backends
 from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.index import VLVSearches
 
-from src.dirsrv_mcp.connection import is_local_server
+from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -249,6 +250,83 @@ def _extract_filter_attributes(filter_str: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Offline / archive helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_dse_ldif_path(ds) -> str:
+    """Get path to dse.ldif from DirSrv or ArchiveDirSrv."""
+    if hasattr(ds, 'dse_ldif_path') and ds.dse_ldif_path:
+        return ds.dse_ldif_path
+    return os.path.join(ds.ds_paths.config_dir, "dse.ldif")
+
+
+def _find_child_dns(dse, parent_dn: str) -> List[str]:
+    """Find direct child entry DNs under parent_dn from DSEldif._contents."""
+    parent_suffix = "," + parent_dn.lower()
+    children = []
+    for line in dse._contents:
+        if not line.startswith("dn: "):
+            continue
+        dn = line[4:].rstrip("\n")
+        if not dn.endswith(parent_suffix):
+            continue
+        rdn = dn[:-(len(parent_suffix))]
+        if "," not in rdn:
+            children.append(dn)
+    return children
+
+
+def _discover_backends_offline(dse) -> List[tuple]:
+    """Discover backends from DSEldif dse.ldif data.
+
+    Returns list of (backend_name, suffix) tuples.
+    """
+    ldbm_dn = "cn=ldbm database,cn=plugins,cn=config"
+    backend_dns = _find_child_dns(dse, ldbm_dn)
+
+    backends = []
+    for be_dn in backend_dns:
+        be_suffix = dse.get(be_dn, "nsslapd-suffix", single=True)
+        if be_suffix is None:
+            continue
+        be_name = dse.get(be_dn, "cn", single=True)
+        if be_name:
+            backends.append((be_name, be_suffix))
+
+    return backends
+
+
+def _parse_index_entry_offline(dse, index_dn: str) -> Dict[str, Any]:
+    """Parse an index entry from DSEldif."""
+    attr_name = dse.get(index_dn, "cn", single=True)
+    index_types = dse.get(index_dn, "nsIndexType") or []
+    is_system = dse.get(index_dn, "nsSystemIndex", single=True)
+    matching_rule = dse.get(index_dn, "nsMatchingRule", single=True)
+
+    return {
+        "attribute": attr_name,
+        "types": index_types,
+        "types_description": [
+            INDEX_TYPE_DESCRIPTIONS.get(t.lower(), t) for t in index_types
+        ],
+        "is_system": is_system.lower() == "true" if is_system else False,
+        "matching_rule": matching_rule,
+    }
+
+
+def _parse_vlv_entry_offline(dse, vlv_dn: str) -> Dict[str, Any]:
+    """Parse a VLV search entry from DSEldif."""
+    return {
+        "name": dse.get(vlv_dn, "cn", single=True),
+        "base": dse.get(vlv_dn, "vlvBase", single=True),
+        "scope": dse.get(vlv_dn, "vlvScope", single=True),
+        "filter": dse.get(vlv_dn, "vlvFilter", single=True),
+        "sort": dse.get(vlv_dn, "vlvSort", single=True),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
 
@@ -289,8 +367,8 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         ds = None
         try:
+            offline_archive = is_offline_or_archive(mcp.connection_manager, target)
             ds = mcp.connection_manager.connect(target)
-            backends_obj = Backends(ds)
 
             index_data: Dict[str, Any] = {
                 "type": "index_list",
@@ -301,49 +379,90 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
             total_indexes = 0
             total_vlv = 0
 
-            for be in backends_obj.list():
-                be_name = be.get_attr_val_utf8("cn")
+            if offline_archive:
+                from lib389.dseldif import DSEldif
 
-                # Filter by backend if specified
-                if backend and be_name.lower() != backend.lower():
-                    continue
+                dse_path = _get_dse_ldif_path(ds)
+                dse = DSEldif(ds, path=dse_path)
+                backends = _discover_backends_offline(dse)
 
-                be_suffix = be.get_attr_val_utf8("nsslapd-suffix")
+                for be_name, be_suffix in backends:
+                    if backend and be_name.lower() != backend.lower():
+                        continue
 
-                backend_info: Dict[str, Any] = {
-                    "name": be_name,
-                    "suffix": be_suffix,
-                    "indexes": [],
-                    "vlv_indexes": [],
-                }
+                    backend_info: Dict[str, Any] = {
+                        "name": be_name,
+                        "suffix": be_suffix,
+                        "indexes": [],
+                        "vlv_indexes": [],
+                    }
 
-                # Get regular indexes
-                try:
-                    indexes = be.get_indexes()
-                    for idx in indexes.list():
-                        index_entry = _parse_index_entry(idx)
-                        backend_info["indexes"].append(index_entry)
-                        total_indexes += 1
-                except Exception as e:
-                    mcp.logger.warning(
-                        "Error getting indexes for %s: %s", be_name, e
-                    )
-                    backend_info["indexes_error"] = str(e)
+                    # Get indexes via DSEldif
+                    try:
+                        index_names = dse.get_indexes(be_name)
+                        for idx_name in index_names:
+                            idx_dn = f"cn={idx_name},cn=index,cn={be_name},cn=ldbm database,cn=plugins,cn=config"
+                            index_info = _parse_index_entry_offline(dse, idx_dn)
+                            if index_info.get("attribute"):
+                                backend_info["indexes"].append(index_info)
+                                total_indexes += 1
+                    except Exception as e:
+                        mcp.logger.warning("Error getting indexes for %s: %s", be_name, e)
+                        backend_info["indexes_error"] = str(e)
 
-                # Get VLV indexes
-                try:
-                    vlv_searches = VLVSearches(ds, basedn=be.dn)
-                    for vlv in vlv_searches.list():
-                        vlv_entry = _parse_vlv_entry(vlv)
-                        backend_info["vlv_indexes"].append(vlv_entry)
-                        total_vlv += 1
-                except Exception as e:
-                    mcp.logger.debug(
-                        "Error getting VLV indexes for %s: %s", be_name, e
-                    )
-                    # VLV errors are less critical, just log debug
+                    # VLV indexes from DSEldif
+                    try:
+                        be_dn_lower = f"cn={be_name},cn=ldbm database,cn=plugins,cn=config".lower()
+                        for line in dse._contents:
+                            if not line.startswith("dn: "):
+                                continue
+                            dn = line[4:].rstrip("\n")
+                            if dn.endswith(be_dn_lower) and dse.get(dn, "vlvBase") is not None:
+                                vlv_entry = _parse_vlv_entry_offline(dse, dn)
+                                backend_info["vlv_indexes"].append(vlv_entry)
+                                total_vlv += 1
+                    except Exception as e:
+                        mcp.logger.debug("Error getting VLV indexes for %s: %s", be_name, e)
 
-                index_data["backends"].append(backend_info)
+                    index_data["backends"].append(backend_info)
+            else:
+                backends_obj = Backends(ds)
+
+                for be in backends_obj.list():
+                    be_name = be.get_attr_val_utf8("cn")
+
+                    if backend and be_name.lower() != backend.lower():
+                        continue
+
+                    be_suffix = be.get_attr_val_utf8("nsslapd-suffix")
+
+                    backend_info = {
+                        "name": be_name,
+                        "suffix": be_suffix,
+                        "indexes": [],
+                        "vlv_indexes": [],
+                    }
+
+                    try:
+                        indexes = be.get_indexes()
+                        for idx in indexes.list():
+                            index_entry = _parse_index_entry(idx)
+                            backend_info["indexes"].append(index_entry)
+                            total_indexes += 1
+                    except Exception as e:
+                        mcp.logger.warning("Error getting indexes for %s: %s", be_name, e)
+                        backend_info["indexes_error"] = str(e)
+
+                    try:
+                        vlv_searches = VLVSearches(ds, basedn=be.dn)
+                        for vlv in vlv_searches.list():
+                            vlv_entry = _parse_vlv_entry(vlv)
+                            backend_info["vlv_indexes"].append(vlv_entry)
+                            total_vlv += 1
+                    except Exception as e:
+                        mcp.logger.debug("Error getting VLV indexes for %s: %s", be_name, e)
+
+                    index_data["backends"].append(backend_info)
 
             # Summary
             user_indexes = sum(
@@ -361,6 +480,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "vlv_indexes": total_vlv,
                 "backends_checked": len(index_data["backends"]),
             }
+
+            if offline_archive:
+                index_data["mode"] = "offline" if mcp.connection_manager.get_config(target).is_offline else "archive"
 
             return _sanitize_index_result(mcp, index_data)
 
@@ -410,8 +532,8 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         ds = None
         try:
+            offline_archive = is_offline_or_archive(mcp.connection_manager, target)
             ds = mcp.connection_manager.connect(target)
-            backends_obj = Backends(ds)
 
             analysis_data: Dict[str, Any] = {
                 "type": "index_analysis",
@@ -420,31 +542,65 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "findings": [],
             }
 
-            for be in backends_obj.list():
-                be_name = be.get_attr_val_utf8("cn")
+            if offline_archive:
+                from lib389.dseldif import DSEldif
 
+                dse_path = _get_dse_ldif_path(ds)
+                dse = DSEldif(ds, path=dse_path)
+                all_backends = _discover_backends_offline(dse)
+            else:
+                all_backends = None
+                dse = None
+
+            _backend_objects: Dict[str, Any] = {}
+            if offline_archive:
+                backend_iter = all_backends
+            else:
+                backends_obj = Backends(ds)
+                backend_iter = []
+                for be in backends_obj.list():
+                    name = be.get_attr_val_utf8("cn")
+                    suffix = be.get_attr_val_utf8("nsslapd-suffix")
+                    _backend_objects[name] = be
+                    backend_iter.append((name, suffix))
+
+            for be_name, be_suffix in backend_iter:
                 if backend and be_name.lower() != backend.lower():
                     continue
-
-                be_suffix = be.get_attr_val_utf8("nsslapd-suffix")
 
                 # Build current index map: attr -> set of types
                 current_indexes: Dict[str, Set[str]] = {}
                 user_indexes: List[str] = []
 
                 try:
-                    indexes = be.get_indexes()
-                    for idx in indexes.list():
-                        attr_name = idx.get_attr_val_utf8("cn")
-                        index_types = idx.get_attr_vals_utf8("nsIndexType") or []
-                        is_system = idx.get_attr_val_utf8("nsSystemIndex")
+                    if offline_archive:
+                        index_names = dse.get_indexes(be_name)
+                        for idx_name in index_names:
+                            idx_dn = f"cn={idx_name},cn=index,cn={be_name},cn=ldbm database,cn=plugins,cn=config"
+                            attr_name = dse.get(idx_dn, "cn", single=True)
+                            if attr_name:
+                                index_types_list = dse.get(idx_dn, "nsIndexType") or []
+                                is_system = dse.get(idx_dn, "nsSystemIndex", single=True)
 
-                        current_indexes[attr_name.lower()] = set(
-                            t.lower() for t in index_types
-                        )
+                                current_indexes[attr_name.lower()] = set(
+                                    t.lower() for t in index_types_list
+                                )
+                                if is_system and is_system.lower() != "true":
+                                    user_indexes.append(attr_name)
+                    else:
+                        be_obj = _backend_objects[be_name]
+                        indexes = be_obj.get_indexes()
+                        for idx in indexes.list():
+                            attr_name = idx.get_attr_val_utf8("cn")
+                            index_types = idx.get_attr_vals_utf8("nsIndexType") or []
+                            is_system = idx.get_attr_val_utf8("nsSystemIndex")
 
-                        if is_system and is_system.lower() != "true":
-                            user_indexes.append(attr_name)
+                            current_indexes[attr_name.lower()] = set(
+                                t.lower() for t in index_types
+                            )
+
+                            if is_system and is_system.lower() != "true":
+                                user_indexes.append(attr_name)
                 except Exception as e:
                     mcp.logger.warning(
                         "Error analyzing indexes for %s: %s", be_name, e
@@ -558,6 +714,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 analysis_data
             )
 
+            if offline_archive:
+                analysis_data["mode"] = "offline" if mcp.connection_manager.get_config(target).is_offline else "archive"
+
             return _sanitize_index_result(mcp, analysis_data)
 
         except Exception as e:
@@ -612,8 +771,12 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "error": "No server configured",
             }
 
-        # Check if this is a local server
-        if not is_local_server(mcp.connection_manager, target):
+        # Check if this server has local file access (local, offline, or archive)
+        has_file_access = (
+            is_local_server(mcp.connection_manager, target)
+            or is_archive_server(mcp.connection_manager, target)
+        )
+        if not has_file_access:
             return _sanitize_index_result(mcp, {
                 "type": "unindexed_searches",
                 "server": target,
@@ -621,7 +784,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "details": (
                     f"Server '{target}' is configured as remote. "
                     "To enable log analysis, configure the server with "
-                    "is_local=True and serverid=<instance>."
+                    "is_local=True and serverid=<instance>, or use archive mode."
                 ),
                 "findings": [
                     format_finding(

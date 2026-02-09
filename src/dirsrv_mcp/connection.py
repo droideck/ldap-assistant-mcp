@@ -21,6 +21,8 @@ __all__ = [
     "require_local_server",
     "LocalServerRequired",
     "is_offline_server",
+    "is_archive_server",
+    "is_offline_or_archive",
     "require_live_server",
     "LiveServerRequired",
 ]
@@ -74,6 +76,11 @@ class ServerConfig:
     use_ldapi: bool = False
     # Offline instance mode (stopped local server, no LDAP connection)
     is_offline: bool = False
+    # Archive mode (SOS report or extracted files)
+    is_archive: bool = False
+    archive_path: Optional[str] = None
+    config_path: Optional[str] = None
+    logs_path: Optional[str] = None
 
     @classmethod
     def from_env(cls, name: str = "default") -> ServerConfig:
@@ -131,22 +138,28 @@ class ConnectionManager:
                 serverid=config.serverid,
                 use_ldapi=config.use_ldapi,
                 is_offline=config.is_offline,
+                is_archive=config.is_archive,
+                archive_path=config.archive_path,
+                config_path=config.config_path,
+                logs_path=config.logs_path,
             )
         else:
             server_config = config
 
         self._configs[server_config.name] = server_config
-        local_info = ""
-        if server_config.is_local:
+        extra_info = ""
+        if server_config.is_archive:
+            extra_info = f", archive=True, path={server_config.archive_path or server_config.config_path}"
+        elif server_config.is_local:
             ldapi_info = ", ldapi=True" if server_config.use_ldapi else ""
             offline_info = ", offline=True" if server_config.is_offline else ""
-            local_info = f", local=True, serverid={server_config.serverid}{ldapi_info}{offline_info}"
+            extra_info = f", local=True, serverid={server_config.serverid}{ldapi_info}{offline_info}"
         logger.info(
             "Added DirSrv server '%s' (%s, auth=%s%s)",
             server_config.name,
             server_config.ldap_url,
             server_config.auth_method,
-            local_info,
+            extra_info,
         )
 
     def get_server_names(self) -> List[str]:
@@ -175,6 +188,11 @@ class ConnectionManager:
         """
 
         config = self.get_config(server_name)
+
+        # Archive mode: return ArchiveDirSrv stub
+        if config.is_archive:
+            return self._connect_archive(config)
+
         local_info = ""
         if config.is_local:
             ldapi_info = ", ldapi=True" if config.use_ldapi else ""
@@ -280,6 +298,26 @@ class ConnectionManager:
 
         return ds
 
+    def _connect_archive(self, config: ServerConfig):
+        """Create an ArchiveDirSrv stub for archive analysis."""
+        from src.dirsrv_mcp.archive.loader import detect_archive_layout
+        from src.dirsrv_mcp.archive.stub import ArchiveDirSrv
+
+        layout = detect_archive_layout(
+            archive_path=config.archive_path,
+            config_path=config.config_path,
+            logs_path=config.logs_path,
+        )
+        logger.info(
+            "Archive mode for '%s': type=%s, instance=%s, config=%s, logs=%s",
+            config.name,
+            layout.archive_type,
+            layout.instance_name,
+            layout.config_dir,
+            layout.logs_dir,
+        )
+        return ArchiveDirSrv(layout)
+
 
 _GLOBAL_MANAGER = ConnectionManager()
 
@@ -350,16 +388,25 @@ def require_local_server(
 
 
 class LiveServerRequired(Exception):
-    """Raised when a live (running) server is required but an offline connection is used."""
+    """Raised when a live (running) server is required but an offline/archive connection is used."""
 
-    def __init__(self, feature: str, server_name: str):
+    def __init__(self, feature: str, server_name: str, mode: str = "offline"):
         self.feature = feature
         self.server_name = server_name
+        if mode == "archive":
+            detail = (
+                f"Server '{server_name}' is an archive source (is_archive=True). "
+                f"Archive mode only supports configuration analysis via dse.ldif, "
+                f"log file parsing, and filesystem checks."
+            )
+        else:
+            detail = (
+                f"Server '{server_name}' is configured in offline mode (is_offline=True). "
+                f"Offline mode only supports configuration analysis via dse.ldif, "
+                f"log file parsing, and filesystem checks."
+            )
         super().__init__(
-            f"'{feature}' requires a running server with a live LDAP connection. "
-            f"Server '{server_name}' is configured in offline mode (is_offline=True). "
-            f"Offline mode only supports configuration analysis via dse.ldif, "
-            f"log file parsing, and filesystem checks."
+            f"'{feature}' requires a running server with a live LDAP connection. {detail}"
         )
 
 
@@ -391,12 +438,30 @@ def is_offline_server(manager: ConnectionManager, server_name: str) -> bool:
         return False
 
 
+def is_archive_server(manager: ConnectionManager, server_name: str) -> bool:
+    """Check if a server is configured in archive mode."""
+    try:
+        config = manager.get_config(server_name)
+        return config.is_archive
+    except KeyError:
+        return False
+
+
+def is_offline_or_archive(manager: ConnectionManager, server_name: str) -> bool:
+    """Check if server is in offline or archive mode (no live LDAP connection)."""
+    try:
+        config = manager.get_config(server_name)
+        return config.is_offline or config.is_archive
+    except KeyError:
+        return False
+
+
 def require_live_server(
     manager: ConnectionManager,
     server_name: str,
     feature: str,
 ) -> None:
-    """Raise LiveServerRequired if the server is offline.
+    """Raise LiveServerRequired if the server is offline or archive.
 
     Use this at the start of tools that require a live LDAP connection
     (e.g., user queries, monitoring, performance stats).
@@ -407,7 +472,13 @@ def require_live_server(
         feature: Description of the feature requiring a live connection
 
     Raises:
-        LiveServerRequired: If the server is configured in offline mode
+        LiveServerRequired: If the server is configured in offline or archive mode
     """
-    if is_offline_server(manager, server_name):
-        raise LiveServerRequired(feature, server_name)
+    try:
+        config = manager.get_config(server_name)
+    except KeyError:
+        return
+    if config.is_archive:
+        raise LiveServerRequired(feature, server_name, mode="archive")
+    if config.is_offline:
+        raise LiveServerRequired(feature, server_name, mode="offline")

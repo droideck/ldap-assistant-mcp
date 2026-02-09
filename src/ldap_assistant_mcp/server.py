@@ -100,6 +100,13 @@ class LDAPServerConfig:
     - Uses local_simple_allocate() but skips ds.open() (no LDAP bind)
     - Allows offline analysis via DSEldif, DirsrvAccessLog, etc.
     - Tools requiring live LDAP will return clear error messages
+
+    Archive mode (is_archive=True):
+    - For SOS reports or manually extracted config/log files
+    - Requires archive_path (directory or tarball) OR config_path
+    - Does not require hostname, port, or credentials
+    - Uses ArchiveDirSrv stub instead of real DirSrv
+    - Mutually exclusive with is_offline
     """
 
     name: str
@@ -118,6 +125,11 @@ class LDAPServerConfig:
     use_ldapi: bool = False
     # Offline instance mode (stopped local server, no LDAP connection)
     is_offline: bool = False
+    # Archive mode (SOS report or extracted files)
+    is_archive: bool = False
+    archive_path: Optional[str] = None
+    config_path: Optional[str] = None
+    logs_path: Optional[str] = None
 
     @property
     def ldap_url(self) -> str:
@@ -148,6 +160,14 @@ class LDAPServerConfig:
                 result["use_ldapi"] = self.use_ldapi
             if self.is_offline:
                 result["is_offline"] = self.is_offline
+        if self.is_archive:
+            result["is_archive"] = self.is_archive
+            if self.archive_path:
+                result["archive_path"] = self.archive_path
+            if self.config_path:
+                result["config_path"] = self.config_path
+            if self.logs_path:
+                result["logs_path"] = self.logs_path
         return result
 
     def copy_with(self, **overrides: Any) -> LDAPServerConfig:
@@ -307,7 +327,12 @@ class LDAPAssistantMCP(FastMCP):
             if config.is_local and config.serverid:
                 desc["serverid"] = config.serverid
                 desc["use_ldapi"] = config.use_ldapi
-            if config.is_offline:
+            if config.is_archive:
+                desc["is_archive"] = True
+                desc["mode"] = "archive"
+                if config.archive_path:
+                    desc["archive_path"] = config.archive_path
+            elif config.is_offline:
                 desc["is_offline"] = True
                 desc["mode"] = "offline"
             else:

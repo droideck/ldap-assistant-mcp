@@ -448,5 +448,9 @@ class DirSrvMCP(LDAPAssistantMCP):
                 sanitized_desc["use_ldapi"] = desc.get("use_ldapi")
             if desc.get("is_offline"):
                 sanitized_desc["is_offline"] = True
+            if desc.get("is_archive"):
+                sanitized_desc["is_archive"] = True
+                if desc.get("archive_path"):
+                    sanitized_desc["archive_path"] = "[archive_path]"
             sanitized.append(sanitized_desc)
         return sanitized
