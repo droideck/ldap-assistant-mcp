@@ -43,6 +43,14 @@ class ServerListConfig:
                     server_dict["use_ldapi"] = s.use_ldapi
                 if s.is_offline:
                     server_dict["is_offline"] = s.is_offline
+            if s.is_archive:
+                server_dict["is_archive"] = s.is_archive
+                if s.archive_path:
+                    server_dict["archive_path"] = s.archive_path
+                if s.config_path:
+                    server_dict["config_path"] = s.config_path
+                if s.logs_path:
+                    server_dict["logs_path"] = s.logs_path
             server_list.append(server_dict)
         result = {"servers": server_list}
         # Include settings if non-default
@@ -217,6 +225,25 @@ def save_config(config: ServerListConfig, file_path: str) -> None:
 
 def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
     """Convert a dictionary entry into an LDAPServerConfig."""
+    is_offline = _coerce_bool(data.get("is_offline", False))
+    is_archive = _coerce_bool(data.get("is_archive", False))
+    archive_path = data.get("archive_path")
+    config_path_override = data.get("config_path")
+    logs_path_override = data.get("logs_path")
+
+    # Validate: mutually exclusive modes
+    if is_offline and is_archive:
+        raise ValueError(
+            f"Server '{data.get('name', '?')}': is_offline and is_archive are mutually exclusive"
+        )
+
+    # Validate: archive requires path
+    if is_archive and not (archive_path or config_path_override):
+        raise ValueError(
+            f"Server '{data.get('name', '?')}': archive mode requires archive_path or config_path"
+        )
+
+    # For archive mode, hostname/port/credentials are optional
     hostname = data.get("hostname")
     port = data.get("port")
     use_ssl = data.get("use_ssl")
@@ -230,16 +257,14 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
             port = parsed.port or (636 if inferred_ssl else 389)
 
     if hostname is None:
-        # Offline mode doesn't require hostname (no LDAP connection)
-        is_offline_check = _coerce_bool(data.get("is_offline", False))
-        if is_offline_check:
-            hostname = "localhost"
+        if is_offline or is_archive:
+            hostname = "localhost" if is_offline else "archive"
         else:
             raise KeyError("Server definition must include either hostname or ldap_url")
 
     ssl_bool = _coerce_bool(use_ssl)
     if port is None:
-        port = 636 if ssl_bool else 389
+        port = 0 if is_archive else (636 if ssl_bool else 389)
 
     auth_value = data.get("auth_method", LDAPAuthMethod.SIMPLE.value)
     auth_method = (
@@ -252,7 +277,6 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
     is_local = _coerce_bool(data.get("is_local", False))
     serverid = data.get("serverid")
     use_ldapi = _coerce_bool(data.get("use_ldapi", False))
-    is_offline = _coerce_bool(data.get("is_offline", False))
 
     # Offline mode implies is_local
     if is_offline:
@@ -294,6 +318,10 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         serverid=serverid,
         use_ldapi=use_ldapi,
         is_offline=is_offline,
+        is_archive=is_archive,
+        archive_path=archive_path,
+        config_path=config_path_override,
+        logs_path=logs_path_override,
     )
 
 
