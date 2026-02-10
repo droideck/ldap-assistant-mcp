@@ -20,9 +20,7 @@ from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
 from src.ldap_assistant_mcp.server import LDAPServerConfig
 
 
-# ============================================================================
 # Unit tests for LDAPServerConfig SSL support
-# ============================================================================
 
 
 class TestLDAPServerConfigSSL:
@@ -174,9 +172,7 @@ class TestLDAPServerConfigSSL:
         assert config.use_ssl is False
 
 
-# ============================================================================
 # Unit tests for ServerConfig SSL support
-# ============================================================================
 
 
 class TestServerConfigSSL:
@@ -205,9 +201,7 @@ class TestServerConfigSSL:
         assert config.ldap_url == "ldap://plain.example.com:389"
 
 
-# ============================================================================
 # Unit tests for config loader SSL support
-# ============================================================================
 
 
 class TestConfigLoaderSSL:
@@ -324,9 +318,7 @@ class TestConfigLoaderSSL:
         assert config.use_ssl is True
 
 
-# ============================================================================
 # Unit tests for ConnectionManager SSL support
-# ============================================================================
 
 
 class TestConnectionManagerSSL:
@@ -370,9 +362,7 @@ class TestConnectionManagerSSL:
         assert stored.ldap_url == "ldap://plain.example.com:389"
 
 
-# ============================================================================
 # Tests for mixed LDAP/LDAPS multi-server configurations
-# ============================================================================
 
 
 class TestMixedSSLConfig:

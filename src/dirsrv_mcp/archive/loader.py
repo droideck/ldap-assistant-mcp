@@ -12,7 +12,6 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class ArchiveLayout:
     """Discovered paths within an archive or extract."""
@@ -25,7 +24,6 @@ class ArchiveLayout:
     cert_dir: Optional[str] = None
     sos_commands_dir: Optional[str] = None
     dse_ldif_path: Optional[str] = None
-
 
 def detect_archive_layout(
     archive_path: Optional[str] = None,
@@ -55,7 +53,6 @@ def detect_archive_layout(
 
     return _scan_directory(archive_path)
 
-
 def extract_archive(archive_file: str) -> str:
     """Extract .tar.xz or .tar.gz to a temporary directory.
 
@@ -72,11 +69,9 @@ def extract_archive(archive_file: str) -> str:
 
     return tmp_dir
 
-
 def _is_tarball(path: str) -> bool:
     lower = path.lower()
     return any(lower.endswith(ext) for ext in (".tar.xz", ".tar.gz", ".tar.bz2", ".tgz"))
-
 
 def _layout_from_explicit_paths(
     config_path: Optional[str],
@@ -86,7 +81,7 @@ def _layout_from_explicit_paths(
     layout = ArchiveLayout(archive_type="manual_extract")
 
     if config_path:
-        config_path = os.path.abspath(config_path)
+        config_path = os.path.realpath(config_path)
         if not os.path.isdir(config_path):
             raise FileNotFoundError(f"Config path is not a directory: {config_path}")
         layout.config_dir = config_path
@@ -103,7 +98,7 @@ def _layout_from_explicit_paths(
         layout.cert_dir = config_path
 
     if logs_path:
-        logs_path = os.path.abspath(logs_path)
+        logs_path = os.path.realpath(logs_path)
         if not os.path.isdir(logs_path):
             raise FileNotFoundError(f"Logs path is not a directory: {logs_path}")
         layout.logs_dir = logs_path
@@ -118,21 +113,19 @@ def _layout_from_explicit_paths(
 
     return layout
 
-
 def _scan_directory(root: str) -> ArchiveLayout:
     """Scan a directory for SOS report or DS instance structure."""
-    # Check for nested sosreport-*/ directory
-    nested = glob.glob(os.path.join(root, "sosreport-*"))
+    nested = sorted(glob.glob(os.path.join(root, "sosreport-*")))
     if nested and os.path.isdir(nested[0]):
         root = nested[0]
 
     # Pattern 1: Standard SOS layout — etc/dirsrv/slapd-*/dse.ldif
-    dse_matches = glob.glob(os.path.join(root, "etc", "dirsrv", "slapd-*", "dse.ldif"))
+    dse_matches = sorted(glob.glob(os.path.join(root, "etc", "dirsrv", "slapd-*", "dse.ldif")))
     if dse_matches:
         return _build_sos_layout(root, dse_matches[0])
 
     # Pattern 2: Direct slapd-* directory (user extracted just the instance dir)
-    dse_direct = glob.glob(os.path.join(root, "slapd-*", "dse.ldif"))
+    dse_direct = sorted(glob.glob(os.path.join(root, "slapd-*", "dse.ldif")))
     if dse_direct:
         config_dir = os.path.dirname(dse_direct[0])
         return ArchiveLayout(
@@ -161,20 +154,17 @@ def _scan_directory(root: str) -> ArchiveLayout:
         "or a directory containing dse.ldif."
     )
 
-
 def _build_sos_layout(root: str, dse_path: str) -> ArchiveLayout:
     """Build ArchiveLayout from a standard SOS report directory."""
     config_dir = os.path.dirname(dse_path)
     instance_name = _extract_instance_name(config_dir)
 
-    # Find logs directory
     logs_dir = None
     if instance_name:
         candidate = os.path.join(root, "var", "log", "dirsrv", instance_name)
         if os.path.isdir(candidate):
             logs_dir = candidate
 
-    # Find sos_commands directory
     sos_commands_dir = None
     for dirname in ("dirsrv", "ds"):
         candidate = os.path.join(root, "sos_commands", dirname)
@@ -194,7 +184,6 @@ def _build_sos_layout(root: str, dse_path: str) -> ArchiveLayout:
         sos_commands_dir=sos_commands_dir,
         dse_ldif_path=dse_path,
     )
-
 
 def _extract_instance_name(path: str) -> Optional[str]:
     """Extract instance name (e.g. 'slapd-localhost') from a path component."""

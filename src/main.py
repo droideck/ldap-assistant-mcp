@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
-from typing import Dict, Iterable, Optional, Type
+from typing import Dict, Iterable, Optional, Tuple, Type
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -75,7 +75,11 @@ def create_server(
 
 def _resolve_provider(
     provider: Optional[str],
-) -> tuple[str, ServerDefinition]:
+) -> Tuple[str, ServerDefinition]:
+    """Resolve provider name to its registry definition.
+
+    Falls back to LDAP_PROVIDER env var, then DEFAULT_PROVIDER.
+    """
     requested = (provider or os.environ.get(PROVIDER_ENV_VAR) or DEFAULT_PROVIDER).lower()
     definition = SERVER_REGISTRY.get(requested)
     if not definition:

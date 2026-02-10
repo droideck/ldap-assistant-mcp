@@ -14,9 +14,7 @@ from fastmcp import Client
 pytestmark = pytest.mark.asyncio
 
 
-# ------------------------------------------------------------------------- #
 # Multi-server configuration tests
-# ------------------------------------------------------------------------- #
 
 
 async def test_multiserver_has_all_servers_configured(dirsrv_multiserver, test_server_names):
@@ -38,9 +36,7 @@ async def test_multiserver_server_count(dirsrv_multiserver, test_server_names):
     )
 
 
-# ------------------------------------------------------------------------- #
 # first_look() multi-server health check tests
-# ------------------------------------------------------------------------- #
 
 
 async def test_first_look_checks_all_servers(dirsrv_multiserver, test_server_names):
@@ -101,9 +97,7 @@ async def test_first_look_no_servers_failed(dirsrv_multiserver):
         )
 
 
-# ------------------------------------------------------------------------- #
 # Tool execution with specific server_name
-# ------------------------------------------------------------------------- #
 
 
 async def test_list_users_on_specific_server(dirsrv_multiserver, test_server_names):
@@ -203,9 +197,7 @@ async def test_ldap_search_on_specific_server(dirsrv_multiserver, test_server_na
             )
 
 
-# ------------------------------------------------------------------------- #
 # Default server behavior
-# ------------------------------------------------------------------------- #
 
 
 async def test_tool_uses_default_server_when_not_specified(dirsrv_multiserver):
@@ -218,9 +210,7 @@ async def test_tool_uses_default_server_when_not_specified(dirsrv_multiserver):
         assert data["server"] is not None, "Server should not be None"
 
 
-# ------------------------------------------------------------------------- #
 # Helper functions
-# ------------------------------------------------------------------------- #
 
 
 def _extract_user_ids(items: list) -> list[str]:

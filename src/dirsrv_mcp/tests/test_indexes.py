@@ -14,9 +14,7 @@ from src.dirsrv_mcp.server import DirSrvMCP
 pytestmark = pytest.mark.asyncio
 
 
-# ============================================================================
 # list_indexes tests
-# ============================================================================
 
 
 async def test_list_indexes_returns_valid_structure(dirsrv_server: DirSrvMCP):
@@ -86,9 +84,7 @@ async def test_list_indexes_includes_backend_info(dirsrv_server: DirSrvMCP):
         assert "vlv_indexes" in backend
 
 
-# ============================================================================
 # analyze_index_configuration tests
-# ============================================================================
 
 
 async def test_analyze_index_configuration_returns_valid_structure(
@@ -178,9 +174,7 @@ async def test_analyze_index_configuration_missing_has_dsconf_command(
             assert "recommended_types" in missing
 
 
-# ============================================================================
 # find_unindexed_searches tests
-# ============================================================================
 
 
 async def test_find_unindexed_searches_returns_valid_structure(

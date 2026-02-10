@@ -87,7 +87,18 @@ src/dirsrv_mcp/tests/
 ├── test_search.py           # LDAP search tool tests
 ├── test_multiserver.py      # Multi-server testing
 ├── test_local_connection.py # Local/LDAPI connection tests
-└── test_offline_mode.py     # Offline instance mode tests
+├── test_ssl_config.py       # SSL/TLS configuration tests
+├── test_anonymous.py        # Anonymous bind tests
+├── test_privacy.py          # Privacy mode tests
+├── test_config.py           # Configuration tool tests
+├── test_health.py           # Health check tool tests
+├── test_indexes.py          # Index tool tests
+├── test_performance.py      # Performance tool tests
+├── test_replication.py      # Replication tool tests
+├── test_offline_mode.py     # Offline instance mode tests
+├── test_archive_mode.py     # Archive mode infrastructure tests
+├── test_archive_tools.py    # Archive/offline tool tests + DSE comparison
+└── test_logs.py             # Log parsing tool tests
 ```
 
 ## Writing Tests

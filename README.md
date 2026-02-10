@@ -48,6 +48,16 @@ The assistant:
 - `list_plugins()` - Plugin enumeration with status
 - `get_backend_configuration()` - Backend-specific settings
 
+### Log Analysis
+- `parse_access_log()` - Parse and filter access log entries
+- `parse_error_log()` - Parse and filter error log entries
+- `parse_audit_log()` - Parse and filter audit log change records
+
+### Archive & Offline Analysis
+- `analyze_archive()` - Inventory and summarize SOS report / archive data
+- `validate_configuration()` - Static config lint on dse.ldif
+- `compare_dse_configs()` - Full entry-by-entry dse.ldif comparison
+
 ### User & Group Management
 - List, search, and inspect users
 - Filter by active/locked status
@@ -117,6 +127,12 @@ Create a `servers.json` file with your LDAP server(s):
       "is_local": true,
       "serverid": "slapd-localhost",
       "is_offline": true
+    },
+    {
+      "name": "sos-report",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "archive_path": "/path/to/sosreport-host-2025/"
     }
   ]
 }
@@ -126,6 +142,7 @@ Create a `servers.json` file with your LDAP server(s):
 - **Remote servers** work via LDAP only - most tools work, but some local-only features are unavailable
 - **Local servers** (`is_local: true` + `serverid`) enable additional diagnostics: disk space monitoring, certificate checking, access log analysis, and process metrics
 - **Offline servers** (`is_offline: true` + `is_local: true` + `serverid`) analyze a stopped instance's configuration and logs without any LDAP connection. Useful for post-mortem analysis or examining instances that can't be started
+- **Archive servers** (`is_archive: true` + `archive_path`) analyze SOS reports or extracted configs from any machine. Auto-detects archive structure (SOS layout, manual extracts, config-only). No LDAP connection, no local instance required
 
 ### Step 3: Install to MCP Client
 

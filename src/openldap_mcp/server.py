@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import ldap
@@ -34,6 +34,8 @@ class OpenLDAPMCP(LDAPAssistantMCP):
         self._register_tools()
 
     def _register_tools(self) -> None:
+        """Register OpenLDAP-specific tools."""
+
         @self.tool()
         def describe_connection(server_name: Optional[str] = None) -> Dict[str, Any]:
             """Return the connection parameters for a configured OpenLDAP server."""
@@ -72,6 +74,7 @@ class OpenLDAPMCP(LDAPAssistantMCP):
                         pass
 
     def _ldap_bind(self, config: LDAPServerConfig):
+        """Create and return a bound LDAP connection for *config*."""
         if config.auth_method not in {LDAPAuthMethod.SIMPLE, LDAPAuthMethod.SASL_EXTERNAL}:
             raise ToolError(
                 f"Auth method '{config.auth_method.value}' is not supported for OpenLDAP bindings yet"

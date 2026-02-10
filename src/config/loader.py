@@ -12,7 +12,6 @@ from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig, MCPS
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class ServerListConfig:
     """Configuration for multiple LDAP servers and MCP settings."""
@@ -53,7 +52,6 @@ class ServerListConfig:
                     server_dict["logs_path"] = s.logs_path
             server_list.append(server_dict)
         result = {"servers": server_list}
-        # Include settings if non-default
         if self.settings.expose_sensitive_data:
             result["settings"] = self.settings.to_dict()
         return result
@@ -65,12 +63,10 @@ class ServerListConfig:
         for server_data in data.get("servers", []):
             servers.append(_server_config_from_dict(server_data))
 
-        # Load settings from config or environment
         settings_data = data.get("settings", {})
         settings = _settings_from_dict(settings_data)
 
         return cls(servers=servers, settings=settings)
-
 
 def load_config(
     config_file: Optional[str] = None,
@@ -132,11 +128,9 @@ def load_config(
         >>> os.environ['LDAP_URL'] = 'ldap://localhost:389'
         >>> config = load_config()  # Creates single "default" server
     """
-    # Try explicit file path
     if config_file:
         return _load_from_file(config_file)
 
-    # Try environment variable pointing to file
     env_config_path = os.environ.get(config_env_var)
     if env_config_path:
         return _load_from_file(env_config_path)
@@ -147,7 +141,6 @@ def load_config(
     )
     default_server = LDAPServerConfig.from_env(name="default")
     return ServerListConfig(servers=[default_server])
-
 
 def _load_from_file(file_path: str) -> ServerListConfig:
     """
@@ -177,7 +170,6 @@ def _load_from_file(file_path: str) -> ServerListConfig:
 
     return config
 
-
 def initialize_connection_manager(
     config: ServerListConfig,
     manager: Optional[ConnectionManager] = None
@@ -201,7 +193,6 @@ def initialize_connection_manager(
 
     return manager
 
-
 def save_config(config: ServerListConfig, file_path: str) -> None:
     """
     Save configuration to JSON file.
@@ -221,7 +212,6 @@ def save_config(config: ServerListConfig, file_path: str) -> None:
     # Set restrictive permissions (owner read/write only)
     os.chmod(file_path, 0o600)
     logger.info("Configuration saved to %s with mode 0600", file_path)
-
 
 def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
     """Convert a dictionary entry into an LDAPServerConfig."""
@@ -324,14 +314,12 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         logs_path=logs_path_override,
     )
 
-
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
-
 
 def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
     """Create MCPSettings from dictionary, with environment variable fallback.

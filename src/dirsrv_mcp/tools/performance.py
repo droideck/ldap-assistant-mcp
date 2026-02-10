@@ -29,7 +29,6 @@ from src.lib.value_utils import format_bytes, safe_float, safe_int
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
-
 def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize performance result for privacy mode.
 
@@ -42,11 +41,9 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
 
-    # Sanitize backend names in various places
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
         for be in sanitized["backends"]:
             if isinstance(be, dict) and "name" in be:
@@ -54,11 +51,9 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             if isinstance(be, dict) and "suffix" in be:
                 be["suffix"] = sanitizer.sanitize_suffix(be["suffix"])
 
-    # Sanitize findings
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
-    # Sanitize resources (disk partitions, paths)
     if "resources" in sanitized and isinstance(sanitized["resources"], dict):
         if "disk" in sanitized["resources"] and isinstance(sanitized["resources"]["disk"], dict):
             disk = sanitized["resources"]["disk"]
@@ -69,13 +64,11 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
 
     return sanitized
 
-
 def _calculate_hit_ratio(hits: int, tries: int) -> float:
     """Calculate cache hit ratio as percentage."""
     if tries == 0:
         return 0.0
     return round((hits / tries) * 100, 2)
-
 
 def _assess_cache_health(hit_ratio: float) -> tuple[str, Severity]:
     """Assess cache health based on hit ratio."""
@@ -89,7 +82,6 @@ def _assess_cache_health(hit_ratio: float) -> tuple[str, Severity]:
         return "poor", Severity.MEDIUM
     else:
         return "critical", Severity.HIGH
-
 
 def register_performance_tools(mcp: DirSrvMCP) -> None:
     """Register performance diagnostic tools with the MCP server."""
@@ -136,15 +128,12 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "backends": [],
             }
 
-            # Get global database cache statistics
             try:
                 ldbm_monitor = MonitorLDBM(ds)
                 ldbm_status = ldbm_monitor.get_status()
 
-                # Database cache (BDB) or normalized DN cache (LMDB)
                 db_cache = {}
 
-                # BDB-specific cache
                 if "dbcachehits" in ldbm_status:
                     hits = safe_int(ldbm_status.get("dbcachehits"))
                     tries = safe_int(ldbm_status.get("dbcachetries"))
@@ -179,7 +168,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                             )
                         )
 
-                # LMDB doesn't have traditional db cache, but has normalized DN cache
                 if "normalizeddncachehits" in ldbm_status:
                     ndn_hits = safe_int(ldbm_status.get("normalizeddncachehits"))
                     ndn_tries = safe_int(ldbm_status.get("normalizeddncachetries"))
@@ -204,13 +192,11 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 mcp.logger.warning("Error getting LDBM monitor: %s", e)
                 cache_data["global_db_cache"] = {"error": str(e)}
 
-            # Get per-backend cache statistics
             try:
                 backends_obj = Backends(ds)
                 for be in backends_obj.list():
                     be_name = be.get_attr_val_utf8("cn")
 
-                    # Filter by backend name if specified
                     if backend and be_name.lower() != backend.lower():
                         continue
 
@@ -218,7 +204,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         be_monitor = be.get_monitor()
                         be_status = be_monitor.get_status()
 
-                        # Entry cache
                         entry_hits = safe_int(be_status.get("entrycachehits"))
                         entry_tries = safe_int(be_status.get("entrycachetries"))
                         entry_ratio = safe_float(be_status.get("entrycachehitratio"))
@@ -259,7 +244,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                                 )
                             )
 
-                        # DN cache
                         dn_hits = safe_int(be_status.get("dncachehits"))
                         dn_tries = safe_int(be_status.get("dncachetries"))
                         dn_ratio = safe_float(be_status.get("dncachehitratio"))
@@ -292,7 +276,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error listing backends: %s", e)
 
-            # Generate summary
             if findings:
                 summary = f"ATTENTION: {len(findings)} cache issue(s) detected"
             elif cache_data["backends"]:
@@ -356,7 +339,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
 
-            # Get basic connection stats from cn=monitor
             try:
                 status = monitor.get_attrs_vals_utf8([
                     'currentconnections', 'totalconnections', 'dtablesize', 'readwaiters'
@@ -370,7 +352,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             dtable_size = safe_int(status.get("dtablesize"))
             read_waiters = safe_int(status.get("readwaiters"))
 
-            # Connection state from resource stats (may fail for remote connections)
             try:
                 resource_stats = monitor.get_resource_stats()
                 conn_count = safe_int(resource_stats.get("connection_count"))
@@ -384,7 +365,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 conn_close_wait = 0
                 conn_time_wait = 0
 
-            # Calculate utilization
             fd_utilization = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
 
             conn_data = {
@@ -403,7 +383,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 },
             }
 
-            # Check for connection issues
             if fd_utilization > 80:
                 findings.append(
                     format_finding(
@@ -455,7 +434,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            # Generate summary
             if findings:
                 summary = f"ATTENTION: {len(findings)} connection issue(s) detected"
             else:
@@ -511,7 +489,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
 
-            # Get basic operation stats from cn=monitor
             try:
                 status = monitor.get_attrs_vals_utf8([
                     'opsinitiated', 'opscompleted', 'entriessent', 'bytessent'
@@ -538,7 +515,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "bytes_sent_human": format_bytes(bytes_sent),
             }
 
-            # Get SNMP stats for detailed operation breakdown
             try:
                 snmp_monitor = MonitorSNMP(ds)
                 snmp_status = snmp_monitor.get_status()
@@ -578,7 +554,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     "referrals_returned": safe_int(snmp_status.get("referralsreturned")),
                 }
 
-                # Check for issues
                 bind_errors = safe_int(snmp_status.get("bindsecurityerrors"))
                 if bind_errors > 100:
                     findings.append(
@@ -611,7 +586,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 mcp.logger.warning("Error getting SNMP stats: %s", e)
                 op_data["operation_breakdown"] = {"error": str(e)}
 
-            # Check for pending operations
             if ops_pending > 100:
                 findings.append(
                     format_finding(
@@ -625,7 +599,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            # Generate summary
             if findings:
                 summary = f"ATTENTION: {len(findings)} operational issue(s) detected"
             else:
@@ -681,7 +654,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
 
-            # Get thread stats from cn=monitor
             try:
                 status = monitor.get_attrs_vals_utf8([
                     'threads', 'currentconnectionsatmaxthreads', 'maxthreadsperconnhits'
@@ -711,7 +683,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "max_threads_per_conn_hits": max_threads_hits,
             }
 
-            # Assess thread health
             if conns_at_max_threads > 0:
                 findings.append(
                     format_finding(
@@ -738,7 +709,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            # Generate summary
             if findings:
                 summary = f"ATTENTION: {len(findings)} thread utilization issue(s)"
             else:
@@ -802,7 +772,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
 
-            # Check if this is a local server
             is_local = is_local_server(mcp.connection_manager, target)
 
             # Get uptime info from cn=monitor (works for all servers)
@@ -847,14 +816,12 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             mem_vms_pct = safe_float(resource_stats.get("mem_vms_percent"))
             mem_swap_pct = safe_float(resource_stats.get("mem_swap_percent"))
 
-            # CPU stats
             cpu_usage = safe_float(resource_stats.get("cpu_usage"))
             total_threads = safe_int(resource_stats.get("total_threads"))
             server_status = resource_stats.get("server_status", ["Unknown"])
             if isinstance(server_status, list):
                 server_status = server_status[0]
 
-            # Uptime calculation
             start_time = status.get("starttime", ["Unknown"])
             current_time = status.get("currenttime", ["Unknown"])
             if isinstance(start_time, list):
@@ -913,7 +880,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                                 disk_entry[key.lower()] = val.strip('"')
                         disk_info.append(disk_entry)
 
-                        # Check disk usage
                         pct = safe_int(disk_entry.get("percent", "0"))
                         partition = disk_entry.get("partition", "unknown")
                         if pct >= 90:
@@ -947,7 +913,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     mcp.logger.warning("Error getting disk stats: %s", e)
                     resource_data["disk"] = {"available": False, "error": str(e)}
 
-            # Check for memory issues
             if mem_rss_pct > 80:
                 findings.append(
                     format_finding(
@@ -974,7 +939,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            # Generate summary
             if findings:
                 critical = sum(1 for f in findings if f.get("severity") == "critical")
                 if critical > 0:
@@ -1041,9 +1005,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "metrics": {},
             }
 
-            # Gather key metrics
             try:
-                # Get specific attributes from cn=monitor
                 try:
                     status = monitor.get_attrs_vals_utf8([
                         'currentconnections', 'dtablesize', 'opsinitiated',
@@ -1060,7 +1022,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
                     resource_stats = {}
 
-                # Connections
                 current_conns = safe_int(status.get("currentconnections"))
                 dtable_size = safe_int(status.get("dtablesize"))
                 fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
@@ -1081,7 +1042,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     ))
 
-                # Operations
                 ops_initiated = safe_int(status.get("opsinitiated"))
                 ops_completed = safe_int(status.get("opscompleted"))
                 ops_pending = ops_initiated - ops_completed
@@ -1101,7 +1061,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     ))
 
-                # Threads
                 threads = safe_int(status.get("threads"))
                 conns_at_max = safe_int(status.get("currentconnectionsatmaxthreads"))
 
@@ -1120,7 +1079,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                         server=target,
                     ))
 
-                # Memory
                 mem_rss_pct = safe_float(resource_stats.get("mem_rss_percent"))
                 rss = safe_int(resource_stats.get("rss"))
                 cpu = safe_float(resource_stats.get("cpu_usage"))
@@ -1144,7 +1102,6 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error gathering performance metrics: %s", e)
 
-            # Get cache summary
             try:
                 ldbm_monitor = MonitorLDBM(ds)
                 ldbm_status = ldbm_monitor.get_status()
@@ -1167,11 +1124,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error getting cache metrics: %s", e)
 
-            # Sort findings by severity
             severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
             all_findings.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 5))
 
-            # Determine overall health
             critical_count = sum(1 for f in all_findings if f.get("severity") == "critical")
             high_count = sum(1 for f in all_findings if f.get("severity") == "high")
 

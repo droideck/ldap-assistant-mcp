@@ -13,7 +13,6 @@ Note on local vs remote servers:
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -23,6 +22,7 @@ from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.index import VLVSearches
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
+from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -37,21 +37,17 @@ def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
 
-    # Sanitize backends list
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
         sanitized["backends"] = [
             _sanitize_backend(sanitizer, b) for b in sanitized["backends"]
         ]
 
-    # Sanitize findings
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
-    # Sanitize patterns (unindexed searches)
     if "patterns" in sanitized and isinstance(sanitized["patterns"], list):
         sanitized["patterns"] = [
             _sanitize_pattern(sanitizer, p) for p in sanitized["patterns"]
@@ -73,47 +69,36 @@ def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
 def _sanitize_pattern(sanitizer, pattern: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize an unindexed search pattern entry."""
     result = dict(pattern)
-    # Base DN should be sanitized
     if "base_dn" in result:
         result["base_dn"] = sanitizer.sanitize_dn(result["base_dn"])
-    # Example filter may contain user data - redact values
     if "example_filter" in result:
         result["example_filter"] = "[filter]"
     return result
 
 
-# Recommended indexes for common LDAP deployments
-# Format: attribute -> list of recommended index types
 RECOMMENDED_INDEXES: Dict[str, List[str]] = {
-    # User identity attributes
     "uid": ["eq", "pres", "sub"],
     "cn": ["eq", "pres", "sub"],
     "sn": ["eq", "pres", "sub"],
     "givenName": ["eq", "pres", "sub"],
     "mail": ["eq", "pres", "sub"],
     "displayName": ["eq", "sub"],
-    # Group membership
     "member": ["eq"],
     "uniqueMember": ["eq"],
     "memberOf": ["eq"],
     "memberUid": ["eq"],
-    # Object identification
     "objectClass": ["eq", "pres"],
     "entryUUID": ["eq"],
     "nsUniqueId": ["eq"],
-    # Timestamps (for change tracking)
     "modifyTimestamp": ["eq"],
     "createTimestamp": ["eq"],
-    # Contact attributes
     "telephoneNumber": ["eq", "sub"],
     "employeeNumber": ["eq"],
     "employeeType": ["eq"],
-    # POSIX attributes
     "uidNumber": ["eq"],
     "gidNumber": ["eq"],
 }
 
-# Index types and their descriptions
 INDEX_TYPE_DESCRIPTIONS: Dict[str, str] = {
     "eq": "equality - supports = searches",
     "pres": "presence - supports =* searches",
@@ -121,16 +106,9 @@ INDEX_TYPE_DESCRIPTIONS: Dict[str, str] = {
     "approx": "approximate - supports ~= searches",
 }
 
-# Pattern to identify unindexed search notes in access log
-# notes=U means unindexed, notes=A means all IDs scan
 UNINDEXED_SEARCH_PATTERN = re.compile(r"notes=(U|A)")
 SEARCH_FILTER_PATTERN = re.compile(r'filter="([^"]*)"')
 SEARCH_BASE_PATTERN = re.compile(r'base="([^"]*)"')
-
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
 
 
 def _parse_index_entry(idx) -> Dict[str, Any]:
@@ -249,32 +227,8 @@ def _extract_filter_attributes(filter_str: str) -> List[str]:
     return list(set(attrs))
 
 
-# ---------------------------------------------------------------------------
-# Offline / archive helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_dse_ldif_path(ds) -> str:
-    """Get path to dse.ldif from DirSrv or ArchiveDirSrv."""
-    if hasattr(ds, 'dse_ldif_path') and ds.dse_ldif_path:
-        return ds.dse_ldif_path
-    return os.path.join(ds.ds_paths.config_dir, "dse.ldif")
-
-
-def _find_child_dns(dse, parent_dn: str) -> List[str]:
-    """Find direct child entry DNs under parent_dn from DSEldif._contents."""
-    parent_suffix = "," + parent_dn.lower()
-    children = []
-    for line in dse._contents:
-        if not line.startswith("dn: "):
-            continue
-        dn = line[4:].rstrip("\n")
-        if not dn.endswith(parent_suffix):
-            continue
-        rdn = dn[:-(len(parent_suffix))]
-        if "," not in rdn:
-            children.append(dn)
-    return children
+_get_dse_ldif_path = get_dse_ldif_path
+_find_child_dns = find_child_dns
 
 
 def _discover_backends_offline(dse) -> List[tuple]:
@@ -324,11 +278,6 @@ def _parse_vlv_entry_offline(dse, vlv_dn: str) -> Dict[str, Any]:
         "filter": dse.get(vlv_dn, "vlvFilter", single=True),
         "sort": dse.get(vlv_dn, "vlvSort", single=True),
     }
-
-
-# ---------------------------------------------------------------------------
-# Tool registration
-# ---------------------------------------------------------------------------
 
 
 def register_index_tools(mcp: DirSrvMCP) -> None:

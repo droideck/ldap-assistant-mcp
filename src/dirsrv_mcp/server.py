@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
-import sys
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from fastmcp.exceptions import ResourceError, ToolError
@@ -22,10 +22,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.config.loader import load_config
 from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
 from src.dirsrv_mcp.tools import (
+    register_archive_tools,
     register_config_tools,
     register_group_tools,
     register_health_tools,
     register_index_tools,
+    register_log_tools,
     register_monitoring_tools,
     register_performance_tools,
     register_replication_tools,
@@ -94,10 +96,6 @@ class DirSrvMCP(LDAPAssistantMCP):
         """Return the privacy sanitizer instance."""
         return self._sanitizer
 
-    # --------------------------------------------------------------------- #
-    # Initialization helpers
-    # --------------------------------------------------------------------- #
-
     def _collect_servers_and_settings(
         self,
         *,
@@ -129,11 +127,9 @@ class DirSrvMCP(LDAPAssistantMCP):
 
         return list(merged.values()), loaded_settings
 
-    # --------------------------------------------------------------------- #
-    # Registration
-    # --------------------------------------------------------------------- #
-
     def _register_prompts(self) -> None:
+        """Register guided troubleshooting prompts."""
+
         @self.prompt()
         def tool_navigator(goal: str) -> List[PromptMessage]:
             """Guide users through available tools and their usage."""
@@ -171,6 +167,14 @@ class DirSrvMCP(LDAPAssistantMCP):
                             "- list_all_groups\n\n"
                             "**Monitoring:**\n"
                             "- run_monitor\n\n"
+                            "**Log Analysis:**\n"
+                            "- parse_access_log: Parse and filter access log entries.\n"
+                            "- parse_error_log: Parse and filter error log entries.\n"
+                            "- parse_audit_log: Parse and filter audit log change records.\n\n"
+                            "**Archive & Offline Analysis:**\n"
+                            "- analyze_archive: Inventory and summarize archive/offline data.\n"
+                            "- validate_configuration: Static config lint on dse.ldif.\n"
+                            "- compare_dse_configs: Full entry-by-entry dse.ldif comparison.\n\n"
                             "**Advanced:**\n"
                             "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
                             "State which tool you'll call next and why; keep outputs concise."
@@ -306,7 +310,51 @@ class DirSrvMCP(LDAPAssistantMCP):
                 ),
             ]
 
+        @self.prompt()
+        def archive_investigation() -> List[PromptMessage]:
+            """Start a guided SOS report or archive analysis session."""
+
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text="I have an SOS report or archive from a 389 Directory Server and need help investigating it.",
+                    ),
+                ),
+                PromptMessage(
+                    role="assistant",
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            "I'll help you investigate this archive systematically. Here's my approach:\n\n"
+                            "**Step 1: Inventory available data**\n"
+                            "I'll use `analyze_archive` to discover what data is available — config, logs, "
+                            "schema, certificates, and any SOS healthcheck output.\n\n"
+                            "**Step 2: Validate configuration**\n"
+                            "I'll use `validate_configuration` to run static lint checks on dse.ldif — "
+                            "security settings, password schemes, TLS versions, and more.\n\n"
+                            "**Step 3: Check error logs**\n"
+                            "I'll use `parse_error_log` to look for errors, warnings, or critical messages "
+                            "that may indicate problems.\n\n"
+                            "**Step 4: Analyze access patterns**\n"
+                            "I'll use `parse_access_log` to check for failed operations, slow queries, "
+                            "or unusual access patterns.\n\n"
+                            "**Step 5: Review recent changes**\n"
+                            "If an audit log is available, I'll use `parse_audit_log` to review recent "
+                            "configuration or data changes.\n\n"
+                            "**Step 6: Compare against baseline**\n"
+                            "If a known-good archive is available, I'll use `compare_dse_configs` to do a "
+                            "full entry-by-entry comparison to identify what changed.\n\n"
+                            "Let me start by inventorying the available data..."
+                        ),
+                    ),
+                ),
+            ]
+
     def _register_resources(self) -> None:
+        """Register MCP resources for cn=config access."""
+
         @self.resource("config://config-all")
         def get_cn_config_all_attributes() -> str:
             """Return all attributes for cn=config as JSON.
@@ -392,13 +440,12 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_performance_tools(self)
         register_index_tools(self)
         register_config_tools(self)
-
-    # --------------------------------------------------------------------- #
-    # Helper methods (used by tool modules)
-    # --------------------------------------------------------------------- #
+        register_log_tools(self)
+        register_archive_tools(self)
 
     @contextmanager
     def _connection(self, server_name: Optional[str] = None) -> Iterator[Tuple[str, Any]]:
+        """Yield ``(server_name, ds)`` and close the connection on exit."""
         target = server_name or getattr(self, "default_server", None)
         if not target:
             raise ToolError("No LDAP server configured")
@@ -412,6 +459,7 @@ class DirSrvMCP(LDAPAssistantMCP):
                 pass
 
     def _get_base_dn(self, server_name: str) -> str:
+        """Return the configured base DN for *server_name*, or raise."""
         config = self.get_server_config(server_name)
         if not config.base_dn:
             display_name = (

@@ -19,7 +19,6 @@ from src.lib.result_formatter import Severity, format_finding
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
-
 def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize replication result for privacy mode."""
     if not mcp.privacy_enabled:
@@ -28,31 +27,24 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
 
-    # Sanitize replicas list
     if "replicas" in sanitized and isinstance(sanitized["replicas"], list):
         sanitized["replicas"] = [sanitizer.sanitize_replica(r) for r in sanitized["replicas"]]
 
-    # Sanitize servers list (topology)
     if "servers" in sanitized and isinstance(sanitized["servers"], list):
         sanitized["servers"] = [sanitizer.sanitize_server_info(s) for s in sanitized["servers"]]
 
-    # Sanitize agreements list
     if "agreements" in sanitized and isinstance(sanitized["agreements"], list):
         sanitized["agreements"] = [sanitizer.sanitize_agreement(a) for a in sanitized["agreements"]]
 
-    # Sanitize lag_data
     if "lag_data" in sanitized and isinstance(sanitized["lag_data"], list):
         sanitized["lag_data"] = [sanitizer.sanitize_agreement(a) for a in sanitized["lag_data"]]
 
-    # Sanitize findings
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
-    # Sanitize suffixes dict
     if "suffixes" in sanitized and isinstance(sanitized["suffixes"], dict):
         new_suffixes = {}
         for suffix, data in sanitized["suffixes"].items():
@@ -66,17 +58,14 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             new_suffixes[anon_suffix] = new_data
         sanitized["suffixes"] = new_suffixes
 
-    # Sanitize suffix_filter
     if "suffix_filter" in sanitized and sanitized["suffix_filter"]:
         sanitized["suffix_filter"] = sanitizer.sanitize_suffix(sanitized["suffix_filter"])
 
-    # Sanitize suffixes_checked
     if "suffixes_checked" in sanitized and isinstance(sanitized["suffixes_checked"], list):
         sanitized["suffixes_checked"] = [
             sanitizer.sanitize_suffix(s) for s in sanitized["suffixes_checked"]
         ]
 
-    # Sanitize servers lists
     if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
         sanitized["servers_checked"] = [
             sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
@@ -86,7 +75,6 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
         ]
 
-    # Sanitize conflicts and glue entries
     if "conflicts" in sanitized and isinstance(sanitized["conflicts"], list):
         sanitized["conflicts"] = [
             {
@@ -107,7 +95,6 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             for g in sanitized["glue_entries"]
         ]
 
-    # Sanitize filter
     if "filter" in sanitized and isinstance(sanitized["filter"], dict):
         new_filter = {}
         for key, value in sanitized["filter"].items():
@@ -121,7 +108,6 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
 
     return sanitized
 
-
 def _role_to_string(role: ReplicaRole) -> str:
     """Convert ReplicaRole enum to readable string."""
     role_map = {
@@ -130,7 +116,6 @@ def _role_to_string(role: ReplicaRole) -> str:
         ReplicaRole.CONSUMER: "consumer",
     }
     return role_map.get(role, "unknown")
-
 
 def _parse_ruv_for_display(ruv: RUV) -> Dict[str, Any]:
     """Parse RUV object into displayable format with interpretation."""
@@ -143,7 +128,6 @@ def _parse_ruv_for_display(ruv: RUV) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"error": str(e), "replicas": [], "replica_count": 0}
-
 
 def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
     """Extract detailed information from a replication agreement."""
@@ -158,7 +142,6 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
             "enabled": agmt.get_attr_val_utf8("nsds5ReplicaEnabled"),
         }
 
-        # Get status information
         try:
             status_json = agmt.get_agmt_status(return_json=True)
             status = json.loads(status_json)
@@ -166,7 +149,6 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
         except Exception as e:
             agmt_data["status"] = {"error": str(e), "state": "unknown"}
 
-        # Get last update times
         agmt_data["last_update_start"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStart")
         agmt_data["last_update_end"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateEnd")
         agmt_data["last_update_status"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStatus")
@@ -176,7 +158,6 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
     except Exception as e:
         mcp.logger.warning("Error getting agreement details: %s", e)
         return {"error": str(e)}
-
 
 def register_replication_tools(mcp: DirSrvMCP) -> None:
     """Register replication diagnostic tools with the MCP server."""
@@ -265,7 +246,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                             )
                         )
 
-                    # Get agreements and their status
                     try:
                         agmts = replica.get_agreements()
                         for agmt in agmts.list():
@@ -312,7 +292,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                         )
                                     )
 
-                            # Check if agreement is disabled
                             if agmt_details.get("enabled", "on").lower() == "off":
                                 findings.append(
                                     format_finding(
@@ -330,7 +309,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         mcp.logger.warning("Error getting agreements for %s: %s", suffix, e)
                         replica_info["agreements_error"] = str(e)
 
-                    # Get tombstone count
                     try:
                         tombstone_count = replica.get_tombstone_count()
                         replica_info["tombstone_count"] = tombstone_count
@@ -355,7 +333,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     mcp.logger.error("Error processing replica: %s", e)
                     replicas_data.append({"error": str(e)})
 
-            # Generate summary
             total_agreements = sum(len(r.get("agreements", [])) for r in replicas_data)
             error_count = sum(1 for f in findings if f.get("severity") in ["critical", "high"])
 
@@ -497,7 +474,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         elif role_str == "consumer":
                             topology["suffixes"][suffix]["consumers"].append(server_name)
 
-                        # Get outbound agreements
                         try:
                             agmts = replica.get_agreements()
                             for agmt in agmts.list():
@@ -537,7 +513,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     except Exception:
                         pass
 
-        # Analyze topology for issues
         for suffix, roles in topology["suffixes"].items():
             # Check for single supplier (no redundancy)
             if len(roles["suppliers"]) == 1 and (roles["hubs"] or roles["consumers"]):
@@ -565,7 +540,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-        # Generate summary
         total_replicas = sum(len(s.get("replicas", [])) for s in topology["servers"])
         if topology["findings"]:
             summary = f"ISSUES DETECTED: Topology has {len(topology['findings'])} potential issues"
@@ -711,7 +685,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception as e:
                     mcp.logger.warning("Error checking lag for replica: %s", e)
 
-            # Generate summary
             total = in_sync_count + lagging_count + error_count
             if error_count > 0:
                 summary = f"CRITICAL: {error_count} agreement(s) in error state"
@@ -903,7 +876,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            # Generate summary
             if total_issues == 0:
                 summary = f"HEALTHY: No conflicts found in {len(suffixes_to_check)} suffix(es)"
             else:
@@ -1045,7 +1017,6 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception as e:
                     mcp.logger.warning("Error processing replica: %s", e)
 
-            # Generate summary
             error_count = sum(1 for a in agreements_data if a.get("status", {}).get("state") == "red")
             warning_count = sum(1 for a in agreements_data if a.get("status", {}).get("state") == "amber")
 

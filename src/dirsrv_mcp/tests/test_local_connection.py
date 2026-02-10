@@ -23,9 +23,7 @@ from src.dirsrv_mcp.server import DirSrvMCP
 from src.ldap_assistant_mcp.server import LDAPServerConfig
 
 
-# ============================================================================
 # Fixtures for local connection tests
-# ============================================================================
 
 
 @pytest.fixture
@@ -64,9 +62,7 @@ def local_multiserver_config():
     return None
 
 
-# ============================================================================
 # Unit tests for configuration classes
-# ============================================================================
 
 
 class TestLDAPServerConfigLocal:
@@ -300,9 +296,7 @@ class TestConfigLoaderLocal:
         assert config.use_ldapi is True
 
 
-# ============================================================================
 # Unit tests for ConnectionManager
-# ============================================================================
 
 
 class TestConnectionManagerLocal:
@@ -367,9 +361,7 @@ class TestConnectionManagerLocal:
         assert stored.use_ldapi is True
 
 
-# ============================================================================
 # Integration tests (require running DS container)
-# ============================================================================
 
 
 @pytest.mark.skipif(
@@ -495,9 +487,7 @@ class TestLocalHealthCheckIntegration:
         asyncio.run(run_test())
 
 
-# ============================================================================
 # Tests for mixed local/remote multi-server setup
-# ============================================================================
 
 
 class TestMixedLocalRemoteConfig:
