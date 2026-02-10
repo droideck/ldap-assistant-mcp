@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -20,6 +19,7 @@ from lib389.replica import Replica, Replicas
 from lib389.tunables import Tunables
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
+from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
 from src.lib.result_formatter import Severity, format_finding
 from src.lib.value_utils import format_bytes, safe_float, safe_int
 
@@ -36,11 +36,9 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
 
-    # Sanitize server lists
     if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
         sanitized["servers_checked"] = [
             sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
@@ -50,11 +48,9 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
             sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
         ]
 
-    # Sanitize findings
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
-    # Sanitize metrics (contains server names, backend names, hostnames)
     if "metrics" in sanitized and isinstance(sanitized["metrics"], dict):
         sanitized["metrics"] = _sanitize_metrics(sanitizer, sanitized["metrics"])
 
@@ -156,33 +152,25 @@ def _sanitize_cert_metrics(certs: Dict[str, Any]) -> Dict[str, Any]:
         ]
     return result
 
-# Check UIDs that ONLY work with local servers (require filesystem or NSS access)
-# These are the lint_uid() values returned by the check objects
 LOCAL_ONLY_CHECK_UIDS = {
-    "fschecks",           # FSChecks - file system permission checks
-    "monitor-disk-space", # MonitorDiskSpace - disk space monitoring
-    "dseldif",            # DSEldif - DSE.ldif configuration access
-    "tls",                # NssSsl - certificate database access (uses "tls" uid)
-    "logs",               # DirsrvAccessLog - access log analysis
+    "fschecks",
+    "monitor-disk-space",
+    "dseldif",
+    "tls",
+    "logs",
 }
 
-# Checks compatible with offline instances (stopped local DS)
-# These work because local files are still accessible
 OFFLINE_COMPATIBLE_CHECK_UIDS = {
-    "dseldif",            # DSEldif - dse.ldif checks
-    "fschecks",           # FSChecks - file permissions (local files available)
-    "tls",                # NssSsl - cert DB checks (local NSS DB available)
-    "logs",               # DirsrvAccessLog - log analysis (local logs available)
+    "dseldif",
+    "fschecks",
+    "tls",
+    "logs",
 }
 
-# Checks compatible with archive sources (SOS reports, extracts)
-# Only dse.ldif checks work reliably; logs if present
 ARCHIVE_COMPATIBLE_CHECK_UIDS = {
-    "dseldif",            # DSEldif - dse.ldif checks
+    "dseldif",
 }
 
-
-# Check objects that can perform lint operations (mirrors lib389 CHECK_OBJECTS)
 CHECK_OBJECTS = [
     Config,
     Backends,
@@ -295,7 +283,6 @@ def _convert_lib389_result_to_finding(result: Dict[str, Any], server_name: str) 
         "LOW": Severity.LOW,
         "INFO": Severity.INFO,
     }
-    # Handle case-insensitive severity matching
     raw_severity = result.get("severity", "MEDIUM").upper()
     severity = severity_map.get(raw_severity, Severity.MEDIUM)
 
@@ -317,27 +304,8 @@ def _convert_lib389_result_to_finding(result: Dict[str, Any], server_name: str) 
     )
 
 
-def _get_dse_ldif_path(ds) -> str:
-    """Get path to dse.ldif from DirSrv or ArchiveDirSrv."""
-    if hasattr(ds, 'dse_ldif_path') and ds.dse_ldif_path:
-        return ds.dse_ldif_path
-    return os.path.join(ds.ds_paths.config_dir, "dse.ldif")
-
-
-def _find_child_dns(dse, parent_dn: str) -> list:
-    """Find direct child entry DNs under parent_dn from DSEldif._contents."""
-    parent_suffix = "," + parent_dn.lower()
-    children = []
-    for line in dse._contents:
-        if not line.startswith("dn: "):
-            continue
-        dn = line[4:].rstrip("\n")
-        if not dn.endswith(parent_suffix):
-            continue
-        rdn = dn[:-(len(parent_suffix))]
-        if "," not in rdn:
-            children.append(dn)
-    return children
+_get_dse_ldif_path = get_dse_ldif_path
+_find_child_dns = find_child_dns
 
 
 def _check_server_health_offline(
@@ -361,7 +329,6 @@ def _check_server_health_offline(
 
     dse_path = _get_dse_ldif_path(ds)
 
-    # Read basic config from dse.ldif using DSEldif
     try:
         dse = DSEldif(ds, path=dse_path)
 
@@ -375,7 +342,6 @@ def _check_server_health_offline(
         metrics["secure_port"] = secure_port
         metrics["security_enabled"] = security == "on" if security else False
 
-        # Count backends by finding direct children of ldbm database
         ldbm_dn = "cn=ldbm database,cn=plugins,cn=config"
         backend_dns = _find_child_dns(dse, ldbm_dn)
         suffixes = []
@@ -386,7 +352,6 @@ def _check_server_health_offline(
                 real_backends += 1
                 suffixes.append(suffix)
 
-        # Count plugins by finding direct children of cn=plugins,cn=config
         plugins_dn = "cn=plugins,cn=config"
         plugin_dns = _find_child_dns(dse, plugins_dn)
 
@@ -398,7 +363,7 @@ def _check_server_health_offline(
         mcp.logger.debug("Could not read dse.ldif for %s: %s", server_name, e)
         metrics["dse_error"] = str(e)
 
-    # Run DSEldif lint checks (works for both offline and archive)
+    # Run DSEldif lint checks
     try:
         dse = DSEldif(ds, path=dse_path)
         for method_name in dir(dse):
@@ -431,7 +396,6 @@ def _check_server_health_offline(
         except Exception as e:
             mcp.logger.debug("Could not run FSChecks for %s: %s", server_name, e)
 
-    # Mark unavailable metrics
     metrics["connections"] = {"available": False, "reason": f"{mode_label} mode - no live connection"}
     metrics["replication"] = {"available": False, "reason": f"{mode_label} mode - no live connection"}
     metrics["cache"] = {"available": False, "reason": f"{mode_label} mode - no live connection"}
@@ -440,7 +404,6 @@ def _check_server_health_offline(
 
     server_metrics[server_name] = metrics
 
-    # Add info finding about limited checks
     findings.append(
         format_finding(
             title=f"[{mode_label}] Limited Health Check: {server_name}",
@@ -463,7 +426,6 @@ def _list_check_targets_offline(ds, is_archive: bool) -> Dict[str, Any]:
     compatible_uids = ARCHIVE_COMPATIBLE_CHECK_UIDS if is_archive else OFFLINE_COMPATIBLE_CHECK_UIDS
     targets = {}
 
-    # Map UIDs to check classes
     uid_to_class = {
         "dseldif": DSEldif,
         "fschecks": FSChecks,

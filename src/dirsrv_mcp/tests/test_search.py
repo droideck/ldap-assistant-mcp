@@ -15,9 +15,7 @@ from fastmcp.exceptions import ToolError
 pytestmark = pytest.mark.asyncio
 
 
-# ------------------------------------------------------------------------- #
 # Basic search functionality
-# ------------------------------------------------------------------------- #
 
 
 async def test_ldap_search_subtree_returns_results(dirsrv_server):
@@ -119,9 +117,7 @@ async def test_ldap_search_base_returns_correct_entry(dirsrv_server):
         assert "testuser1" in entry["attrs"]["uid"], "Entry should have correct uid"
 
 
-# ------------------------------------------------------------------------- #
 # Attribute filtering
-# ------------------------------------------------------------------------- #
 
 
 async def test_ldap_search_with_specific_attributes(dirsrv_server):
@@ -174,9 +170,7 @@ async def test_ldap_search_attrs_only_returns_empty_values(dirsrv_server):
             )
 
 
-# ------------------------------------------------------------------------- #
 # Complex filters
-# ------------------------------------------------------------------------- #
 
 
 async def test_ldap_search_complex_filter(dirsrv_server):
@@ -228,9 +222,7 @@ async def test_ldap_search_groups(dirsrv_server, expected_test_groups):
             )
 
 
-# ------------------------------------------------------------------------- #
 # Limit enforcement
-# ------------------------------------------------------------------------- #
 
 
 async def test_ldap_search_respects_limit(dirsrv_server):
@@ -253,9 +245,7 @@ async def test_ldap_search_respects_limit(dirsrv_server):
         )
 
 
-# ------------------------------------------------------------------------- #
 # Error handling
-# ------------------------------------------------------------------------- #
 
 
 async def test_ldap_search_invalid_scope_raises_error(dirsrv_server):
@@ -315,9 +305,7 @@ async def test_ldap_search_invalid_filter_raises_error(dirsrv_server):
         assert str(exc_info.value), "Error should have a message"
 
 
-# ------------------------------------------------------------------------- #
 # Helper functions
-# ------------------------------------------------------------------------- #
 
 
 def _extract_user_ids(items: list) -> list[str]:

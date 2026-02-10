@@ -9,6 +9,8 @@ from src.dirsrv_mcp.tools.replication import register_replication_tools
 from src.dirsrv_mcp.tools.performance import register_performance_tools
 from src.dirsrv_mcp.tools.indexes import register_index_tools
 from src.dirsrv_mcp.tools.config import register_config_tools
+from src.dirsrv_mcp.tools.logs import register_log_tools
+from src.dirsrv_mcp.tools.archive import register_archive_tools
 
 __all__ = [
     "register_health_tools",
@@ -20,5 +22,7 @@ __all__ = [
     "register_performance_tools",
     "register_index_tools",
     "register_config_tools",
+    "register_log_tools",
+    "register_archive_tools",
 ]
 

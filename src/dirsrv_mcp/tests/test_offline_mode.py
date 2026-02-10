@@ -36,9 +36,7 @@ from src.dirsrv_mcp.server import DirSrvMCP
 from src.ldap_assistant_mcp.server import LDAPServerConfig
 
 
-# ============================================================================
 # Fixtures for offline mode tests
-# ============================================================================
 
 
 @pytest.fixture
@@ -102,9 +100,7 @@ def mixed_offline_live_server(offline_env, offline_server_config, live_server_co
     )
 
 
-# ============================================================================
 # Unit tests for LDAPServerConfig offline fields
-# ============================================================================
 
 
 class TestLDAPServerConfigOffline:
@@ -175,9 +171,7 @@ class TestLDAPServerConfigOffline:
         assert "is_offline" not in d
 
 
-# ============================================================================
 # Unit tests for ServerConfig offline fields
-# ============================================================================
 
 
 class TestServerConfigOffline:
@@ -211,9 +205,7 @@ class TestServerConfigOffline:
         assert config.serverid == "standalone"
 
 
-# ============================================================================
 # Unit tests for config loader offline parsing
-# ============================================================================
 
 
 class TestConfigLoaderOffline:
@@ -308,9 +300,7 @@ class TestConfigLoaderOffline:
         assert config.is_offline is False
 
 
-# ============================================================================
 # Unit tests for ServerListConfig roundtrip with offline
-# ============================================================================
 
 
 class TestServerListConfigOffline:
@@ -418,9 +408,7 @@ class TestServerListConfigOffline:
         assert live.is_local is False
 
 
-# ============================================================================
 # Unit tests for ConnectionManager offline helpers
-# ============================================================================
 
 
 class TestConnectionManagerOffline:
@@ -467,9 +455,7 @@ class TestConnectionManagerOffline:
         assert stored.is_offline is False
 
 
-# ============================================================================
 # Unit tests for is_offline_server() and require_live_server()
-# ============================================================================
 
 
 class TestOfflineServerHelpers:
@@ -537,9 +523,7 @@ class TestOfflineServerHelpers:
         assert exc.server_name == "my-server"
 
 
-# ============================================================================
 # Unit tests for describe_servers with offline mode
-# ============================================================================
 
 
 class TestDescribeServersOffline:
@@ -608,9 +592,7 @@ class TestDescribeServersOffline:
         assert desc["is_offline"] is True
 
 
-# ============================================================================
 # Unit tests for tool guards via FastMCP Client
-# ============================================================================
 
 
 # All tools that should be guarded by require_live_server
@@ -715,9 +697,7 @@ class TestNonGuardedToolsOfflineMode:
         asyncio.run(run_test())
 
 
-# ============================================================================
 # Unit tests for get_replication_topology with offline servers
-# ============================================================================
 
 
 class TestReplicationTopologyOffline:
@@ -752,9 +732,7 @@ class TestReplicationTopologyOffline:
         asyncio.run(run_test())
 
 
-# ============================================================================
 # Integration tests (require running inside DS container with stopped instance)
-# ============================================================================
 
 
 @pytest.mark.skipif(

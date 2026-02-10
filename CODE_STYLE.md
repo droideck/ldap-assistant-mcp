@@ -176,6 +176,7 @@ Put reusable helpers in appropriate locations:
 - `src/lib/datetime_utils.py` - Date/time conversion
 - `src/lib/value_utils.py` - Safe value conversion, byte formatting
 - `src/dirsrv_mcp/connection.py` - Connection management, local server checks
+- `src/dirsrv_mcp/tools/dse_utils.py` - DN normalization, DSEldif helpers (shared across config, indexes, health, archive tools)
 
 ```python
 from src.lib.value_utils import safe_int, safe_float, format_bytes

@@ -25,9 +25,7 @@ from src.lib.privacy import (
 )
 
 
-# ============================================================================
 # MCPSettings tests
-# ============================================================================
 
 
 def test_mcp_settings_defaults():
@@ -75,9 +73,7 @@ def test_mcp_settings_to_dict():
     assert d["expose_sensitive_data"] is True
 
 
-# ============================================================================
 # PrivacySanitizer unit tests
-# ============================================================================
 
 
 def test_sanitizer_hostname_consistency():
@@ -262,9 +258,7 @@ def test_sanitizer_backend():
     assert result["entry_count"] == 1000  # Numeric preserved
 
 
-# ============================================================================
 # Helper function tests
-# ============================================================================
 
 
 def test_create_privacy_error():
@@ -298,9 +292,7 @@ def test_global_sanitizer():
     assert s2.sanitize_hostname("test.example.com") == "[host-1]"
 
 
-# ============================================================================
 # DirSrvMCP privacy mode fixtures
-# ============================================================================
 
 
 @pytest.fixture
@@ -344,9 +336,7 @@ def exposed_server(server_config) -> DirSrvMCP:
     )
 
 
-# ============================================================================
 # Integration tests - privacy mode behavior
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -528,9 +518,7 @@ async def test_cache_statistics_sanitizes_backends(privacy_server):
                     assert backend["name"] == "[backend]"
 
 
-# ============================================================================
 # DirSrvMCP settings loading tests
-# ============================================================================
 
 
 @pytest.mark.asyncio

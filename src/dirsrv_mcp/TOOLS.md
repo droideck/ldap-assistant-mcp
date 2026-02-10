@@ -504,6 +504,164 @@ run_monitor(backend: str = "", suffix: str = "")
 
 ---
 
+## Log Analysis
+
+### parse_access_log(operation?, result_code?, pattern?, start_time?, end_time?, limit?, server_name?)
+
+Parse and filter access log entries.
+
+```
+parse_access_log(
+    operation: str = None,
+    result_code: int = None,
+    pattern: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    limit: int = 100,
+    server_name: str = None
+)
+```
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| operation | str | No | Filter by operation type (SEARCH, BIND, MOD, etc.) |
+| result_code | int | No | Filter by LDAP result code (e.g., 0 for success) |
+| pattern | str | No | Regex pattern to match against log lines |
+| start_time | str | No | Start of time range (ISO 8601 or log timestamp format) |
+| end_time | str | No | End of time range |
+| limit | int | No | Maximum entries to return (default: 100) |
+| server_name | str | No | Target server |
+
+**Returns:** Parsed log entries with operation statistics.
+
+**Note:** Requires local or archive server access.
+
+---
+
+### parse_error_log(severity?, component?, pattern?, start_time?, end_time?, limit?, server_name?)
+
+Parse and filter error log entries.
+
+```
+parse_error_log(
+    severity: str = None,
+    component: str = None,
+    pattern: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    limit: int = 100,
+    server_name: str = None
+)
+```
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| severity | str | No | Minimum severity (ERR, WARN, INFO, DEBUG) |
+| component | str | No | Filter by server component |
+| pattern | str | No | Regex pattern to match |
+| start_time | str | No | Start of time range |
+| end_time | str | No | End of time range |
+| limit | int | No | Maximum entries (default: 100) |
+| server_name | str | No | Target server |
+
+**Returns:** Parsed entries with severity distribution.
+
+---
+
+### parse_audit_log(operation?, target_dn?, bind_dn?, start_time?, end_time?, limit?, server_name?)
+
+Parse and filter audit log change records.
+
+```
+parse_audit_log(
+    operation: str = None,
+    target_dn: str = None,
+    bind_dn: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    limit: int = 100,
+    server_name: str = None
+)
+```
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| operation | str | No | Filter by change type (add, modify, delete, modrdn) |
+| target_dn | str | No | Filter by target DN (exact or subtree match) |
+| bind_dn | str | No | Filter by who made the change |
+| start_time | str | No | Start of time range |
+| end_time | str | No | End of time range |
+| limit | int | No | Maximum entries (default: 100) |
+| server_name | str | No | Target server |
+
+**Returns:** Parsed change records with operation and actor statistics.
+
+---
+
+## Archive & Offline Analysis
+
+### analyze_archive(server_name?)
+
+Inventory and summarize available data in an archive or offline server.
+
+```
+analyze_archive(server_name: str = None)
+```
+
+**Returns:**
+- Available data sources (config, logs, schema, certificates)
+- Instance name and archive type
+- SOS healthcheck output if available
+- Replication configuration summary
+
+**Example prompts:**
+- "What's available in this SOS report?"
+- "Summarize the archive data"
+
+---
+
+### validate_configuration(server_name?)
+
+Run static lint checks on dse.ldif configuration.
+
+```
+validate_configuration(server_name: str = None)
+```
+
+**Returns:**
+- Security findings (password schemes, TLS settings, access control)
+- Plugin configuration issues
+- Replication configuration analysis
+- Overall health assessment
+
+---
+
+### compare_dse_configs(server1, server2, section?)
+
+Full entry-by-entry dse.ldif comparison between two servers.
+
+```
+compare_dse_configs(
+    server1: str,
+    server2: str,
+    section: str = None
+)
+```
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| server1 | str | Yes | First server name (offline or archive) |
+| server2 | str | Yes | Second server name (offline or archive) |
+| section | str | No | Filter: plugins, indexes, replication, security, backends, config, all |
+
+**Returns:** Entry-level differences, additions, removals, and attribute changes.
+
+---
+
 ## Advanced Search
 
 ### ldap_search(base_dn, scope?, filter?, attributes?, limit?)
@@ -593,8 +751,38 @@ To configure a server for offline mode:
 ```
 
 In offline mode:
-- **Available:** Health checks (`first_look`, `run_healthcheck`), configuration tools (`get_server_configuration`, `compare_server_configurations`, `list_plugins`, `get_backend_configuration`), and index tools (`list_indexes`, `analyze_index_configuration`, `find_unindexed_searches`)
+- **Available:** Health checks (`first_look`, `run_healthcheck`), configuration tools (`get_server_configuration`, `compare_server_configurations`, `list_plugins`, `get_backend_configuration`), index tools (`list_indexes`, `analyze_index_configuration`, `find_unindexed_searches`), and log analysis tools (`parse_access_log`, `parse_error_log`, `parse_audit_log`)
 - **Unavailable:** Tools requiring a live LDAP connection (user/group management, monitoring, performance metrics, replication, search) will return a `LiveServerRequired` error
+
+## Archive Mode
+
+Archive mode allows analyzing SOS reports or extracted configs from any machine without a running DS instance or local installation.
+
+To configure:
+```json
+{
+  "is_archive": true,
+  "archive_path": "/path/to/sosreport-host-2025/"
+}
+```
+
+Or with explicit paths:
+```json
+{
+  "is_archive": true,
+  "config_path": "/path/to/etc/dirsrv/slapd-instance/",
+  "logs_path": "/path/to/var/log/dirsrv/slapd-instance/"
+}
+```
+
+Archive auto-detection supports:
+- **SOS reports** (standard `etc/dirsrv/slapd-*/` + `var/log/dirsrv/` layout)
+- **Direct instance directories** (`slapd-*/dse.ldif`)
+- **Config-only** (directory containing just `dse.ldif`)
+
+In archive mode:
+- **Available:** All offline-mode tools plus archive-specific tools (`analyze_archive`, `validate_configuration`, `compare_dse_configs`)
+- **Unavailable:** All tools requiring a live LDAP connection
 
 ---
 

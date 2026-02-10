@@ -14,9 +14,7 @@ from fastmcp import Client
 pytestmark = pytest.mark.asyncio
 
 
-# ============================================================================
 # list_healthcheck_errors tests
-# ============================================================================
 
 
 async def test_list_healthcheck_errors_returns_error_codes(dirsrv_server):
@@ -60,9 +58,7 @@ async def test_list_healthcheck_errors_includes_known_codes(dirsrv_server):
         assert "DSBLE0001" in codes, "Should include DSBLE0001 (mapping tree)"
 
 
-# ============================================================================
 # list_healthchecks tests
-# ============================================================================
 
 
 async def test_list_healthchecks_returns_available_checks(dirsrv_server):
@@ -114,9 +110,7 @@ async def test_list_healthchecks_includes_server_name(dirsrv_server):
         assert data["server"] is not None, "Server name should not be None"
 
 
-# ============================================================================
 # run_healthcheck tests
-# ============================================================================
 
 
 async def test_run_healthcheck_returns_structured_report(dirsrv_server):
@@ -221,9 +215,7 @@ async def test_run_healthcheck_includes_server_name(dirsrv_server):
         assert data["server"] is not None, "Server name should not be None"
 
 
-# ============================================================================
 # first_look tests (existing tool)
-# ============================================================================
 
 
 async def test_first_look_returns_overview(dirsrv_server):

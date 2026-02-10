@@ -16,9 +16,7 @@ from src.ldap_assistant_mcp.server import LDAPAuthMethod, LDAPServerConfig
 pytestmark = pytest.mark.asyncio
 
 
-# ------------------------------------------------------------------------- #
 # Unit tests for LDAPAuthMethod enum
-# ------------------------------------------------------------------------- #
 
 
 def test_anonymous_auth_method_exists():
@@ -32,9 +30,7 @@ def test_anonymous_auth_method_from_string():
     assert method == LDAPAuthMethod.ANONYMOUS
 
 
-# ------------------------------------------------------------------------- #
 # Unit tests for ServerConfig with auth_method
-# ------------------------------------------------------------------------- #
 
 
 def test_server_config_has_auth_method():
@@ -62,9 +58,7 @@ def test_server_config_default_auth_method():
     assert config.auth_method == "simple"
 
 
-# ------------------------------------------------------------------------- #
 # Unit tests for LDAPServerConfig.from_env with anonymous
-# ------------------------------------------------------------------------- #
 
 
 def test_ldap_server_config_from_env_anonymous():
@@ -102,9 +96,7 @@ def test_ldap_server_config_from_env_simple():
     assert config.bind_password == "Password123"
 
 
-# ------------------------------------------------------------------------- #
 # Unit tests for ConnectionManager with anonymous
-# ------------------------------------------------------------------------- #
 
 
 def test_connection_manager_preserves_auth_method():
@@ -143,9 +135,7 @@ def test_connection_manager_preserves_simple_auth():
     assert config.bind_password == "secret"
 
 
-# ------------------------------------------------------------------------- #
 # Unit tests for anonymous access denied error handling
-# ------------------------------------------------------------------------- #
 
 
 def test_anonymous_access_denied_inappropriate_auth():
@@ -235,9 +225,7 @@ def test_simple_auth_inappropriate_auth_not_caught():
             manager.connect("test-server")
 
 
-# ------------------------------------------------------------------------- #
 # Integration tests (require running 389 DS with anonymous access enabled)
-# ------------------------------------------------------------------------- #
 
 
 async def test_anonymous_ldap_search_base_dn(dirsrv_anonymous_server):

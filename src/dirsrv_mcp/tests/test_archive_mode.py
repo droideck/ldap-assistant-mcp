@@ -40,9 +40,7 @@ from src.dirsrv_mcp.server import DirSrvMCP
 from src.ldap_assistant_mcp.server import LDAPServerConfig
 
 
-# ============================================================================
 # Test fixtures
-# ============================================================================
 
 # Minimal dse.ldif content for testing
 MINIMAL_DSE_LDIF = """\
@@ -150,9 +148,7 @@ def archive_dirsrv_server(archive_env, archive_server_config):
     )
 
 
-# ============================================================================
 # Archive Loader tests
-# ============================================================================
 
 
 class TestDetectArchiveLayout:
@@ -250,9 +246,7 @@ class TestDetectArchiveLayout:
         assert layout.config_dir == str(inst_dir)
 
 
-# ============================================================================
 # ArchivePaths tests
-# ============================================================================
 
 
 class TestArchivePaths:
@@ -285,9 +279,7 @@ class TestArchivePaths:
         assert paths.cert_dir == "/archive/config"
 
 
-# ============================================================================
 # ArchiveDirSrv stub tests
-# ============================================================================
 
 
 class TestArchiveDirSrv:
@@ -359,9 +351,7 @@ class TestArchiveDirSrv:
         assert entry.hasAttr("nsslapd-port")
 
 
-# ============================================================================
 # LDAPServerConfig archive fields
-# ============================================================================
 
 
 class TestLDAPServerConfigArchive:
@@ -406,9 +396,7 @@ class TestLDAPServerConfigArchive:
         assert "archive_path" not in d
 
 
-# ============================================================================
 # ServerConfig archive fields
-# ============================================================================
 
 
 class TestServerConfigArchive:
@@ -438,9 +426,7 @@ class TestServerConfigArchive:
         assert config.archive_path == "/path/to/sos"
 
 
-# ============================================================================
 # Config loader archive parsing
-# ============================================================================
 
 
 class TestConfigLoaderArchive:
@@ -515,9 +501,7 @@ class TestConfigLoaderArchive:
         assert config.hostname == "ldap.example.com"
 
 
-# ============================================================================
 # ServerListConfig roundtrip with archive
-# ============================================================================
 
 
 class TestServerListConfigArchive:
@@ -606,9 +590,7 @@ class TestServerListConfigArchive:
         assert archive.is_archive and not archive.is_offline
 
 
-# ============================================================================
 # ConnectionManager archive handling
-# ============================================================================
 
 
 class TestConnectionManagerArchive:
@@ -661,9 +643,7 @@ class TestConnectionManagerArchive:
         assert ds.ds_paths.log_dir == str(logs_dir)
 
 
-# ============================================================================
 # Archive server helper functions
-# ============================================================================
 
 
 class TestArchiveServerHelpers:
@@ -733,9 +713,7 @@ class TestArchiveServerHelpers:
         require_live_server(cm, "live", "list_all_users")  # Should not raise
 
 
-# ============================================================================
 # describe_servers with archive mode
-# ============================================================================
 
 
 class TestDescribeServersArchive:
@@ -796,9 +774,7 @@ class TestDescribeServersArchive:
         assert desc.get("archive_path") == "[archive_path]"
 
 
-# ============================================================================
 # Tool guards for archive servers
-# ============================================================================
 
 
 # Same guarded tools as offline mode — they should also reject archive servers

@@ -14,9 +14,7 @@ from src.dirsrv_mcp.server import DirSrvMCP
 pytestmark = pytest.mark.asyncio
 
 
-# ============================================================================
 # get_server_configuration tests
-# ============================================================================
 
 
 async def test_get_server_configuration_returns_valid_structure(
@@ -73,9 +71,7 @@ async def test_get_server_configuration_pattern_port(dirsrv_server: DirSrvMCP):
     assert data["attribute_count"] > 0
 
 
-# ============================================================================
 # list_plugins tests
-# ============================================================================
 
 
 async def test_list_plugins_returns_valid_structure(dirsrv_server: DirSrvMCP):
@@ -124,9 +120,7 @@ async def test_list_plugins_has_plugin_details(dirsrv_server: DirSrvMCP):
         assert "type" in plugin
 
 
-# ============================================================================
 # get_backend_configuration tests
-# ============================================================================
 
 
 async def test_get_backend_configuration_returns_valid_structure(
@@ -182,9 +176,7 @@ async def test_get_backend_configuration_includes_config(dirsrv_server: DirSrvMC
         assert isinstance(backend["config"], dict)
 
 
-# ============================================================================
 # compare_server_configurations tests
-# ============================================================================
 
 
 async def test_compare_server_configurations_same_server(dirsrv_server: DirSrvMCP):

@@ -116,6 +116,32 @@ export LDAP_SERVERID="slapd-localhost"
 export LDAP_BASE_DN="dc=example,dc=com"
 ```
 
+### Archive / SOS Report (JSON config)
+
+For analyzing SOS reports or extracted configs from any machine:
+
+```json
+{
+  "servers": [
+    {
+      "name": "sos-report",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "archive_path": "/path/to/sosreport-host-2025/"
+    },
+    {
+      "name": "extracted-config",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "config_path": "/path/to/etc/dirsrv/slapd-instance/",
+      "logs_path": "/path/to/var/log/dirsrv/slapd-instance/"
+    }
+  ]
+}
+```
+
+The archive loader auto-detects SOS report layouts, direct instance directories, and config-only directories.
+
 ### Single Server (Environment Variables)
 
 For a single server without `servers.json`:
@@ -161,24 +187,27 @@ ldap-assistant-mcp/
 ├── src/
 │   ├── ldap_assistant_mcp/  # Base LDAP Assistant server + config dataclasses
 │   ├── dirsrv_mcp/          # 389 DS implementation
+│   │   ├── tools/           # Tool modules (health, config, indexes, logs, archive, ...)
+│   │   ├── archive/         # Archive mode (loader, stub, healthcheck parser)
+│   │   └── tests/           # Test suite
 │   ├── openldap_mcp/        # OpenLDAP implementation
 │   ├── lib/                 # Shared utilities
 │   └── config/              # Configuration management
 ├── src/main.py              # FastMCP entry point + server factory
-├── fastmcp.json             # Declarative runtime config for fastmcp CLI
-└── tests/                   # Test suite
+└── fastmcp.json             # Declarative runtime config for fastmcp CLI
 ```
 
 ### Project Structure
 
 - `src/ldap_assistant_mcp/` - Base FastMCP server + shared config objects
 - `src/dirsrv_mcp/` - 389 DS implementation (connection manager, tools, health)
+- `src/dirsrv_mcp/tools/` - Tool modules: health, config, indexes, performance, replication, logs, archive, and `dse_utils.py` (shared DN/DSE helpers)
+- `src/dirsrv_mcp/archive/` - Archive mode: `loader.py` (auto-detection), `stub.py` (ArchiveDirSrv), `healthcheck_parser.py`
 - `src/openldap_mcp/` - OpenLDAP implementation
-- `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers)
+- `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers, privacy)
 - `src/config/` - Configuration loader
 - `src/main.py` - FastMCP-ready server factory
 - `fastmcp.json` - Declarative runtime configuration for FastMCP CLI
-- `tests/` - Test suite
 
 ### Design Decisions
 

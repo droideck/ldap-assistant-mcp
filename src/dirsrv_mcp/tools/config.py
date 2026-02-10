@@ -12,7 +12,6 @@ ensuring compatibility across different 389 DS versions.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from lib389.backend import Backends
@@ -21,6 +20,7 @@ from lib389.plugins import Plugins
 from lib389.replica import Replicas
 
 from src.dirsrv_mcp.connection import is_offline_or_archive
+from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_all_entry_attrs, get_dse_ldif_path
 from src.lib.privacy import create_privacy_error
 
 if TYPE_CHECKING:
@@ -35,23 +35,19 @@ def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
 
-    # Sanitize server1/server2 for comparison
     if "server1" in sanitized:
         sanitized["server1"] = sanitizer.sanitize_server_name(sanitized["server1"])
     if "server2" in sanitized:
         sanitized["server2"] = sanitizer.sanitize_server_name(sanitized["server2"])
 
-    # Sanitize config values - redact all values, keep attribute names
     if "config" in sanitized and isinstance(sanitized["config"], dict):
         sanitized["config"] = {
             attr: "[REDACTED]" for attr in sanitized["config"].keys()
         }
 
-    # Sanitize differences in comparison
     if "differences" in sanitized and isinstance(sanitized["differences"], list):
         sanitized["differences"] = [
             {
@@ -62,16 +58,11 @@ def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
             for d in sanitized["differences"]
         ]
 
-    # Sanitize only_on_server lists (keep attribute names)
-    # These are just attribute names, not values, so they're ok
-
-    # Sanitize plugins - keep names but redact paths
     if "plugins" in sanitized and isinstance(sanitized["plugins"], list):
         for plugin in sanitized["plugins"]:
             if "path" in plugin:
                 plugin["path"] = "[path]"
 
-    # Sanitize backends
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
         sanitized["backends"] = [
             _sanitize_backend(sanitizer, b) for b in sanitized["backends"]
@@ -118,54 +109,9 @@ def _parse_plugin_entry(plugin) -> Dict[str, Any]:
     }
 
 
-def _get_dse_ldif_path(ds) -> str:
-    """Get path to dse.ldif from DirSrv or ArchiveDirSrv."""
-    if hasattr(ds, 'dse_ldif_path') and ds.dse_ldif_path:
-        return ds.dse_ldif_path
-    return os.path.join(ds.ds_paths.config_dir, "dse.ldif")
-
-
-def _find_child_dns(dse, parent_dn: str) -> List[str]:
-    """Find direct child entry DNs under parent_dn from DSEldif._contents."""
-    parent_suffix = "," + parent_dn.lower()
-    children = []
-    for line in dse._contents:
-        if not line.startswith("dn: "):
-            continue
-        dn = line[4:].rstrip("\n")
-        if not dn.endswith(parent_suffix):
-            continue
-        rdn = dn[:-(len(parent_suffix))]
-        if "," not in rdn:
-            children.append(dn)
-    return children
-
-
-def _get_all_entry_attrs(dse, entry_dn: str) -> Dict[str, List[str]]:
-    """Get all attributes of an entry from DSEldif._contents.
-
-    Returns dict of {attr_name: [values]} where values are strings.
-    """
-    dn_line = "dn: {}\n".format(entry_dn.lower())
-    try:
-        start_idx = dse._contents.index(dn_line)
-    except ValueError:
-        return {}
-
-    attrs: Dict[str, List[str]] = {}
-    for i in range(start_idx + 1, len(dse._contents)):
-        line = dse._contents[i]
-        if line == "\n" or line.startswith("dn: "):
-            break
-        sep_idx = line.find(": ")
-        if sep_idx <= 0:
-            continue
-        attr_name = line[:sep_idx]
-        if attr_name.endswith(":"):
-            attr_name = attr_name[:-1]  # base64 marker
-        value = line[sep_idx + 2:].rstrip("\n")
-        attrs.setdefault(attr_name, []).append(value)
-    return attrs
+_get_dse_ldif_path = get_dse_ldif_path
+_find_child_dns = find_child_dns
+_get_all_entry_attrs = get_all_entry_attrs
 
 
 def _get_all_config_attrs(ds, is_offline_archive: bool) -> Dict[str, Any]:
