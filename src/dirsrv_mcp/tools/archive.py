@@ -15,6 +15,7 @@ from lib389._ldifconn import LDIFConn
 from lib389.dseldif import DSEldif
 
 from src.dirsrv_mcp.connection import is_offline_or_archive
+from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.dirsrv_mcp.tools.dse_utils import (
     dn_equals,
     find_child_dns,
@@ -157,7 +158,7 @@ def _build_archive_analysis(
                     content = fh.read()
                 sos_healthcheck = parse_healthcheck_output(content)
             except Exception as e:
-                sos_healthcheck = {"error": str(e)}
+                sos_healthcheck = {"error": format_error_message(e)}
 
     config = mcp.connection_manager.get_config(server_name)
     if config.is_archive:
@@ -490,11 +491,9 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_archive_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error analyzing archive: %s", e)
-            return _sanitize_archive_result(mcp, {
-                "type": "archive_analysis",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_archive_result(
+                mcp, format_tool_error(e, mcp, "archive_analysis", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -547,11 +546,9 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_archive_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error validating configuration: %s", e)
-            return _sanitize_archive_result(mcp, {
-                "type": "configuration_validation",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_archive_result(
+                mcp, format_tool_error(e, mcp, "configuration_validation", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -631,12 +628,9 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_archive_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error comparing DSE configs: %s", e)
-            return _sanitize_archive_result(mcp, {
-                "type": "dse_comparison",
-                "server1": server1,
-                "server2": server2,
-                "error": str(e),
-            })
+            return _sanitize_archive_result(
+                mcp, format_tool_error(e, mcp, "dse_comparison", server1=server1, server2=server2),
+            )
         finally:
             if ds1:
                 try:

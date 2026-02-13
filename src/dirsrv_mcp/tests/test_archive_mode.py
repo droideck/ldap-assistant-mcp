@@ -245,6 +245,153 @@ class TestDetectArchiveLayout:
         assert layout.instance_name == "slapd-myinst"
         assert layout.config_dir == str(inst_dir)
 
+    def test_tarball_extraction(self, sos_report_dir):
+        """Should extract .tar.xz and detect layout inside."""
+        import tarfile
+
+        # Create a .tar.xz from the SOS report directory
+        tarball_path = str(sos_report_dir.parent / "sosreport-test-host-123.tar.xz")
+        with tarfile.open(tarball_path, "w:xz") as tar:
+            tar.add(str(sos_report_dir), arcname="sosreport-test-host-123")
+
+        layout = detect_archive_layout(archive_path=tarball_path)
+        assert layout.archive_type == "sos_report"
+        assert layout.instance_name == "slapd-localhost"
+        assert layout.dse_ldif_path is not None
+        assert os.path.isfile(layout.dse_ldif_path)
+
+    def test_tarball_with_config_only(self, config_only_dir):
+        """Should extract .tar.gz and detect config-only layout."""
+        import tarfile
+
+        tarball_path = str(config_only_dir.parent / "config-extract.tar.gz")
+        with tarfile.open(tarball_path, "w:gz") as tar:
+            # Add files at root level (no subdirectory) so dse.ldif is at top
+            for item in os.listdir(str(config_only_dir)):
+                tar.add(os.path.join(str(config_only_dir), item), arcname=item)
+
+        layout = detect_archive_layout(archive_path=tarball_path)
+        assert layout.archive_type == "config_only"
+        assert layout.dse_ldif_path is not None
+
+
+# Multi-instance selection tests
+
+
+@pytest.fixture
+def multi_instance_sos(tmp_path):
+    """Create a SOS report with multiple DS instances."""
+    instances = ["slapd-supplier1", "slapd-supplier2", "slapd-consumer1"]
+    for inst in instances:
+        config_dir = tmp_path / "etc" / "dirsrv" / inst
+        config_dir.mkdir(parents=True)
+        (config_dir / "dse.ldif").write_text(MINIMAL_DSE_LDIF)
+        logs_dir = tmp_path / "var" / "log" / "dirsrv" / inst
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "access").write_text(MINIMAL_ACCESS_LOG)
+        (logs_dir / "errors").write_text(MINIMAL_ERROR_LOG)
+    return tmp_path
+
+
+class TestMultiInstanceSelection:
+    """Test instance_name selection when archive has multiple DS instances."""
+
+    def test_multiple_instances_no_selector_raises(self, multi_instance_sos):
+        """Should raise ValueError listing available instances."""
+        with pytest.raises(ValueError, match="3 DS instances") as exc_info:
+            detect_archive_layout(archive_path=str(multi_instance_sos))
+        # All instance names should be listed in the error
+        assert "slapd-supplier1" in str(exc_info.value)
+        assert "slapd-supplier2" in str(exc_info.value)
+        assert "slapd-consumer1" in str(exc_info.value)
+
+    def test_select_specific_instance(self, multi_instance_sos):
+        """Should select the requested instance from multi-instance archive."""
+        layout = detect_archive_layout(
+            archive_path=str(multi_instance_sos),
+            instance_name="slapd-supplier1",
+        )
+        assert layout.instance_name == "slapd-supplier1"
+        assert layout.archive_type == "sos_report"
+        assert layout.dse_ldif_path is not None
+        assert "slapd-supplier1" in layout.dse_ldif_path
+
+    def test_select_each_instance(self, multi_instance_sos):
+        """Should be able to select any of the available instances."""
+        for inst in ["slapd-supplier1", "slapd-supplier2", "slapd-consumer1"]:
+            layout = detect_archive_layout(
+                archive_path=str(multi_instance_sos),
+                instance_name=inst,
+            )
+            assert layout.instance_name == inst
+            assert layout.logs_dir is not None
+
+    def test_nonexistent_instance_raises(self, multi_instance_sos):
+        """Should raise ValueError when instance_name doesn't exist."""
+        with pytest.raises(ValueError, match="not found in archive"):
+            detect_archive_layout(
+                archive_path=str(multi_instance_sos),
+                instance_name="slapd-nonexistent",
+            )
+
+    def test_single_instance_with_selector(self, sos_report_dir):
+        """Specifying instance_name with a single-instance archive should work."""
+        layout = detect_archive_layout(
+            archive_path=str(sos_report_dir),
+            instance_name="slapd-localhost",
+        )
+        assert layout.instance_name == "slapd-localhost"
+
+    def test_single_instance_wrong_selector_raises(self, sos_report_dir):
+        """Wrong instance_name with single-instance archive should raise."""
+        with pytest.raises(ValueError, match="does not match"):
+            detect_archive_layout(
+                archive_path=str(sos_report_dir),
+                instance_name="slapd-wrong",
+            )
+
+    def test_single_instance_no_selector(self, sos_report_dir):
+        """Single instance should auto-select without instance_name."""
+        layout = detect_archive_layout(archive_path=str(sos_report_dir))
+        assert layout.instance_name == "slapd-localhost"
+
+    def test_config_loader_instance_name(self):
+        """Config loader should parse instance_name field."""
+        data = {
+            "name": "sos-supplier1",
+            "is_archive": True,
+            "archive_path": "/cases/sos-report",
+            "instance_name": "slapd-supplier1",
+        }
+        config = _server_config_from_dict(data)
+        assert config.instance_name == "slapd-supplier1"
+
+    def test_config_loader_instance_name_none(self):
+        """Config loader should leave instance_name as None when not set."""
+        data = {
+            "name": "sos-single",
+            "is_archive": True,
+            "archive_path": "/cases/sos-report",
+        }
+        config = _server_config_from_dict(data)
+        assert config.instance_name is None
+
+    def test_connection_manager_passes_instance_name(self, multi_instance_sos):
+        """ConnectionManager should pass instance_name through to archive layout."""
+        cm = ConnectionManager()
+        config = LDAPServerConfig(
+            name="sos-supplier1",
+            hostname="archive",
+            port=0,
+            is_archive=True,
+            archive_path=str(multi_instance_sos),
+            instance_name="slapd-supplier1",
+        )
+        cm.add_server(config)
+        ds = cm.connect("sos-supplier1")
+        assert isinstance(ds, ArchiveDirSrv)
+        assert ds.serverid == "slapd-supplier1"
+
 
 # ArchivePaths tests
 
@@ -482,6 +629,85 @@ class TestConfigLoaderArchive:
             "archive_path": "/sos",
         }
         config = _server_config_from_dict(data)
+        assert config.is_archive is True
+
+    def test_tilde_expansion_in_archive_path(self):
+        """Tilde (~) in archive_path should be expanded to home directory."""
+        data = {
+            "name": "sos-tilde",
+            "is_archive": True,
+            "archive_path": "~/sosreport-host.tar.xz",
+        }
+        config = _server_config_from_dict(data)
+        assert "~" not in config.archive_path
+        assert config.archive_path == os.path.expanduser("~/sosreport-host.tar.xz")
+
+    def test_tilde_expansion_in_config_path(self):
+        """Tilde (~) in config_path and logs_path should be expanded."""
+        data = {
+            "name": "manual-tilde",
+            "is_archive": True,
+            "config_path": "~/config/slapd-prod",
+            "logs_path": "~/logs/slapd-prod",
+        }
+        config = _server_config_from_dict(data)
+        assert "~" not in config.config_path
+        assert "~" not in config.logs_path
+
+    def test_relative_archive_path_resolved(self):
+        """Relative archive_path should be resolved to absolute."""
+        data = {
+            "name": "sos-rel",
+            "is_archive": True,
+            "archive_path": "sosreport-host-123-2026-02-11-abc.tar.xz",
+        }
+        config = _server_config_from_dict(data)
+        assert os.path.isabs(config.archive_path)
+        assert config.archive_path.endswith("sosreport-host-123-2026-02-11-abc.tar.xz")
+
+    def test_relative_path_resolved_against_base_dir(self):
+        """Relative archive_path should resolve against base_dir, not CWD."""
+        data = {
+            "name": "sos-rel",
+            "is_archive": True,
+            "archive_path": "sosreport-host.tar.xz",
+        }
+        config = _server_config_from_dict(data, base_dir="/opt/configs")
+        assert config.archive_path == "/opt/configs/sosreport-host.tar.xz"
+
+    def test_absolute_path_ignores_base_dir(self):
+        """Absolute archive_path should not be affected by base_dir."""
+        data = {
+            "name": "sos-abs",
+            "is_archive": True,
+            "archive_path": "/cases/sosreport.tar.xz",
+        }
+        config = _server_config_from_dict(data, base_dir="/opt/configs")
+        assert config.archive_path == "/cases/sosreport.tar.xz"
+
+    def test_from_dict_passes_base_dir(self, tmp_path):
+        """ServerListConfig.from_dict should pass base_dir through."""
+        data = {
+            "servers": [
+                {
+                    "name": "sos",
+                    "is_archive": True,
+                    "archive_path": "report.tar.xz",
+                }
+            ]
+        }
+        config = ServerListConfig.from_dict(data, base_dir=str(tmp_path))
+        assert config.servers[0].archive_path == str(tmp_path / "report.tar.xz")
+
+    def test_tarball_archive_path_preserved(self):
+        """A .tar.xz archive_path should be accepted and stored as-is (after expansion)."""
+        data = {
+            "name": "sos-tarball",
+            "is_archive": True,
+            "archive_path": "/cases/sosreport-vm-10-0-184-211-123-2026-02-11-ktm.tar.xz",
+        }
+        config = _server_config_from_dict(data)
+        assert config.archive_path.endswith(".tar.xz")
         assert config.is_archive is True
 
     def test_backward_compatibility(self):

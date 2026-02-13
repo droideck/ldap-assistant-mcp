@@ -21,6 +21,7 @@ from lib389.replica import Replicas
 
 from src.dirsrv_mcp.connection import is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_all_entry_attrs, get_dse_ldif_path
+from src.dirsrv_mcp.tools.error_utils import format_tool_error
 from src.lib.privacy import create_privacy_error
 
 if TYPE_CHECKING:
@@ -303,11 +304,9 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting server configuration: %s", e)
-            return _sanitize_config_result(mcp, {
-                "type": "server_configuration",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_config_result(
+                mcp, format_tool_error(e, mcp, "server_configuration", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -420,12 +419,9 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error comparing configurations: %s", e)
-            return _sanitize_config_result(mcp, {
-                "type": "config_comparison",
-                "server1": server1,
-                "server2": server2,
-                "error": str(e),
-            })
+            return _sanitize_config_result(
+                mcp, format_tool_error(e, mcp, "config_comparison", server1=server1, server2=server2),
+            )
         finally:
             if ds1:
                 try:
@@ -494,11 +490,9 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error listing plugins: %s", e)
-            return _sanitize_config_result(mcp, {
-                "type": "plugin_list",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_config_result(
+                mcp, format_tool_error(e, mcp, "plugin_list", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -631,11 +625,9 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting backend configuration: %s", e)
-            return _sanitize_config_result(mcp, {
-                "type": "backend_configuration",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_config_result(
+                mcp, format_tool_error(e, mcp, "backend_configuration", server=target),
+            )
         finally:
             if ds:
                 try:
