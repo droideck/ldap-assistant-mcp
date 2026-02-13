@@ -23,6 +23,7 @@ from lib389.index import VLVSearches
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
+from src.dirsrv_mcp.tools.error_utils import format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -437,11 +438,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error listing indexes: %s", e)
-            return _sanitize_index_result(mcp, {
-                "type": "index_list",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_index_result(
+                mcp, format_tool_error(e, mcp, "index_list", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -670,11 +669,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error analyzing index configuration: %s", e)
-            return _sanitize_index_result(mcp, {
-                "type": "index_analysis",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_index_result(
+                mcp, format_tool_error(e, mcp, "index_analysis", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -883,11 +880,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error finding unindexed searches: %s", e)
-            return _sanitize_index_result(mcp, {
-                "type": "unindexed_searches",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_index_result(
+                mcp, format_tool_error(e, mcp, "unindexed_searches", server=target),
+            )
         finally:
             if ds:
                 try:

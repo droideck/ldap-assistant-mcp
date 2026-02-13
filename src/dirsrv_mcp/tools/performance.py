@@ -23,6 +23,7 @@ from lib389.backend import Backends
 from lib389.monitor import Monitor, MonitorLDBM, MonitorDiskSpace, MonitorSNMP
 
 from src.dirsrv_mcp.connection import is_local_server, require_live_server
+from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 from src.lib.value_utils import format_bytes, safe_float, safe_int
 
@@ -190,7 +191,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
             except Exception as e:
                 mcp.logger.warning("Error getting LDBM monitor: %s", e)
-                cache_data["global_db_cache"] = {"error": str(e)}
+                cache_data["global_db_cache"] = {"error": format_error_message(e)}
 
             try:
                 backends_obj = Backends(ds)
@@ -271,7 +272,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
                     except Exception as e:
                         mcp.logger.warning("Error getting monitor for backend %s: %s", be_name, e)
-                        cache_data["backends"].append({"name": be_name, "error": str(e)})
+                        cache_data["backends"].append({"name": be_name, "error": format_error_message(e)})
 
             except Exception as e:
                 mcp.logger.warning("Error listing backends: %s", e)
@@ -295,11 +296,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting cache statistics: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "cache_statistics",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "cache_statistics", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -446,11 +445,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting connection statistics: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "connection_statistics",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "connection_statistics", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -584,7 +581,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
             except Exception as e:
                 mcp.logger.warning("Error getting SNMP stats: %s", e)
-                op_data["operation_breakdown"] = {"error": str(e)}
+                op_data["operation_breakdown"] = {"error": format_error_message(e)}
 
             if ops_pending > 100:
                 findings.append(
@@ -611,11 +608,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting operation statistics: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "operation_statistics",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "operation_statistics", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -721,11 +716,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting thread statistics: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "thread_statistics",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "thread_statistics", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -911,7 +904,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
                 except Exception as e:
                     mcp.logger.warning("Error getting disk stats: %s", e)
-                    resource_data["disk"] = {"available": False, "error": str(e)}
+                    resource_data["disk"] = {"available": False, "error": format_error_message(e)}
 
             if mem_rss_pct > 80:
                 findings.append(
@@ -955,11 +948,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting resource utilization: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "resource_utilization",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "resource_utilization", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -1157,11 +1148,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting performance summary: %s", e)
-            return _sanitize_performance_result(mcp, {
-                "type": "performance_summary",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_performance_result(
+                mcp, format_tool_error(e, mcp, "performance_summary", server=target),
+            )
         finally:
             if ds:
                 try:

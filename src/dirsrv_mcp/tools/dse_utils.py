@@ -11,6 +11,50 @@ import os
 from typing import Dict, List
 
 import ldap.dn
+from lib389.dseldif import DSEldif
+
+
+def _parse_ldif_value(line: str) -> str:
+    """Extract the value from an LDIF attribute line.
+
+    Handles ``attr: value\\n``, ``attr:: base64\\n``, and ``attr:\\n`` (empty).
+    """
+    colon_pos = line.index(":")
+    rest = line[colon_pos + 1:].rstrip("\n")
+    if rest.startswith(": "):
+        return rest[2:]
+    if rest.startswith(":"):
+        return rest[1:].lstrip(" ")
+    return rest.lstrip(" ")
+
+
+# lib389 DSEldif._find_attr assumes "attr: value\n" format and crashes with
+# IndexError on empty values ("attr:\n").  Patch it to use proper LDIF parsing.
+def _find_attr(self, entry_dn, attr):
+    entry_dn_i = self._contents.index("dn: {}\n".format(entry_dn.lower()))
+    attr_data = {}
+
+    try:
+        dn_end_i = self._contents[entry_dn_i:].index("\n")
+    except ValueError:
+        dn_end_i = len(self._contents)
+
+    entry_slice = self._contents[entry_dn_i:entry_dn_i + dn_end_i]
+    prefix = "{}:".format(attr)
+
+    for line in entry_slice:
+        if line.startswith(prefix):
+            attr_data[entry_slice.index(line)] = _parse_ldif_value(line)
+
+    if not attr_data:
+        raise ValueError(
+            "Attribute {} wasn't found under dn: {}".format(attr, entry_dn.lower())
+        )
+
+    return entry_dn_i, attr_data
+
+
+DSEldif._find_attr = _find_attr
 
 
 def normalize_dn(dn_str: str) -> str:
@@ -122,12 +166,10 @@ def get_all_entry_attrs(dse, entry_dn: str) -> Dict[str, List[str]]:
         line = dse._contents[i]
         if line == "\n" or line.startswith("dn: "):
             break
-        sep_idx = line.find(": ")
-        if sep_idx <= 0:
+        colon_idx = line.find(":")
+        if colon_idx <= 0:
             continue
-        attr_name = line[:sep_idx]
-        if attr_name.endswith(":"):
-            attr_name = attr_name[:-1]  # base64 marker
-        value = line[sep_idx + 2:].rstrip("\n")
+        attr_name = line[:colon_idx]
+        value = _parse_ldif_value(line)
         attrs.setdefault(attr_name, []).append(value)
     return attrs

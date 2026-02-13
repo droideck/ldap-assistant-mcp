@@ -20,6 +20,7 @@ from lib389.tunables import Tunables
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
+from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 from src.lib.value_utils import format_bytes, safe_float, safe_int
 
@@ -361,7 +362,7 @@ def _check_server_health_offline(
 
     except Exception as e:
         mcp.logger.debug("Could not read dse.ldif for %s: %s", server_name, e)
-        metrics["dse_error"] = str(e)
+        metrics["dse_error"] = format_error_message(e)
 
     # Run DSEldif lint checks
     try:
@@ -547,7 +548,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                         server=server_name,
                     )
                 )
-                server_metrics[server_name] = {"error": str(exc)}
+                server_metrics[server_name] = {"error": format_error_message(exc)}
             finally:
                 if ds is not None:
                     try:
@@ -707,12 +708,9 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
             return _sanitize_health_result(mcp, result)
         except Exception as e:
-            return _sanitize_health_result(mcp, {
-                "type": "healthcheck_list",
-                "server": target,
-                "error": str(e),
-                "checks": [],
-            })
+            result = format_tool_error(e, mcp, "healthcheck_list", server=target)
+            result["checks"] = []
+            return _sanitize_health_result(mcp, result)
         finally:
             if ds:
                 try:
@@ -888,22 +886,20 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("run_healthcheck failed: %s", e)
-            return _sanitize_health_result(mcp, {
-                "type": "healthcheck",
-                "server": target,
-                "error": str(e),
-                "summary": f"FAILED: Health check could not complete - {e}",
-                "findings": [
-                    format_finding(
-                        title="Health Check Failed",
-                        severity=Severity.CRITICAL,
-                        impact="Unable to complete health check",
-                        details=str(e),
-                        remediation="Verify server connectivity and check server logs",
-                        server=target,
-                    )
-                ],
-            })
+            err_msg = format_error_message(e)
+            result = format_tool_error(e, mcp, "healthcheck", server=target)
+            result["summary"] = f"FAILED: Health check could not complete - {err_msg}"
+            result["findings"] = [
+                format_finding(
+                    title="Health Check Failed",
+                    severity=Severity.CRITICAL,
+                    impact="Unable to complete health check",
+                    details=err_msg,
+                    remediation="Verify server connectivity and check server logs",
+                    server=target,
+                )
+            ]
+            return _sanitize_health_result(mcp, result)
         finally:
             if ds:
                 try:
@@ -1089,7 +1085,7 @@ def _check_replication_health(
 
     except Exception as e:
         mcp.logger.debug("Could not check replication for %s: %s", server_name, e)
-        metrics["replication"] = {"configured": False, "error": str(e)}
+        metrics["replication"] = {"configured": False, "error": format_error_message(e)}
 
 
 def _check_cache_health(
@@ -1156,7 +1152,7 @@ def _check_cache_health(
 
     except Exception as e:
         mcp.logger.debug("Could not check cache for %s: %s", server_name, e)
-        metrics["cache"] = {"error": str(e)}
+        metrics["cache"] = {"error": format_error_message(e)}
 
 
 def _check_disk_health(
@@ -1236,7 +1232,7 @@ def _check_disk_health(
 
     except Exception as e:
         mcp.logger.debug("Could not check disk space for %s: %s", server_name, e)
-        metrics["disk"] = {"available": False, "error": str(e)}
+        metrics["disk"] = {"available": False, "error": format_error_message(e)}
 
 
 def _check_certificate_health(
@@ -1338,7 +1334,7 @@ def _check_certificate_health(
 
     except Exception as e:
         mcp.logger.debug("Could not check certificates for %s: %s", server_name, e)
-        metrics["certificates"] = {"available": False, "error": str(e)}
+        metrics["certificates"] = {"available": False, "error": format_error_message(e)}
 
 
 def _check_connection_health(
@@ -1431,5 +1427,5 @@ def _check_connection_health(
 
     except Exception as e:
         mcp.logger.debug("Could not check connections for %s: %s", server_name, e)
-        metrics["connections"] = {"error": str(e)}
+        metrics["connections"] = {"error": format_error_message(e)}
 

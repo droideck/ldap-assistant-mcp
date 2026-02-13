@@ -81,6 +81,7 @@ class ServerConfig:
     archive_path: Optional[str] = None
     config_path: Optional[str] = None
     logs_path: Optional[str] = None
+    instance_name: Optional[str] = None
 
     @classmethod
     def from_env(cls, name: str = "default") -> ServerConfig:
@@ -111,6 +112,7 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._configs: Dict[str, ServerConfig] = {}
+        self.debug: bool = False
 
     def add_server(self, config: Union[ServerConfig, LDAPServerConfig]) -> None:
         """Register a server configuration."""
@@ -142,6 +144,7 @@ class ConnectionManager:
                 archive_path=config.archive_path,
                 config_path=config.config_path,
                 logs_path=config.logs_path,
+                instance_name=config.instance_name,
             )
         else:
             server_config = config
@@ -214,7 +217,7 @@ class ConnectionManager:
                 local_info,
             )
 
-        ds = DirSrv(verbose=False)
+        ds = DirSrv(verbose=self.debug)
 
         if config.is_local and config.serverid:
             # Local instance: use local_simple_allocate for path access
@@ -307,6 +310,7 @@ class ConnectionManager:
             archive_path=config.archive_path,
             config_path=config.config_path,
             logs_path=config.logs_path,
+            instance_name=config.instance_name,
         )
         logger.info(
             "Archive mode for '%s': type=%s, instance=%s, config=%s, logs=%s",
@@ -316,7 +320,9 @@ class ConnectionManager:
             layout.config_dir,
             layout.logs_dir,
         )
-        return ArchiveDirSrv(layout)
+        stub = ArchiveDirSrv(layout)
+        stub.verbose = self.debug
+        return stub
 
 
 _GLOBAL_MANAGER = ConnectionManager()

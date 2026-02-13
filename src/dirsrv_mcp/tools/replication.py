@@ -14,6 +14,7 @@ from lib389.conflicts import ConflictEntries, GlueEntries
 from lib389.replica import Replicas, RUV
 
 from src.dirsrv_mcp.connection import is_offline_or_archive, require_live_server
+from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -127,7 +128,7 @@ def _parse_ruv_for_display(ruv: RUV) -> Dict[str, Any]:
             "replica_count": len(ruv_data.get("ruvs", [])),
         }
     except Exception as e:
-        return {"error": str(e), "replicas": [], "replica_count": 0}
+        return {"error": format_error_message(e), "replicas": [], "replica_count": 0}
 
 def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
     """Extract detailed information from a replication agreement."""
@@ -147,7 +148,7 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
             status = json.loads(status_json)
             agmt_data["status"] = status
         except Exception as e:
-            agmt_data["status"] = {"error": str(e), "state": "unknown"}
+            agmt_data["status"] = {"error": format_error_message(e), "state": "unknown"}
 
         agmt_data["last_update_start"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStart")
         agmt_data["last_update_end"] = agmt.get_attr_val_utf8("nsds5replicaLastUpdateEnd")
@@ -157,7 +158,7 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
         return agmt_data
     except Exception as e:
         mcp.logger.warning("Error getting agreement details: %s", e)
-        return {"error": str(e)}
+        return {"error": format_error_message(e)}
 
 def register_replication_tools(mcp: DirSrvMCP) -> None:
     """Register replication diagnostic tools with the MCP server."""
@@ -307,7 +308,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
                     except Exception as e:
                         mcp.logger.warning("Error getting agreements for %s: %s", suffix, e)
-                        replica_info["agreements_error"] = str(e)
+                        replica_info["agreements_error"] = format_error_message(e)
 
                     try:
                         tombstone_count = replica.get_tombstone_count()
@@ -331,7 +332,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
                 except Exception as e:
                     mcp.logger.error("Error processing replica: %s", e)
-                    replicas_data.append({"error": str(e)})
+                    replicas_data.append({"error": format_error_message(e)})
 
             total_agreements = sum(len(r.get("agreements", [])) for r in replicas_data)
             error_count = sum(1 for f in findings if f.get("severity") in ["critical", "high"])
@@ -355,23 +356,21 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting replication status: %s", e)
-            return _sanitize_replication_result(mcp, {
-                "type": "replication_status",
-                "server": target,
-                "error": str(e),
-                "summary": f"FAILED: {e}",
-                "replicas": [],
-                "findings": [
-                    format_finding(
-                        title="Replication Status Check Failed",
-                        severity=Severity.HIGH,
-                        impact="Unable to retrieve replication information",
-                        details=str(e),
-                        remediation="Check server connectivity and permissions",
-                        server=target,
-                    )
-                ],
-            })
+            err_msg = format_error_message(e)
+            result = format_tool_error(e, mcp, "replication_status", server=target)
+            result["summary"] = f"FAILED: {err_msg}"
+            result["replicas"] = []
+            result["findings"] = [
+                format_finding(
+                    title="Replication Status Check Failed",
+                    severity=Severity.HIGH,
+                    impact="Unable to retrieve replication information",
+                    details=err_msg,
+                    remediation="Check server connectivity and permissions",
+                    server=target,
+                )
+            ]
+            return _sanitize_replication_result(mcp, result)
         finally:
             if ds:
                 try:
@@ -676,7 +675,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
                         except Exception as e:
                             lag_entry["status"] = "error"
-                            lag_entry["error"] = str(e)
+                            lag_entry["error"] = format_error_message(e)
                             lag_entry["lag_status"] = "unknown"
                             error_count += 1
 
@@ -709,12 +708,9 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error checking replication lag: %s", e)
-            return _sanitize_replication_result(mcp, {
-                "type": "replication_lag",
-                "server": target,
-                "error": str(e),
-                "lag_data": [],
-            })
+            result = format_tool_error(e, mcp, "replication_lag", server=target)
+            result["lag_data"] = []
+            return _sanitize_replication_result(mcp, result)
         finally:
             if ds:
                 try:
@@ -895,13 +891,10 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error searching for conflicts: %s", e)
-            return _sanitize_replication_result(mcp, {
-                "type": "replication_conflicts",
-                "server": target,
-                "error": str(e),
-                "conflicts": [],
-                "glue_entries": [],
-            })
+            result = format_tool_error(e, mcp, "replication_conflicts", server=target)
+            result["conflicts"] = []
+            result["glue_entries"] = []
+            return _sanitize_replication_result(mcp, result)
         finally:
             if ds:
                 try:
@@ -1012,7 +1005,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                             mcp.logger.warning("Error getting agreement details: %s", e)
                             if agreement_name:
                                 # If looking for specific agreement and error, report it
-                                agreements_data.append({"name": agreement_name, "error": str(e)})
+                                agreements_data.append({"name": agreement_name, "error": format_error_message(e)})
 
                 except Exception as e:
                     mcp.logger.warning("Error processing replica: %s", e)
@@ -1046,12 +1039,9 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         except Exception as e:
             mcp.logger.error("Error getting agreement status: %s", e)
-            return _sanitize_replication_result(mcp, {
-                "type": "agreement_status",
-                "server": target,
-                "error": str(e),
-                "agreements": [],
-            })
+            result = format_tool_error(e, mcp, "agreement_status", server=target)
+            result["agreements"] = []
+            return _sanitize_replication_result(mcp, result)
         finally:
             if ds:
                 try:

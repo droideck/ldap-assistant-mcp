@@ -29,12 +29,18 @@ class MCPSettings:
             - Suffixes and base DNs
             When True, full data is exposed (use only in trusted environments).
 
+        debug: When True, enables verbose/debug output:
+            - Logging level set to DEBUG for ``src.*`` loggers
+            - Tool error responses include full tracebacks
+            - DirSrv connections created with verbose=True
+
         # Future settings (commented placeholders):
         # allow_write_operations: Enable tools that modify directory data
         # allow_task_operations: Enable tools that run server tasks
     """
 
     expose_sensitive_data: bool = False
+    debug: bool = False
 
     # Future: Allow write/modify operations (create users, modify config, etc.)
     # allow_write_operations: bool = False
@@ -48,20 +54,26 @@ class MCPSettings:
 
         Environment variables:
             LDAP_MCP_EXPOSE_SENSITIVE_DATA: true/false (default: false)
+            LDAP_MCP_DEBUG: true/false (default: false)
             # LDAP_MCP_ALLOW_WRITE_OPERATIONS: true/false (default: false)
             # LDAP_MCP_ALLOW_TASK_OPERATIONS: true/false (default: false)
         """
         expose_env = os.environ.get("LDAP_MCP_EXPOSE_SENSITIVE_DATA", "")
         expose_sensitive = str(expose_env).lower() in {"1", "true", "yes", "on"}
 
+        debug_env = os.environ.get("LDAP_MCP_DEBUG", "")
+        debug = str(debug_env).lower() in {"1", "true", "yes", "on"}
+
         return cls(
             expose_sensitive_data=expose_sensitive,
+            debug=debug,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert settings to dictionary."""
         return {
             "expose_sensitive_data": self.expose_sensitive_data,
+            "debug": self.debug,
             # "allow_write_operations": self.allow_write_operations,
             # "allow_task_operations": self.allow_task_operations,
         }
@@ -130,6 +142,7 @@ class LDAPServerConfig:
     archive_path: Optional[str] = None
     config_path: Optional[str] = None
     logs_path: Optional[str] = None
+    instance_name: Optional[str] = None
 
     @property
     def ldap_url(self) -> str:
@@ -168,6 +181,8 @@ class LDAPServerConfig:
                 result["config_path"] = self.config_path
             if self.logs_path:
                 result["logs_path"] = self.logs_path
+            if self.instance_name:
+                result["instance_name"] = self.instance_name
         return result
 
     def copy_with(self, **overrides: Any) -> LDAPServerConfig:
@@ -332,6 +347,8 @@ class LDAPAssistantMCP(FastMCP):
                 desc["mode"] = "archive"
                 if config.archive_path:
                     desc["archive_path"] = config.archive_path
+                if config.instance_name:
+                    desc["instance_name"] = config.instance_name
             elif config.is_offline:
                 desc["is_offline"] = True
                 desc["mode"] = "offline"

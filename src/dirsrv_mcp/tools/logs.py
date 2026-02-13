@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server
 from src.dirsrv_mcp.tools.dse_utils import dn_equals, is_under_dn
+from src.dirsrv_mcp.tools.error_utils import format_tool_error
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
@@ -288,7 +289,10 @@ def _parse_access_log_entries(
             if not line.strip():
                 continue
             total_parsed += 1
-            parsed = log_obj.parse_line(line)
+            try:
+                parsed = log_obj.parse_line(line)
+            except Exception:
+                continue
             if not parsed:
                 continue
             action = parsed.get("action", "")
@@ -423,7 +427,10 @@ def _parse_error_log_entries(
                 else:
                     continue
 
-            parsed = log_obj.parse_line(line)
+            try:
+                parsed = log_obj.parse_line(line)
+            except Exception:
+                parsed = None
             ts = parsed.get("timestamp", "") if parsed else ""
             if not _timestamp_in_range(ts, start_ts, end_ts):
                 continue
@@ -653,11 +660,9 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_log_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error parsing access log: %s", e)
-            return _sanitize_log_result(mcp, {
-                "type": "access_log",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_log_result(
+                mcp, format_tool_error(e, mcp, "access_log", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -713,11 +718,9 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_log_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error parsing error log: %s", e)
-            return _sanitize_log_result(mcp, {
-                "type": "error_log",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_log_result(
+                mcp, format_tool_error(e, mcp, "error_log", server=target),
+            )
         finally:
             if ds:
                 try:
@@ -774,11 +777,9 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return _sanitize_log_result(mcp, result)
         except Exception as e:
             mcp.logger.error("Error parsing audit log: %s", e)
-            return _sanitize_log_result(mcp, {
-                "type": "audit_log",
-                "server": target,
-                "error": str(e),
-            })
+            return _sanitize_log_result(
+                mcp, format_tool_error(e, mcp, "audit_log", server=target),
+            )
         finally:
             if ds:
                 try:

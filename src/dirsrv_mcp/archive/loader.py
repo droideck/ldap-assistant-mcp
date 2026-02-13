@@ -29,6 +29,7 @@ def detect_archive_layout(
     archive_path: Optional[str] = None,
     config_path: Optional[str] = None,
     logs_path: Optional[str] = None,
+    instance_name: Optional[str] = None,
 ) -> ArchiveLayout:
     """Auto-detect archive structure and return discovered paths.
 
@@ -36,6 +37,11 @@ def detect_archive_layout(
     - Explicit config_path / logs_path (manual extract)
     - archive_path pointing to a .tar.xz/.tar.gz (auto-extracted)
     - archive_path pointing to an SOS report directory
+
+    Args:
+        instance_name: Optional instance to select (e.g. 'slapd-supplier1')
+            when archive contains multiple DS instances. If omitted and
+            multiple instances exist, raises ValueError listing them.
     """
     # Explicit paths provided
     if config_path or logs_path:
@@ -51,7 +57,7 @@ def detect_archive_layout(
     if not os.path.isdir(archive_path):
         raise FileNotFoundError(f"Archive path is not a directory: {archive_path}")
 
-    return _scan_directory(archive_path)
+    return _scan_directory(archive_path, instance_name=instance_name)
 
 def extract_archive(archive_file: str) -> str:
     """Extract .tar.xz or .tar.gz to a temporary directory.
@@ -113,8 +119,17 @@ def _layout_from_explicit_paths(
 
     return layout
 
-def _scan_directory(root: str) -> ArchiveLayout:
-    """Scan a directory for SOS report or DS instance structure."""
+def _scan_directory(
+    root: str,
+    instance_name: Optional[str] = None,
+) -> ArchiveLayout:
+    """Scan a directory for SOS report or DS instance structure.
+
+    Args:
+        root: Directory to scan.
+        instance_name: Optional instance to select when multiple are present.
+            If omitted and multiple instances exist, raises ValueError.
+    """
     nested = sorted(glob.glob(os.path.join(root, "sosreport-*")))
     if nested and os.path.isdir(nested[0]):
         root = nested[0]
@@ -122,17 +137,19 @@ def _scan_directory(root: str) -> ArchiveLayout:
     # Pattern 1: Standard SOS layout — etc/dirsrv/slapd-*/dse.ldif
     dse_matches = sorted(glob.glob(os.path.join(root, "etc", "dirsrv", "slapd-*", "dse.ldif")))
     if dse_matches:
-        return _build_sos_layout(root, dse_matches[0])
+        dse_path = _select_instance(dse_matches, instance_name)
+        return _build_sos_layout(root, dse_path)
 
     # Pattern 2: Direct slapd-* directory (user extracted just the instance dir)
     dse_direct = sorted(glob.glob(os.path.join(root, "slapd-*", "dse.ldif")))
     if dse_direct:
-        config_dir = os.path.dirname(dse_direct[0])
+        dse_path = _select_instance(dse_direct, instance_name)
+        config_dir = os.path.dirname(dse_path)
         return ArchiveLayout(
             archive_type="manual_extract",
             instance_name=_extract_instance_name(config_dir),
             config_dir=config_dir,
-            dse_ldif_path=dse_direct[0],
+            dse_ldif_path=dse_path,
             cert_dir=config_dir,
             schema_dir=os.path.join(config_dir, "schema") if os.path.isdir(os.path.join(config_dir, "schema")) else None,
         )
@@ -184,6 +201,58 @@ def _build_sos_layout(root: str, dse_path: str) -> ArchiveLayout:
         sos_commands_dir=sos_commands_dir,
         dse_ldif_path=dse_path,
     )
+
+def _select_instance(
+    dse_paths: List[str],
+    instance_name: Optional[str] = None,
+) -> str:
+    """Pick the right dse.ldif when an archive contains multiple instances.
+
+    Args:
+        dse_paths: Sorted list of dse.ldif paths found in the archive.
+        instance_name: Optional instance selector (e.g. 'slapd-supplier1').
+
+    Returns:
+        The selected dse.ldif path.
+
+    Raises:
+        ValueError: If instance_name doesn't match any found instance, or
+            if multiple instances exist and no instance_name was given.
+    """
+    if len(dse_paths) == 1:
+        if instance_name:
+            found = _extract_instance_name(os.path.dirname(dse_paths[0]))
+            if found and found != instance_name:
+                raise ValueError(
+                    f"instance_name '{instance_name}' does not match the "
+                    f"only instance found: '{found}'"
+                )
+        return dse_paths[0]
+
+    # Multiple instances — build name→path map
+    instance_map = {}
+    for dse_path in dse_paths:
+        name = _extract_instance_name(os.path.dirname(dse_path))
+        if name:
+            instance_map[name] = dse_path
+
+    available = sorted(instance_map.keys())
+
+    if not instance_name:
+        raise ValueError(
+            f"Archive contains {len(available)} DS instances: "
+            f"{', '.join(available)}. "
+            f"Set instance_name in the server config to select one."
+        )
+
+    if instance_name not in instance_map:
+        raise ValueError(
+            f"instance_name '{instance_name}' not found in archive. "
+            f"Available instances: {', '.join(available)}"
+        )
+
+    return instance_map[instance_name]
+
 
 def _extract_instance_name(path: str) -> Optional[str]:
     """Extract instance name (e.g. 'slapd-localhost') from a path component."""

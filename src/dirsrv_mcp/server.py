@@ -32,6 +32,7 @@ from src.dirsrv_mcp.tools import (
     register_performance_tools,
     register_replication_tools,
     register_search_tools,
+    register_server_tools,
     register_user_tools,
 )
 from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPServerConfig, MCPSettings
@@ -75,11 +76,20 @@ class DirSrvMCP(LDAPAssistantMCP):
         for cfg in self.server_configs.values():
             self.connection_manager.add_server(cfg)
 
+        # Wire debug mode
+        if self._mcp_settings.debug:
+            self.connection_manager.debug = True
+            # Set DEBUG level on all src.* loggers
+            for name in list(logging.Logger.manager.loggerDict) + [self.logger.name]:
+                if name.startswith("src.") or name == self.logger.name:
+                    logging.getLogger(name).setLevel(logging.DEBUG)
+
         self.logger.info(
-            "DirSrv MCP initialized with %d server(s): %s (privacy_mode=%s)",
+            "DirSrv MCP initialized with %d server(s): %s (privacy_mode=%s, debug=%s)",
             len(self.server_configs),
             ", ".join(self.server_configs.keys()),
             not self._mcp_settings.expose_sensitive_data,
+            self._mcp_settings.debug,
         )
 
         self._register_prompts()
@@ -90,6 +100,11 @@ class DirSrvMCP(LDAPAssistantMCP):
     def privacy_enabled(self) -> bool:
         """Return True if privacy mode is enabled (sensitive data is redacted)."""
         return not self._mcp_settings.expose_sensitive_data
+
+    @property
+    def debug_enabled(self) -> bool:
+        """Return True if debug mode is enabled."""
+        return self._mcp_settings.debug
 
     @property
     def sanitizer(self) -> PrivacySanitizer:
@@ -431,6 +446,7 @@ class DirSrvMCP(LDAPAssistantMCP):
 
     def _register_tools(self) -> None:
         """Register all tools from modular tool files."""
+        register_server_tools(self)
         register_health_tools(self)
         register_user_tools(self)
         register_group_tools(self)

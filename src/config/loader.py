@@ -50,6 +50,8 @@ class ServerListConfig:
                     server_dict["config_path"] = s.config_path
                 if s.logs_path:
                     server_dict["logs_path"] = s.logs_path
+                if s.instance_name:
+                    server_dict["instance_name"] = s.instance_name
             server_list.append(server_dict)
         result = {"servers": server_list}
         if self.settings.expose_sensitive_data:
@@ -57,11 +59,17 @@ class ServerListConfig:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ServerListConfig":
-        """Create from dictionary representation."""
+    def from_dict(cls, data: Dict[str, Any], base_dir: Optional[str] = None) -> "ServerListConfig":
+        """Create from dictionary representation.
+
+        Args:
+            data: Dictionary with "servers" and optional "settings" keys.
+            base_dir: Directory to resolve relative paths against (typically
+                the directory containing the JSON config file).
+        """
         servers = []
         for server_data in data.get("servers", []):
-            servers.append(_server_config_from_dict(server_data))
+            servers.append(_server_config_from_dict(server_data, base_dir=base_dir))
 
         settings_data = data.get("settings", {})
         settings = _settings_from_dict(settings_data)
@@ -165,7 +173,8 @@ def _load_from_file(file_path: str) -> ServerListConfig:
     with open(file_path, 'r') as f:
         data = json.load(f)
 
-    config = ServerListConfig.from_dict(data)
+    config_dir = os.path.dirname(os.path.abspath(file_path))
+    config = ServerListConfig.from_dict(data, base_dir=config_dir)
     logger.info(f"Loaded configuration for {len(config.servers)} servers")
 
     return config
@@ -213,13 +222,19 @@ def save_config(config: ServerListConfig, file_path: str) -> None:
     os.chmod(file_path, 0o600)
     logger.info("Configuration saved to %s with mode 0600", file_path)
 
-def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
-    """Convert a dictionary entry into an LDAPServerConfig."""
+def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = None) -> LDAPServerConfig:
+    """Convert a dictionary entry into an LDAPServerConfig.
+
+    Args:
+        data: Server configuration dictionary.
+        base_dir: Directory to resolve relative paths against.
+    """
     is_offline = _coerce_bool(data.get("is_offline", False))
     is_archive = _coerce_bool(data.get("is_archive", False))
-    archive_path = data.get("archive_path")
-    config_path_override = data.get("config_path")
-    logs_path_override = data.get("logs_path")
+    archive_path = _expand_path(data.get("archive_path"), base_dir)
+    config_path_override = _expand_path(data.get("config_path"), base_dir)
+    logs_path_override = _expand_path(data.get("logs_path"), base_dir)
+    instance_name = data.get("instance_name")
 
     # Validate: mutually exclusive modes
     if is_offline and is_archive:
@@ -312,7 +327,23 @@ def _server_config_from_dict(data: Dict[str, Any]) -> LDAPServerConfig:
         archive_path=archive_path,
         config_path=config_path_override,
         logs_path=logs_path_override,
+        instance_name=instance_name,
     )
+
+def _expand_path(path: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
+    """Expand ~ and resolve a config path to an absolute path.
+
+    Relative paths are resolved against base_dir (the directory containing
+    servers.json) so that paths like "sosreport.tar.xz" work regardless
+    of what the process CWD happens to be.
+    """
+    if path is None:
+        return None
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path) and base_dir:
+        path = os.path.join(base_dir, path)
+    return os.path.abspath(path)
+
 
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
@@ -331,12 +362,14 @@ def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
     JSON format:
     {
         "settings": {
-            "expose_sensitive_data": true
+            "expose_sensitive_data": true,
+            "debug": true
         }
     }
 
     Environment variables:
         LDAP_MCP_EXPOSE_SENSITIVE_DATA: true/false
+        LDAP_MCP_DEBUG: true/false
     """
     # Start with environment-based defaults
     env_settings = MCPSettings.from_env()
@@ -347,6 +380,12 @@ def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
     else:
         expose = env_settings.expose_sensitive_data
 
+    if "debug" in data:
+        debug = _coerce_bool(data["debug"])
+    else:
+        debug = env_settings.debug
+
     return MCPSettings(
         expose_sensitive_data=expose,
+        debug=debug,
     )
