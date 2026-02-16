@@ -1559,7 +1559,7 @@ class TestArchiveInvestigationPrompt:
                 text = result.messages[1].content.text.lower()
                 assert "analyze_archive" in text
                 assert "validate_configuration" in text
-                assert "parse_error_log" in text
+                assert "analyze_error_log" in text
                 assert "compare_dse_configs" in text
 
         asyncio.run(run())

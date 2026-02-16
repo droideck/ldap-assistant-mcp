@@ -113,6 +113,8 @@ nsds5replicaid: 1
 """
 
 SAMPLE_ACCESS_LOG = """\
+389-Directory/2.4.6 B2024.123.456
+ldap-assistant-mcp starting up
 [01/Jan/2024:10:00:01.000000000 +0000] conn=1 fd=64 slot=64 connection from 127.0.0.1 to 127.0.0.1
 [01/Jan/2024:10:00:01.100000000 +0000] conn=1 op=0 BIND dn="cn=Directory Manager" method=128 version=3
 [01/Jan/2024:10:00:01.200000000 +0000] conn=1 op=0 RESULT err=0 tag=97 nentries=0 wtime=0.000001 optime=0.000100 etime=0.000101
@@ -125,6 +127,10 @@ SAMPLE_ACCESS_LOG = """\
 [01/Jan/2024:10:00:04.200000000 +0000] conn=2 op=0 RESULT err=0 tag=97 nentries=0 wtime=0.000001 optime=0.000100 etime=0.000101
 [01/Jan/2024:10:00:05.000000000 +0000] conn=2 op=1 MOD dn="cn=config"
 [01/Jan/2024:10:00:05.100000000 +0000] conn=2 op=1 RESULT err=0 tag=103 nentries=0 wtime=0.000001 optime=0.001000 etime=0.001001
+[01/Jan/2024:10:00:06.000000000 +0000] conn=1 op=3 fd=64 closed - U1
+[01/Jan/2024:10:00:07.000000000 +0000] conn=-1 op=0 SRCH base="cn=config" scope=0 filter="(objectclass=*)" attrs=ALL
+[01/Jan/2024:10:00:07.100000000 +0000] conn=-1 op=0 RESULT err=0 tag=101 nentries=1 wtime=0.000000 optime=0.000050 etime=0.000050
+[01/Jan/2024:10:00:08.000000000 +0000] conn=3 AUTOBIND dn="cn=Directory Manager"
 """
 
 SAMPLE_ERROR_LOG = """\
@@ -503,6 +509,65 @@ class TestParseAccessLog:
 
         asyncio.run(run())
 
+    def test_disconnect_lines(self, archive_mcp):
+        """Disconnect (closed) lines should be parsed with DISCONNECT action."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "parse_access_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                stats = data.get("operation_stats", {})
+                assert "DISCONNECT" in stats
+
+        asyncio.run(run())
+
+    def test_internal_ops(self, archive_mcp):
+        """Internal operations (conn=-1) should be parsed without crashing."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "parse_access_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "error" not in data
+                # Internal SRCH + RESULT should be parsed
+                assert data["total_parsed"] > 0
+
+        asyncio.run(run())
+
+    def test_autobind_lines(self, archive_mcp):
+        """AUTOBIND lines should be parsed with AUTOBIND action."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "parse_access_log",
+                    {"server_name": "test-archive", "operation": "AUTOBIND"},
+                )
+                data = result.data
+                assert "error" not in data
+                assert data["matched_count"] >= 1
+
+        asyncio.run(run())
+
+    def test_header_lines_skipped(self, archive_mcp):
+        """Banner/header lines should be skipped without crashing."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "parse_access_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "error" not in data
+                # Header lines are counted in total_parsed but not matched
+                # (no timestamp → _parse_access_line returns None)
+                assert data["total_parsed"] > data["matched_count"]
+
+        asyncio.run(run())
+
 
 # Error log tool tests
 
@@ -595,7 +660,6 @@ class TestParseAuditLog:
                 assert "error" not in data
                 assert data["total_parsed"] >= 3
                 assert len(data.get("changes", [])) >= 3
-                assert data.get("is_json_format") is False
 
         asyncio.run(run())
 
@@ -610,7 +674,6 @@ class TestParseAuditLog:
                 assert data["type"] == "audit_log"
                 assert "error" not in data
                 assert data["total_parsed"] >= 2
-                assert data.get("is_json_format") is True
 
         asyncio.run(run())
 
@@ -686,11 +749,12 @@ class TestParseAuditLog:
         asyncio.run(run())
 
 
-# Log tool privacy tests
+# Parse tools — privacy blocked tests
 
-class TestLogToolsPrivacy:
+class TestParseToolsPrivacyBlocked:
+    """Parse tools must return a privacy error when privacy mode is ON."""
 
-    def test_access_log_privacy(self, privacy_archive_mcp):
+    def test_parse_access_log_blocked(self, privacy_archive_mcp):
         async def run():
             async with Client(privacy_archive_mcp) as client:
                 result = await client.call_tool(
@@ -698,12 +762,13 @@ class TestLogToolsPrivacy:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
-                # Server name should be sanitized
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("type") == "privacy_restricted"
+                assert "error" in data
+                assert "privacy" in data["error"].lower()
 
         asyncio.run(run())
 
-    def test_error_log_privacy(self, privacy_archive_mcp):
+    def test_parse_error_log_blocked(self, privacy_archive_mcp):
         async def run():
             async with Client(privacy_archive_mcp) as client:
                 result = await client.call_tool(
@@ -711,11 +776,12 @@ class TestLogToolsPrivacy:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("type") == "privacy_restricted"
+                assert "error" in data
 
         asyncio.run(run())
 
-    def test_audit_log_privacy(self, privacy_archive_mcp):
+    def test_parse_audit_log_blocked(self, privacy_archive_mcp):
         async def run():
             async with Client(privacy_archive_mcp) as client:
                 result = await client.call_tool(
@@ -723,7 +789,296 @@ class TestLogToolsPrivacy:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
+                assert data.get("type") == "privacy_restricted"
+                assert "error" in data
+
+        asyncio.run(run())
+
+
+# Analyze tools tests
+
+class TestAnalyzeAccessLog:
+    """Tests for the analyze_access_log tool."""
+
+    def test_basic_stats(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_access_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert data["type"] == "access_log_analysis"
+                assert "error" not in data
+                assert data["total_parsed"] > 0
+                assert data["matched_count"] > 0
+                assert isinstance(data["operation_stats"], dict)
+                assert isinstance(data["failed_operations"], dict)
+                assert isinstance(data["slow_operation_summary"], dict)
+                assert "count" in data["slow_operation_summary"]
+                assert "max_etime" in data["slow_operation_summary"]
+                assert "avg_etime" in data["slow_operation_summary"]
+                assert "unindexed_search_count" in data
+
+        asyncio.run(run())
+
+    def test_no_raw_data_keys(self, archive_mcp):
+        """Analyze output must NOT contain individual entry data."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_access_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "entries" not in data
+                assert "slow_operations" not in data
+                assert "raw" not in data
+
+        asyncio.run(run())
+
+    def test_operation_filter(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_access_log",
+                    {"server_name": "test-archive", "operation": "RESULT"},
+                )
+                data = result.data
+                assert "error" not in data
+                stats = data.get("operation_stats", {})
+                # Only RESULT ops should be counted
+                for key in stats:
+                    assert key == "RESULT"
+
+        asyncio.run(run())
+
+    def test_privacy_sanitizes_server(self, privacy_archive_mcp):
+        """Server name should be sanitized in privacy mode."""
+        async def run():
+            async with Client(privacy_archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_access_log",
+                    {"server_name": "priv-archive"},
+                )
+                data = result.data
+                assert "error" not in data
                 assert data.get("server", "").startswith("[server-")
+
+        asyncio.run(run())
+
+    def test_result_code_filter(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_access_log",
+                    {"server_name": "test-archive", "result_code": 32},
+                )
+                data = result.data
+                assert "error" not in data
+                # err=32 entries should contribute to failed_operations
+                failed = data.get("failed_operations", {})
+                assert "32" in failed
+
+        asyncio.run(run())
+
+
+class TestAnalyzeErrorLog:
+    """Tests for the analyze_error_log tool."""
+
+    def test_basic_stats(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert data["type"] == "error_log_analysis"
+                assert "error" not in data
+                assert data["total_parsed"] > 0
+                assert isinstance(data["severity_counts"], dict)
+                assert isinstance(data["component_counts"], dict)
+                assert isinstance(data["common_patterns"], list)
+                assert data["severity_counts"].get("INFO", 0) > 0
+
+        asyncio.run(run())
+
+    def test_no_raw_data_keys(self, archive_mcp):
+        """Analyze output must NOT contain individual entries."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "entries" not in data
+                assert "raw" not in data
+
+        asyncio.run(run())
+
+    def test_severity_filter(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "test-archive", "severity": "ERR"},
+                )
+                data = result.data
+                assert "error" not in data
+                assert data["matched_count"] >= 1
+
+        asyncio.run(run())
+
+    def test_component_filter(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "test-archive", "component": "replication"},
+                )
+                data = result.data
+                assert "error" not in data
+                assert data["matched_count"] >= 1
+
+        asyncio.run(run())
+
+    def test_common_patterns_no_example_in_stats(self, archive_mcp):
+        """Stats-only common_patterns should NOT contain 'example' field."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                for p in data.get("common_patterns", []):
+                    assert "example" not in p
+                    assert "pattern" in p
+                    assert "count" in p
+
+        asyncio.run(run())
+
+    def test_privacy_sanitizes_patterns(self, privacy_archive_mcp):
+        """In privacy mode, common_patterns text should be sanitized."""
+        async def run():
+            async with Client(privacy_archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "priv-archive"},
+                )
+                data = result.data
+                assert "error" not in data
+                for p in data.get("common_patterns", []):
+                    # DN-like strings should be stripped
+                    assert "cn=Directory Manager" not in p.get("pattern", "")
+
+        asyncio.run(run())
+
+    def test_privacy_sanitizes_server(self, privacy_archive_mcp):
+        async def run():
+            async with Client(privacy_archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_error_log",
+                    {"server_name": "priv-archive"},
+                )
+                data = result.data
+                assert data.get("server", "").startswith("[server-")
+
+        asyncio.run(run())
+
+
+class TestAnalyzeAuditLog:
+    """Tests for the analyze_audit_log tool."""
+
+    def test_basic_stats(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert data["type"] == "audit_log_analysis"
+                assert "error" not in data
+                assert data["total_parsed"] >= 3
+                assert isinstance(data["change_type_stats"], dict)
+                assert "modify" in data["change_type_stats"]
+                assert "add" in data["change_type_stats"]
+                assert "delete" in data["change_type_stats"]
+                assert isinstance(data["actor_stats"], dict)
+                assert len(data["actor_stats"]) > 0
+
+        asyncio.run(run())
+
+    def test_no_raw_data_keys(self, archive_mcp):
+        """Analyze output must NOT contain individual change records."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "changes" not in data
+                assert "raw" not in data
+
+        asyncio.run(run())
+
+    def test_operation_filter(self, archive_mcp):
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "test-archive", "operation": "modify"},
+                )
+                data = result.data
+                assert "error" not in data
+                assert data["matched_count"] >= 1
+
+        asyncio.run(run())
+
+    def test_privacy_sanitizes_actor_stats(self, privacy_archive_mcp):
+        """In privacy mode, actor_stats keys (DNs) should be anonymized."""
+        async def run():
+            async with Client(privacy_archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "priv-archive"},
+                )
+                data = result.data
+                assert "error" not in data
+                for key in data.get("actor_stats", {}):
+                    # Real DNs should not appear
+                    assert "cn=Directory Manager" not in key
+
+        asyncio.run(run())
+
+    def test_privacy_off_shows_real_actors(self, archive_mcp):
+        """With privacy off, actor_stats should contain real DNs."""
+        async def run():
+            async with Client(archive_mcp) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "test-archive"},
+                )
+                data = result.data
+                assert "cn=Directory Manager" in data.get("actor_stats", {})
+
+        asyncio.run(run())
+
+    def test_json_format(self, archive_mcp_json_audit):
+        async def run():
+            async with Client(archive_mcp_json_audit) as client:
+                result = await client.call_tool(
+                    "analyze_audit_log",
+                    {"server_name": "test-json"},
+                )
+                data = result.data
+                assert data["type"] == "audit_log_analysis"
+                assert "error" not in data
+                assert data["total_parsed"] >= 2
 
         asyncio.run(run())
 
