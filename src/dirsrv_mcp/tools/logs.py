@@ -6,6 +6,8 @@ live local servers, offline instances, and archive sources (SOS reports).
 
 from __future__ import annotations
 
+import glob as globmod
+import gzip
 import json
 import os
 import re
@@ -209,6 +211,97 @@ def _matches_audit_filters(
     return True
 
 
+# ---- Traditional log line parsers (replaces lib389 parse_line) ----
+#
+# lib389's parse_line() crashes on internal ops, AUTOBIND, header lines,
+# and multi-line error messages.  These parsers handle all line formats.
+
+
+def _read_log_lines(log_path: str, include_archived: bool = False) -> List[str]:
+    """Read lines from a log file, optionally including rotated/compressed logs."""
+    lines: List[str] = []
+    if include_archived:
+        for path in globmod.glob(f"{log_path}.*-*") + [log_path]:
+            try:
+                if path.endswith(".gz"):
+                    with gzip.open(path, "rt", errors="replace") as fh:
+                        lines += fh.readlines()
+                else:
+                    with open(path, "r", errors="replace") as fh:
+                        lines += fh.readlines()
+            except OSError:
+                continue
+    else:
+        with open(log_path, "r", errors="replace") as fh:
+            lines = fh.readlines()
+    return lines
+
+_ACCESS_TS_RE = re.compile(r"^\[(?P<timestamp>[^\]]+)\]\s*(?P<rest>.*)")
+_ACCESS_RESULT_RE = re.compile(
+    r"err=(?P<err>\d+)\s+tag=(?P<tag>\d+)\s+nentries=(?P<nentries>\d+)"
+)
+_ACCESS_ETIME_RE = re.compile(r"etime=(?P<etime>[0-9.]+)")
+_ACCESS_NOTES_RE = re.compile(r"notes=(?P<notes>\w+)")
+
+_ACCESS_ACTIONS = {
+    "SRCH", "MOD", "ADD", "DEL", "MODRDN", "CMP", "ABANDON",
+    "BIND", "UNBIND", "AUTOBIND", "RESULT", "EXT",
+}
+
+
+def _parse_access_line(line: str) -> Optional[Dict[str, str]]:
+    """Parse a traditional DS access log line.
+
+    Handles standard ops, internal ops, connections, disconnects,
+    AUTOBIND, and EXT.  Returns None for non-log lines (headers).
+    """
+    m = _ACCESS_TS_RE.match(line.strip())
+    if not m:
+        return None
+
+    result: Dict[str, str] = {"timestamp": f"[{m.group('timestamp')}]"}
+    rest = m.group("rest")
+
+    # Find the action keyword
+    for token in rest.split():
+        if token in _ACCESS_ACTIONS:
+            result["action"] = token
+            break
+        if token in ("connection", "Disconnect"):
+            result["action"] = "CONNECT" if token == "connection" else "DISCONNECT"
+            break
+
+    if result.get("action") == "RESULT":
+        rm = _ACCESS_RESULT_RE.search(rest)
+        if rm:
+            result.update(rm.groupdict())
+        em = _ACCESS_ETIME_RE.search(rest)
+        if em:
+            result["etime"] = em.group("etime")
+        nm = _ACCESS_NOTES_RE.search(rest)
+        if nm:
+            result["notes"] = nm.group("notes")
+
+    return result
+
+
+_ERROR_TS_RE = re.compile(
+    r"^\[(?P<timestamp>[^\]]+)\]\s*-\s*(?P<severity>\w+)\s*-\s*"
+    r"(?P<component>\S+)\s*-\s*(?P<message>.*)"
+)
+
+
+def _parse_error_line(line: str) -> Optional[Dict[str, str]]:
+    """Parse a traditional DS error log line.
+
+    Returns None for non-log lines (headers, continuation text).
+    """
+    m = _ERROR_TS_RE.match(line.strip())
+    if not m:
+        return None
+    return m.groupdict()
+
+
 def _parse_access_log_entries(
     ds,
     operation: Optional[str],
@@ -219,7 +312,7 @@ def _parse_access_log_entries(
     limit: int,
 ) -> Dict[str, Any]:
     """Parse access log and return structured results."""
-    from lib389.dirsrv_log import DirsrvAccessLog, DirsrvAccessJSONLog
+    from lib389.dirsrv_log import DirsrvAccessJSONLog
 
     log_path = ds.ds_paths.access_log
     if not log_path or not os.path.isfile(log_path):
@@ -283,16 +376,11 @@ def _parse_access_log_entries(
             if len(entries) < limit:
                 entries.append(jentry)
     else:
-        log_obj = DirsrvAccessLog(ds)
-        lines = log_obj.readlines_archive() if include_archived else log_obj.readlines()
-        for line in lines:
+        for line in _read_log_lines(log_path, include_archived):
             if not line.strip():
                 continue
             total_parsed += 1
-            try:
-                parsed = log_obj.parse_line(line)
-            except Exception:
-                continue
+            parsed = _parse_access_line(line)
             if not parsed:
                 continue
             action = parsed.get("action", "")
@@ -346,7 +434,7 @@ def _parse_access_log_entries(
 
 
 _ERROR_SEVERITY_RE = re.compile(
-    r"-\s+(EMERG|ALERT|CRIT|ERR|WARNING|NOTICE|INFO|DEBUG)\s+-"
+    r"-\s+(EMERG|ALERT|CRIT|ERR|WARN|WARNING|NOTICE|INFO|DEBUG)\s+-"
 )
 
 
@@ -359,7 +447,7 @@ def _parse_error_log_entries(
     limit: int,
 ) -> Dict[str, Any]:
     """Parse error log and return structured results."""
-    from lib389.dirsrv_log import DirsrvErrorLog, DirsrvErrorJSONLog
+    from lib389.dirsrv_log import DirsrvErrorJSONLog
 
     log_path = ds.ds_paths.error_log
     if not log_path or not os.path.isfile(log_path):
@@ -404,43 +492,36 @@ def _parse_error_log_entries(
             if len(entries) < limit:
                 entries.append(jentry)
     else:
-        log_obj = DirsrvErrorLog(ds)
-        lines = log_obj.readlines()
-        for line in lines:
+        for line in _read_log_lines(log_path):
             if not line.strip():
                 continue
             total_parsed += 1
+            parsed = _parse_error_line(line)
 
-            sev_match = _ERROR_SEVERITY_RE.search(line)
-            entry_sev = sev_match.group(1) if sev_match else "INFO"
+            entry_sev = (parsed or {}).get("severity", "").upper()
+            if not entry_sev:
+                sev_match = _ERROR_SEVERITY_RE.search(line)
+                entry_sev = sev_match.group(1) if sev_match else "INFO"
             severity_counts[entry_sev] = severity_counts.get(entry_sev, 0) + 1
 
             if sev_upper and entry_sev != sev_upper:
                 continue
 
             if component:
-                parts = line.split(" - ")
-                if len(parts) >= 3:
-                    entry_comp = parts[2].strip() if len(parts) > 3 else ""
-                    if component.lower() not in entry_comp.lower():
-                        continue
-                else:
+                entry_comp = (parsed or {}).get("component", "")
+                if not entry_comp or component.lower() not in entry_comp.lower():
                     continue
 
-            try:
-                parsed = log_obj.parse_line(line)
-            except Exception:
-                parsed = None
-            ts = parsed.get("timestamp", "") if parsed else ""
+            ts = (parsed or {}).get("timestamp", "")
             if not _timestamp_in_range(ts, start_ts, end_ts):
                 continue
             if pattern_re and not pattern_re.search(line):
                 continue
 
-            msg = parsed.get("message", line) if parsed else line
+            msg = (parsed or {}).get("message", line)
             _track_pattern(pattern_counts, msg)
 
-            entry = parsed or {"raw": line.rstrip()}
+            entry = parsed or {}
             entry["severity"] = entry_sev
             entry["raw"] = line.rstrip()
 
