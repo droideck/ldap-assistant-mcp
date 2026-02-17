@@ -29,37 +29,76 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_server_list(mcp: "DirSrvMCP", names: List[str]) -> List[str]:
+    """Sanitize a list of server names for privacy mode."""
+    if not mcp.privacy_enabled:
+        return list(names)
+    return [mcp.sanitizer.sanitize_server_name(n) for n in names]
+
+
 def _sanitize_archive_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize archive tool results for privacy mode.
+
+    Dispatches to type-specific helpers based on ``result["type"]``.
+    """
     if not mcp.privacy_enabled:
         return result
 
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
-    if "server1" in sanitized:
-        sanitized["server1"] = sanitizer.sanitize_server_name(sanitized["server1"])
-    if "server2" in sanitized:
-        sanitized["server2"] = sanitizer.sanitize_server_name(sanitized["server2"])
+    # Common keys across all archive result types — capture originals for text replacement
+    original_names = {}
+    for server_key in ("server", "server1", "server2"):
+        if server_key in sanitized:
+            original_names[server_key] = sanitized[server_key]
+            sanitized[server_key] = sanitizer.sanitize_server_name(sanitized[server_key])
     if "instance_name" in sanitized:
         sanitized["instance_name"] = "[instance]"
-
-    # Sanitize config summary
-    if "config_summary" in sanitized and isinstance(sanitized["config_summary"], dict):
-        cs = dict(sanitized["config_summary"])
-        if "version" in cs:
-            pass  # version is safe
-        for k in ("suffixes",):
-            if k in cs and isinstance(cs[k], list):
-                cs[k] = [sanitizer.sanitize_suffix(s) for s in cs[k]]
-        sanitized["config_summary"] = cs
-
-    # Sanitize findings
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        for key, orig in original_names.items():
+            if orig and orig in err:
+                err = err.replace(orig, sanitized[key])
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
-    # Sanitize available data paths
+    # Type-specific sanitization
+    result_type = sanitized.get("type", "")
+    if result_type in ("archive_analysis", "configuration_validation"):
+        _sanitize_analysis(sanitizer, sanitized)
+    elif result_type == "dse_comparison":
+        _sanitize_dse_comparison(sanitizer, sanitized)
+
+    return sanitized
+
+
+def _sanitize_analysis(sanitizer, sanitized: Dict[str, Any]) -> None:
+    """Sanitize archive_analysis / configuration_validation results in place."""
+    # Config summary
+    if "config_summary" in sanitized and isinstance(sanitized["config_summary"], dict):
+        cs = dict(sanitized["config_summary"])
+        for k in ("suffixes",):
+            if k in cs and isinstance(cs[k], list):
+                cs[k] = [sanitizer.sanitize_suffix(s) for s in cs[k]]
+        if "port" in cs:
+            cs["port"] = "[port]"
+        if "secure_port" in cs:
+            cs["secure_port"] = "[port]"
+        if "backends" in cs and isinstance(cs["backends"], list):
+            cs["backends"] = [
+                {**b, "name": "[backend]", "suffix": sanitizer.sanitize_suffix(b.get("suffix"))}
+                for b in cs["backends"]
+            ]
+        if "replication" in cs and isinstance(cs["replication"], list):
+            cs["replication"] = [
+                {**r, "suffix": sanitizer.sanitize_suffix(r.get("suffix"))}
+                for r in cs["replication"]
+            ]
+        sanitized["config_summary"] = cs
+
+    # Available data paths
     if "available_data" in sanitized and isinstance(sanitized["available_data"], dict):
         ad = dict(sanitized["available_data"])
         for k in list(ad.keys()):
@@ -67,7 +106,52 @@ def _sanitize_archive_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
                 ad[k] = "[path]"
         sanitized["available_data"] = ad
 
-    return sanitized
+    # SOS healthcheck output
+    if "sos_healthcheck" in sanitized and isinstance(sanitized["sos_healthcheck"], dict):
+        hc = sanitized["sos_healthcheck"]
+        safe_hc: Dict[str, Any] = {}
+        if "raw_output" in hc:
+            safe_hc["raw_output"] = "[redacted-healthcheck-output]"
+        if "findings" in hc and isinstance(hc["findings"], list):
+            safe_hc["findings"] = [
+                {
+                    "code": f.get("code"),
+                    "severity": f.get("severity"),
+                    "description": sanitizer._sanitize_text_field(f.get("description", "")),
+                    "details": sanitizer._sanitize_text_field(f.get("details", "")),
+                }
+                for f in hc["findings"]
+            ]
+        # Preserve safe scalar keys (counts, booleans)
+        for k in ("total_findings", "error"):
+            if k in hc:
+                safe_hc[k] = hc[k]
+        sanitized["sos_healthcheck"] = safe_hc
+
+
+def _sanitize_dse_comparison(sanitizer, sanitized: Dict[str, Any]) -> None:
+    """Sanitize dse_comparison results in place."""
+    for list_key in ("only_in_server1", "only_in_server2"):
+        if list_key in sanitized and isinstance(sanitized[list_key], list):
+            sanitized[list_key] = [sanitizer.sanitize_dn(dn) for dn in sanitized[list_key]]
+
+    if "differences" in sanitized and isinstance(sanitized["differences"], list):
+        sanitized_diffs = []
+        for diff in sanitized["differences"]:
+            sd = dict(diff)
+            if "dn" in sd:
+                sd["dn"] = sanitizer.sanitize_dn(sd["dn"])
+            if "different_values" in sd and isinstance(sd["different_values"], list):
+                sd["different_values"] = [
+                    {
+                        "attribute": dv.get("attribute"),
+                        "server1": [sanitizer.sanitize_attribute_value(dv.get("attribute", ""), v) for v in dv.get("server1", [])],
+                        "server2": [sanitizer.sanitize_attribute_value(dv.get("attribute", ""), v) for v in dv.get("server2", [])],
+                    }
+                    for dv in sd["different_values"]
+                ]
+            sanitized_diffs.append(sd)
+        sanitized["differences"] = sanitized_diffs
 
 
 def _build_archive_analysis(
@@ -454,14 +538,15 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
     def analyze_archive(
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze an offline or archive data source to inventory available data.
+        """Inventory available data in an offline or archive source.
 
         Reads dse.ldif to extract server version, ports, backends, suffixes,
         plugins, and replication configuration.  Checks for available log files,
         schema, and certificates.  For SOS reports, also parses any
         ``dsctl healthcheck`` output found in ``sos_commands/``.
 
-        Requires offline or archive mode.
+        Use this as the first step when working with a new archive or
+        offline instance. OFFLINE and ARCHIVE only.
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -475,14 +560,14 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "archive_analysis", "error": "No server configured"}
 
         if not is_offline_or_archive(mcp.connection_manager, target):
-            return {
+            return _sanitize_archive_result(mcp, {
                 "type": "archive_analysis",
                 "server": target,
                 "error": (
                     "analyze_archive requires an offline or archive server. "
                     f"Server '{target}' is a live connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -505,18 +590,14 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
     def validate_configuration(
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Validate server configuration using static analysis of dse.ldif.
+        """Run static configuration lint on dse.ldif (like ``run_healthcheck`` but offline).
 
-        Runs offline-compatible lint checks and custom static analysis:
-        - DSEldif nsstate lint (replication clock skew detection)
-        - Password storage scheme strength
-        - TLS minimum version
-        - Access log buffering
-        - Audit logging enabled
-        - TLS/SSL security enabled
-        - Anonymous access settings
+        Performs DSEldif nsstate lint plus custom checks: password storage
+        scheme, TLS minimum version, access log buffering, audit logging,
+        TLS/SSL enabled, and anonymous access settings.
 
-        Requires offline or archive mode.
+        Use this instead of ``run_healthcheck`` for archive sources that
+        cannot run full lib389 lint. OFFLINE and ARCHIVE only.
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -530,14 +611,14 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "configuration_validation", "error": "No server configured"}
 
         if not is_offline_or_archive(mcp.connection_manager, target):
-            return {
+            return _sanitize_archive_result(mcp, {
                 "type": "configuration_validation",
                 "server": target,
                 "error": (
                     "validate_configuration requires an offline or archive server. "
                     f"Server '{target}' is a live connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -583,34 +664,36 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
         """
         server_names = mcp.connection_manager.get_server_names()
         if server1 not in server_names:
+            available = _sanitize_server_list(mcp, server_names)
             return {
                 "type": "dse_comparison",
-                "error": f"Server '{server1}' not found. Available: {', '.join(server_names)}",
+                "error": f"Server not found. Available: {', '.join(available)}",
             }
         if server2 not in server_names:
+            available = _sanitize_server_list(mcp, server_names)
             return {
                 "type": "dse_comparison",
-                "error": f"Server '{server2}' not found. Available: {', '.join(server_names)}",
+                "error": f"Server not found. Available: {', '.join(available)}",
             }
 
         if not is_offline_or_archive(mcp.connection_manager, server1):
-            return {
+            return _sanitize_archive_result(mcp, {
                 "type": "dse_comparison",
                 "server1": server1,
                 "error": (
                     "compare_dse_configs requires offline or archive servers. "
                     f"Server '{server1}' is a live connection."
                 ),
-            }
+            })
         if not is_offline_or_archive(mcp.connection_manager, server2):
-            return {
+            return _sanitize_archive_result(mcp, {
                 "type": "dse_comparison",
                 "server2": server2,
                 "error": (
                     "compare_dse_configs requires offline or archive servers. "
                     f"Server '{server2}' is a live connection."
                 ),
-            }
+            })
 
         ds1 = None
         ds2 = None

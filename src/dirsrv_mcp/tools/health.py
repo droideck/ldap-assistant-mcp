@@ -37,8 +37,14 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
         sanitized["servers_checked"] = [
@@ -87,6 +93,10 @@ def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = _sanitize_disk_metrics(sanitizer, value)
         elif key == "certificates" and isinstance(value, dict):
             result[key] = _sanitize_cert_metrics(value)
+        elif key == "suffixes" and isinstance(value, list):
+            result[key] = [sanitizer.sanitize_suffix(s) for s in value]
+        elif key in ("port", "secure_port"):
+            result[key] = "[port]"
         else:
             # Keep numeric metrics and status flags
             result[key] = value
@@ -463,26 +473,24 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def first_look() -> Dict[str, Any]:
-        """Comprehensive health overview - the go-to tool for "what's wrong with my directory?"
+        """Multi-server health overview — the first tool to call for any directory investigation.
 
-        Performs a complete health assessment across all configured servers including:
-        - Server connectivity and basic health
-        - Connection and thread utilization
-        - Replication status and errors
-        - Cache efficiency (entry cache hit ratios)
-        - Disk space usage (local servers only)
-        - SSL certificate expiration (local servers only)
+        Scans ALL configured servers (live, offline, and archive) and returns
+        prioritized findings with severity levels and actionable recommendations.
+        For live servers: connectivity, connections, threads, replication,
+        cache efficiency, disk space, and certificate expiration.
+        For offline/archive servers: dse.ldif lint, filesystem checks (offline only).
 
-        **Note on local vs remote servers:**
-        Most checks work via LDAP and are available for all servers. However, the
-        following require local server access (is_local=True with serverid):
-        - Disk space monitoring (requires filesystem access)
-        - Certificate expiration checking (requires NSS database access)
+        Use ``run_healthcheck`` for deeper per-server lint checks, or the
+        ``get_performance_summary`` tool when focused on a single live server's
+        performance counters.
 
-        For remote servers, these metrics will show as unavailable in the response.
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
-        Returns prioritized findings with severity levels and actionable recommendations.
-        This should be the first tool called when investigating directory issues.
+        Returns:
+            Dict with ``overall_health``, severity counts, ``findings`` list,
+            and per-server ``metrics``. Disk/certificate checks require
+            local server access (is_local=True with serverid).
         """
         server_names = mcp.connection_manager.get_server_names()
 
@@ -641,11 +649,11 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_healthcheck_errors() -> Dict[str, Any]:
-        """List all known health check error codes (DSLE codes).
+        """List all known DSLE error codes that ``run_healthcheck`` can return.
 
-        Returns a list of all possible error codes that can be returned by
-        the run_healthcheck tool, along with their severity and description.
-        This is equivalent to 'dsctl <instance> healthcheck --list-errors'.
+        Use this to look up what a specific error code means (e.g. DSELE0001).
+        Equivalent to ``dsctl <instance> healthcheck --list-errors``.
+        No server connection required — this is a static reference list.
         """
         errors = _get_all_error_codes()
         return {
@@ -656,15 +664,16 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def list_healthchecks(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """List all available health checks that can be run.
+        """List available health checks for a server in ``category:check`` format.
 
-        Returns a list of all available checks in the format 'category:check_name'.
-        Use these check names with the run_healthcheck tool's 'checks' parameter.
-        This is equivalent to 'dsctl <instance> healthcheck --list-checks'.
+        Returns checks that can be passed to ``run_healthcheck(checks=[...])``.
+        The list is mode-aware: offline/archive servers only show compatible checks.
+        Equivalent to ``dsctl <instance> healthcheck --list-checks``.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
-            server_name: Optional server to query for available checks.
-                         If not specified, uses the default server.
+            server_name: Target server name. Uses default if not specified.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -724,35 +733,28 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         exclude_checks: Optional[List[str]] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run comprehensive health checks on the 389 Directory Server.
+        """Run targeted lint checks on a single server (like ``dsctl healthcheck``).
 
-        This tool performs the same checks as 'dsctl <instance> healthcheck',
-        examining configuration, backends, security, replication, plugins,
-        certificates, disk space, and more.
+        Use this tool after ``first_look`` to drill into specific check
+        categories (config, backends, dseldif, tls, fschecks, plugins, etc.).
+        For a broad multi-server overview, use ``first_look`` instead.
 
-        **Note on local vs remote servers:**
-        Some checks require local server access (is_local=True with serverid):
-        - fschecks: File system permission checks
-        - monitor-disk-space: Disk space monitoring
-        - dseldif: DSE.ldif configuration access
-        - tls: Certificate database access (requires certutil)
-        - logs: Access log analysis
-
-        For remote servers, these checks will be automatically skipped.
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
+        In offline mode: dseldif, fschecks, tls, and logs checks are available.
+        In archive mode: only dseldif checks are available.
+        For remote live servers: local-only checks (fschecks, disk, dseldif,
+        tls, logs) are automatically skipped.
 
         Args:
             checks: Optional list of specific checks to run (e.g., ['config:*', 'backends:mappingtree']).
                     Use '*' as wildcard. If not specified, runs all available checks.
-                    Use list_healthchecks() to see available checks.
+                    Use ``list_healthchecks`` to see available checks.
             exclude_checks: Optional list of checks to skip (same format as 'checks').
-            server_name: Optional server to check. If not specified, uses the default server.
+            server_name: Target server name. Uses default if not specified.
 
         Returns:
-            A structured report with findings, including:
-            - Summary of issues found by severity
-            - Detailed findings with error codes, descriptions, and remediation steps
-            - List of checks that were run
-            - List of checks skipped (including local-only checks for remote servers)
+            Dict with ``summary``, severity counts, ``findings`` list with
+            DSLE error codes, ``checks_executed``, and ``checks_skipped``.
         """
         target = server_name or mcp.default_server
         if not target:

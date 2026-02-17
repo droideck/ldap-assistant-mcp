@@ -14,6 +14,37 @@ from src.dirsrv_mcp.connection import require_live_server
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
+# Monitor attributes safe to expose in privacy mode (numeric/diagnostic only)
+SAFE_MONITOR_KEYS = {
+    "currentconnections", "totalconnections", "threads",
+    "currentconnectionsatmaxthreads", "maxthreadsperconnhits",
+    "dtablesize", "readwaiters", "opsinitiated", "opscompleted",
+    "entriessent", "bytessent", "nbackends", "version", "starttime",
+    "currenttime", "connection", "backendmonitordn",
+    # DB cache metrics
+    "dbcachehits", "dbcachetries", "dbcachehitratio",
+    "dbcachepagein", "dbcachepageout", "dbcacheroevict", "dbcacherwevict",
+    # Entry/DN cache metrics
+    "entrycachehits", "entrycachetries", "entrycachehitratio",
+    "currententrycachesize", "maxentrycachesize",
+    "currententrycachecount", "maxentrycachecount",
+    "dncachehits", "dncachetries", "dncachehitratio",
+    "currentdncachesize", "maxdncachesize",
+    "currentdncachecount", "maxdncachecount",
+    # Normalized DN cache
+    "normalizeddncachehits", "normalizeddncachetries",
+    "normalizeddncachehitratio", "normalizeddncachemisses",
+    "normalizeddncacheevictions", "currentnormalizeddncachesize",
+    "maxnormalizeddncachesize", "currentnormalizeddncachecount",
+    # SNMP/operation counters
+    "anonymousbinds", "unauthbinds", "simpleauthbinds", "strongauthbinds",
+    "bindsecurityerrors", "inops", "readops", "compareops",
+    "addentryops", "removeentryops", "modifyentryops", "modifyrdnops",
+    "searchops", "onelevelsearchops", "wholesubtreesearchops",
+    "referrals", "securityerrors", "errors", "bytesrecv",
+    "entriesreturned", "referralsreturned",
+}
+
 
 def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize monitor result for privacy mode."""
@@ -24,8 +55,14 @@ def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
     sanitized = dict(result)
 
     # Sanitize server name
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     # Sanitize backend name
     if "backend" in sanitized and sanitized["backend"] != "main":
@@ -34,6 +71,15 @@ def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
     # Sanitize suffix in parameters
     if "suffix" in sanitized:
         sanitized["suffix"] = sanitizer.sanitize_suffix(sanitized["suffix"])
+
+    # Filter monitor item to safe keys only
+    if "item" in sanitized and isinstance(sanitized["item"], dict):
+        filtered = {}
+        for k, v in sanitized["item"].items():
+            if k.lower() in SAFE_MONITOR_KEYS:
+                filtered[k] = v
+        filtered["_privacy_note"] = "Filtered to safe diagnostic keys only"
+        sanitized["item"] = filtered
 
     return sanitized
 
@@ -45,7 +91,25 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
     def run_monitor(
         backend: str = "", suffix: str = "", server_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Return server or backend monitor information."""
+        """Return raw cn=monitor attributes for a server or specific backend.
+
+        Use this tool when you need low-level monitor counters not covered
+        by the higher-level performance tools.  For most diagnostic work,
+        prefer ``get_performance_summary`` or the specific ``get_cache_statistics``
+        / ``get_connection_statistics`` / ``get_operation_statistics`` tools
+        which provide interpreted results with health assessments.
+
+        Requires a live LDAP connection.
+
+        Args:
+            backend: Specific backend name (e.g., 'userroot') to monitor.
+            suffix: Alternative to backend — specify the suffix instead.
+            server_name: Target server name. Uses default if not specified.
+
+        Returns:
+            All monitor attributes as key-value pairs.  In privacy mode,
+            only safe diagnostic/numeric keys are included.
+        """
         target = server_name or mcp.default_server
         require_live_server(mcp.connection_manager, target, "run_monitor")
         with mcp._connection(target) as (srv, ds):

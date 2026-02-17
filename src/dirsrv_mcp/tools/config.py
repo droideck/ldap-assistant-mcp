@@ -28,6 +28,13 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
 
+def _sanitize_server_list(mcp: "DirSrvMCP", names) -> List[str]:
+    """Sanitize a list of server names for privacy mode."""
+    if not mcp.privacy_enabled:
+        return list(names)
+    return [mcp.sanitizer.sanitize_server_name(n) for n in names]
+
+
 def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize configuration result for privacy mode."""
     if not mcp.privacy_enabled:
@@ -36,13 +43,18 @@ def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
-
-    if "server1" in sanitized:
-        sanitized["server1"] = sanitizer.sanitize_server_name(sanitized["server1"])
-    if "server2" in sanitized:
-        sanitized["server2"] = sanitizer.sanitize_server_name(sanitized["server2"])
+    # Capture original server names for targeted text replacement
+    original_names = {}
+    for server_key in ("server", "server1", "server2"):
+        if server_key in sanitized:
+            original_names[server_key] = sanitized[server_key]
+            sanitized[server_key] = sanitizer.sanitize_server_name(sanitized[server_key])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        for key, orig in original_names.items():
+            if orig and orig in err:
+                err = err.replace(orig, sanitized[key])
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     if "config" in sanitized and isinstance(sanitized["config"], dict):
         sanitized["config"] = {
@@ -242,19 +254,24 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
         pattern: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Get server configuration from cn=config.
+        """Retrieve cn=config attributes from a live, offline, or archive server.
 
-        Dynamically fetches all configuration attributes from the server.
-        No hardcoded attribute lists - works across all 389 DS versions.
+        Use this tool to inspect server-level configuration (nsslapd-* settings).
+        For backend-specific settings, use ``get_backend_configuration`` instead.
+        For comparing configs between servers, use ``compare_server_configurations``
+        (cn=config level) or ``compare_dse_configs`` (full dse.ldif diff).
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
-            pattern: Optional filter pattern for attribute names.
+            pattern: Optional substring filter for attribute names.
                     Examples: "nsslapd-security", "cache", "log"
                     If not specified, returns all attributes.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            All configuration attributes matching the pattern.
+            Dict with ``config`` mapping attribute names to values,
+            ``attribute_count``, and ``mode`` (offline/archive when applicable).
         """
         target = server_name or mcp.default_server
         if not target:
@@ -320,28 +337,38 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
         server2: str,
         pattern: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Compare configuration between two servers.
+        """Compare cn=config attributes between two servers side-by-side.
 
-        Dynamically compares all configuration attributes found on both servers.
+        Use this tool to spot configuration drift at the cn=config level
+        (e.g. different cache sizes, security settings, or thread counts).
+        Both servers may be live, offline, or archive — any combination works.
+
+        For a full dse.ldif entry-by-entry diff (plugins, indexes, backends,
+        replication), use ``compare_dse_configs`` instead.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
-            server1: First server name to compare
-            server2: Second server name to compare
-            pattern: Optional filter pattern for attribute names.
+            server1: First server name to compare.
+            server2: Second server name to compare.
+            pattern: Optional substring filter for attribute names.
 
         Returns:
-            Comparison showing differing and matching attributes.
+            Dict with ``differences`` (attribute + values per server),
+            ``only_on_server1``, ``only_on_server2``, and ``matching_count``.
         """
         server_names = mcp.connection_manager.get_server_names()
         if server1 not in server_names:
+            available = _sanitize_server_list(mcp, server_names)
             return {
                 "type": "config_comparison",
-                "error": f"Server '{server1}' not found. Available: {', '.join(server_names)}",
+                "error": f"Server not found. Available: {', '.join(available)}",
             }
         if server2 not in server_names:
+            available = _sanitize_server_list(mcp, server_names)
             return {
                 "type": "config_comparison",
-                "error": f"Server '{server2}' not found. Available: {', '.join(server_names)}",
+                "error": f"Server not found. Available: {', '.join(available)}",
             }
 
         ds1 = None
@@ -439,14 +466,20 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
         enabled_only: bool = True,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List configured plugins.
+        """List server plugins with their enabled/disabled status.
+
+        Use this tool to audit which plugins are active (MemberOf, Referential
+        Integrity, DNA, etc.) or to verify plugin configuration after changes.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
             enabled_only: If True, only return enabled plugins. Default True.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            List of plugins with name, type, enabled status, and details.
+            Dict with ``plugins`` list (name, type, enabled, path, version)
+            and ``count``.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -505,7 +538,13 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Get backend-specific configuration.
+        """Retrieve backend configuration, cache settings, and replication role.
+
+        Use this tool to inspect per-backend settings (cache sizes, suffix
+        mapping, index counts, replication role). For server-level cn=config
+        settings, use ``get_server_configuration`` instead.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
             backend: Specific backend name (e.g., 'userroot').
@@ -513,8 +552,8 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Backend configuration including suffix, cache settings,
-            statistics, and replication status.
+            Dict with ``backends`` list, each containing name, suffix,
+            config attributes, index_count, and replication status.
         """
         target = server_name or mcp.default_server
         if not target:

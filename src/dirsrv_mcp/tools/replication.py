@@ -28,8 +28,14 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     if "replicas" in sanitized and isinstance(sanitized["replicas"], list):
         sanitized["replicas"] = [sanitizer.sanitize_replica(r) for r in sanitized["replicas"]]
@@ -83,6 +89,7 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
                 "dn": sanitizer.sanitize_dn(c.get("dn")),
                 "suffix": sanitizer.sanitize_suffix(c.get("suffix")),
                 "valid_entry_dn": sanitizer.sanitize_dn(c.get("valid_entry_dn")) if c.get("valid_entry_dn") else None,
+                "conflict_attribute": sanitizer._sanitize_text_field(c.get("conflict_attribute", "")) if c.get("conflict_attribute") else None,
             }
             for c in sanitized["conflicts"]
         ]
@@ -165,21 +172,18 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_replication_status(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get comprehensive replication status for a server.
+        """Get replication configuration, RUV, and agreement status for one server. LIVE only.
 
-        Returns detailed information about replica configuration, role,
-        RUV (Replication Update Vector), and all replication agreements.
+        Start here when investigating a specific server's replication.
+        For a cross-server topology map, use ``get_replication_topology``.
+        For lag analysis, use ``check_replication_lag``.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Comprehensive replication status including:
-            - Replica role (supplier/hub/consumer)
-            - Replica ID
-            - RUV with CSN analysis
-            - All agreements with their current status
-            - Findings for any issues detected
+            Per-suffix replica role, ID, RUV with CSN analysis, all
+            agreements with status, and findings for detected issues.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -380,17 +384,16 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_replication_topology() -> Dict[str, Any]:
-        """Map the complete replication topology across all configured servers.
+        """Map the complete replication topology across all configured servers. LIVE only.
 
-        Queries all configured servers to build a comprehensive view of the
-        replication topology including agreements, roles, and connectivity.
+        Queries every configured live server to build a cross-server view.
+        Offline/archive servers are included as nodes but cannot report
+        live agreement status. For single-server details, use
+        ``get_replication_status`` instead.
 
         Returns:
-            Topology map including:
-            - All servers and their roles
-            - Replication agreements between servers
-            - Topology graph representation
-            - Potential issues (single points of failure, orphaned replicas)
+            All servers with roles, inter-server agreements, topology
+            graph, and findings (single points of failure, orphaned replicas).
         """
         server_names = mcp.connection_manager.get_server_names()
 
@@ -435,9 +438,10 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 ds = mcp.connection_manager.connect(server_name)
                 servers_checked.append(server_name)
 
+                live_config = mcp.connection_manager.get_config(server_name)
                 server_info = {
                     "name": server_name,
-                    "url": config.ldap_url,
+                    "url": live_config.ldap_url,
                     "replicas": [],
                 }
 
@@ -556,21 +560,18 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         suffix: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze replication lag across agreements.
+        """Measure replication lag by comparing supplier and consumer CSNs. LIVE only.
 
-        Compares CSN values between supplier and consumers to identify
-        replication delays and their severity.
+        Use this when ``first_look`` or ``get_replication_status`` indicates
+        stale agreements. Returns per-agreement lag severity and timestamps.
 
         Args:
             suffix: Specific suffix to check. If not specified, checks all.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Lag analysis including:
-            - Per-agreement lag status
-            - CSN comparisons
-            - Severity assessment
-            - Recommendations
+            Per-agreement lag status with CSN comparisons, severity
+            assessment, and recommendations.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -723,21 +724,19 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         base_dn: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Find all replication conflict and glue entries.
+        """Find replication conflict and glue entries that need resolution. LIVE only.
 
-        Searches for entries with nsds5ReplConflict attribute and glue
-        objectclass which indicate replication conflicts that need resolution.
+        Searches for nsds5ReplConflict attributes and glue objectclasses
+        that arise from concurrent updates on multiple suppliers.
 
         Args:
-            base_dn: Base DN to search for conflicts. If not specified,
-                     searches all replicated suffixes.
+            base_dn: Base DN to search. If not specified, searches all
+                     replicated suffixes.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Conflict analysis including:
-            - List of conflict entries with details
-            - List of glue entries
-            - Resolution recommendations
+            Conflict entries with details, glue entries, counts, and
+            resolution recommendations.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -908,23 +907,20 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         suffix: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Get detailed status for replication agreements.
+        """Get detailed status for one or all replication agreements. LIVE only.
 
-        Returns comprehensive information about specific or all replication
-        agreements including status, schedule, and error conditions.
+        Use this to inspect schedule, flow control, and error details for
+        a specific agreement. For a broader view, use ``get_replication_status``.
 
         Args:
-            agreement_name: Specific agreement name to query. If not specified,
+            agreement_name: Specific agreement name. If not specified,
                            returns all agreements.
             suffix: Filter agreements by suffix.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Agreement details including:
-            - Agreement configuration
-            - Current synchronization status
-            - Last update timestamps
-            - Error conditions if any
+            Per-agreement configuration, sync status, last update
+            timestamps, and error conditions.
         """
         target = server_name or mcp.default_server
         if not target:

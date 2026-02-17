@@ -258,6 +258,76 @@ def test_sanitizer_backend():
     assert result["entry_count"] == 1000  # Numeric preserved
 
 
+def test_sanitizer_finding_metadata_items():
+    """Test that finding metadata 'items' list is sanitized via _sanitize_text_field."""
+    sanitizer = PrivacySanitizer()
+    finding = {
+        "title": "Test",
+        "severity": "medium",
+        "metadata": {
+            "items": [
+                "cn=config",
+                "cn=replica,cn=dc=example,dc=com,cn=mapping tree,cn=config",
+                "dc=example,dc=com",
+            ],
+            "dsle": "DSELE0001",
+        }
+    }
+    result = sanitizer.sanitize_finding(finding)
+    # Items should be processed by _sanitize_text_field (DN patterns replaced)
+    for item in result["metadata"]["items"]:
+        assert "example" not in item, f"DN should be sanitized: {item}"
+    # Non-items metadata preserved
+    assert result["metadata"]["dsle"] == "DSELE0001"
+
+
+def test_sanitizer_finding_metadata_items_single():
+    """Test that finding metadata 'items' non-list is sanitized."""
+    sanitizer = PrivacySanitizer()
+    finding = {
+        "title": "Test",
+        "metadata": {
+            "items": "cn=replica,cn=dc=example,dc=com,cn=mapping tree,cn=config",
+        }
+    }
+    result = sanitizer.sanitize_finding(finding)
+    assert "example" not in result["metadata"]["items"]
+
+
+def test_sanitizer_agreement_csn_keys():
+    """Test that top-level CSN keys in agreements are redacted."""
+    sanitizer = PrivacySanitizer()
+    agreement = {
+        "name": "agmt-to-replica2",
+        "suffix": "dc=example,dc=com",
+        "supplier_csn": "5f3b0a0e000000010000",
+        "consumer_csn": "5f3b0a0d000000010000",
+        "lag_status": "lagging",
+    }
+    result = sanitizer.sanitize_agreement(agreement)
+    assert result["supplier_csn"] == "[csn]"
+    assert result["consumer_csn"] == "[csn]"
+    assert result["lag_status"] == "lagging"  # Non-CSN preserved
+    assert result["name"] == "[agreement]"
+
+
+def test_sanitizer_agreement_csn_in_nested_status():
+    """Test that CSNs in nested status dict are also redacted."""
+    sanitizer = PrivacySanitizer()
+    agreement = {
+        "name": "agmt1",
+        "status": {
+            "state": "green",
+            "agmt_maxcsn": "5f3b0a0e000000010000",
+            "con_maxcsn": "5f3b0a0d000000010000",
+        },
+    }
+    result = sanitizer.sanitize_agreement(agreement)
+    assert result["status"]["agmt_maxcsn"] == "[csn]"
+    assert result["status"]["con_maxcsn"] == "[csn]"
+    assert result["status"]["state"] == "green"
+
+
 # Helper function tests
 
 

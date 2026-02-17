@@ -54,8 +54,14 @@ def _sanitize_log_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, 
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     for key in ("entries", "matches"):
         if key in sanitized and isinstance(sanitized[key], list):
@@ -1023,10 +1029,11 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         pattern: Optional[str] = None,
         include_archived_logs: bool = False,
     ) -> Dict[str, Any]:
-        """Analyze access log statistics (operations, errors, slow queries).
+        """Analyze access log statistics (operations, errors, slow queries). LOCAL/ARCHIVE.
 
         Returns aggregate statistics only — no individual log entries.
-        Safe to use in privacy mode.
+        Privacy-safe (works with privacy mode ON). For full log entries,
+        use ``parse_access_log`` (requires expose_sensitive_data).
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -1086,10 +1093,11 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         time_range: Optional[str] = None,
         pattern: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze error log statistics (severity, components, patterns).
+        """Analyze error log statistics (severity, components, patterns). LOCAL/ARCHIVE.
 
         Returns aggregate statistics only — no individual log entries.
-        Safe to use in privacy mode.
+        Privacy-safe (works with privacy mode ON). For full log entries,
+        use ``parse_error_log`` (requires expose_sensitive_data).
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -1144,10 +1152,11 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         target_dn: Optional[str] = None,
         time_range: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze audit log statistics (change types, actors).
+        """Analyze audit log statistics (change types, actors). LOCAL/ARCHIVE.
 
         Returns aggregate statistics only — no individual change records.
-        Safe to use in privacy mode.
+        Privacy-safe (works with privacy mode ON). For full change records,
+        use ``parse_audit_log`` (requires expose_sensitive_data).
 
         Args:
             server_name: Target server name. Uses default if not specified.

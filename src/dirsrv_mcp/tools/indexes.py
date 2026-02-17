@@ -38,8 +38,14 @@ def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
         sanitized["backends"] = [
@@ -64,6 +70,16 @@ def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
         result["name"] = "[backend]"
     if "suffix" in result:
         result["suffix"] = sanitizer.sanitize_suffix(result["suffix"])
+    if "vlv_indexes" in result and isinstance(result["vlv_indexes"], list):
+        result["vlv_indexes"] = [
+            {
+                **vlv,
+                "name": "[vlv]",
+                "base": sanitizer.sanitize_dn(vlv.get("base")),
+                "filter": "[filter]",
+            }
+            for vlv in result["vlv_indexes"]
+        ]
     return result
 
 
@@ -289,24 +305,23 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List all configured indexes for the directory server.
+        """List all configured indexes (attribute + VLV) per backend.
 
-        Returns comprehensive information about all indexes including:
-        - Regular attribute indexes (eq, pres, sub, approx types)
-        - System vs user-defined indexes
-        - VLV (Virtual List View) indexes
+        Use this to audit which attributes are indexed and with which types
+        (eq, pres, sub, approx). For best-practice analysis, use
+        ``analyze_index_configuration``. For unindexed search detection,
+        use ``find_unindexed_searches``.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
-            backend: Specific backend to query (e.g., 'userroot').
+            backend: Specific backend (e.g., 'userroot').
                     If not specified, lists indexes for all backends.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Index listing including:
-            - Per-backend index configuration
-            - Index types for each attribute
-            - System index indicators
-            - VLV index definitions
+            Per-backend index list with types, system/user flags, and
+            VLV index definitions.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -453,10 +468,13 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze index configuration for common issues and best practices.
+        """Audit index configuration against best practices with remediation commands.
 
-        Compares current index configuration against recommended indexes
-        and identifies potential optimization opportunities.
+        Checks for missing recommended indexes, incomplete index types, and
+        provides ``dsconf`` commands to fix issues. For a raw index listing,
+        use ``list_indexes``.
+
+        Works in all modes: LIVE, OFFLINE, ARCHIVE.
 
         Args:
             backend: Specific backend to analyze (e.g., 'userroot').
@@ -464,12 +482,8 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Analysis including:
-            - Missing recommended indexes
-            - Index type recommendations
-            - Potentially incomplete indexes
-            - Best practice recommendations
-            - dsconf commands for remediation
+            Missing/incomplete indexes, best-practice findings, and
+            ready-to-use dsconf remediation commands.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -685,30 +699,23 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
         limit: int = 50,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Identify searches that aren't using indexes by analyzing access logs.
+        """Find unindexed searches (notes=U/A) in access logs with fix suggestions.
 
-        Parses the access log for operations with notes=U (unindexed) or
-        notes=A (all IDs scan) to identify search patterns that would
-        benefit from indexing.
+        Parses access log for operations flagged as unindexed or all-IDs-scan,
+        groups them by search pattern, and provides ``dsconf`` commands to
+        add the missing indexes.
 
-        **Requires local server access** - This tool needs to read the
-        access log files directly and only works when the server is
-        configured with is_local=True and serverid set.
+        Requires LOCAL or ARCHIVE server access (reads log files directly).
 
         Args:
-            time_range: How far back to analyze. Supports:
-                       "1h" (1 hour), "6h" (6 hours), "24h" (24 hours),
-                       "7d" (7 days). Default is "1h".
-            limit: Maximum number of unique patterns to return. Default 50.
+            time_range: How far back to analyze: "1h", "6h", "24h", "7d".
+                       Default "1h".
+            limit: Maximum unique patterns to return. Default 50.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Unindexed search analysis including:
-            - Search patterns causing unindexed searches
-            - Frequency of each pattern
-            - Recommended indexes to create
-            - Estimated impact
-            - dsconf commands for remediation
+            Unindexed search patterns with frequency, recommended indexes,
+            estimated impact, and dsconf remediation commands.
         """
         target = server_name or mcp.default_server
         if not target:

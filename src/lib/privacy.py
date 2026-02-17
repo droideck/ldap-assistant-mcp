@@ -266,39 +266,57 @@ class PrivacySanitizer:
         return [self.sanitize_entry(e) for e in entries]
 
     def _sanitize_text_field(self, text: str) -> str:
-        """Sanitize a text field by replacing DNs and hostnames."""
+        """Sanitize a text field by replacing sensitive patterns.
+
+        Handles (in order): LDAP URLs, file paths, multi-component LDAP DNs,
+        FQDNs, and port numbers following placeholders.
+        """
         if not text:
             return text
-        # Replace DNs (e.g., dc=example,dc=com, cn=admin)
-        text = re.sub(r'\b[a-zA-Z]+=[\w\s,=]+', '[dn]', text)
-        # Replace hostnames
-        text = re.sub(r'\b[\w.-]+\.(com|org|net|local|internal)\b', '[hostname]', text)
-        # Replace port numbers that follow hostnames (e.g., :389, :636)
+        # 1. LDAP URLs (before hostname matching to avoid partial matches)
+        text = re.sub(r'ldaps?://\S+', '[ldap-url]', text, flags=re.IGNORECASE)
+        # 2. File paths (absolute, at least 2 segments: /dir/file)
+        text = re.sub(r'(?<![.\w])/(?:[a-zA-Z0-9._-]+/)+[a-zA-Z0-9._-]+', '[path]', text)
+        # 3. LDAP DNs (require at least 2 comma-separated attr=value components)
+        text = re.sub(
+            r'\b[a-zA-Z][a-zA-Z0-9-]*=[^,\s]+(?:,[a-zA-Z][a-zA-Z0-9-]*=[^,\s]+)+',
+            '[dn]', text,
+        )
+        # 4. FQDNs (expanded TLD list)
+        text = re.sub(
+            r'\b[\w.-]+\.(?:com|org|net|edu|gov|mil|int|io|co|local|internal|'
+            r'example|test|localhost|lan|intra|corp)\b',
+            '[hostname]', text, flags=re.IGNORECASE,
+        )
+        # 5. Port numbers after placeholders
         text = re.sub(r'\[hostname\]:\d+', '[hostname]:[port]', text)
+        text = re.sub(r'\[dn\]:\d+', '[dn]:[port]', text)
         return text
 
     def sanitize_finding(self, finding: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize a finding dictionary.
 
         Preserves diagnostic information while redacting specific values.
+        Text fields (title, impact, details, remediation) are scrubbed for
+        embedded DNs, hostnames, URLs, and paths.  Metadata keys are handled
+        individually based on their semantic meaning.
         """
         result = dict(finding)
 
-        # Sanitize server name
+        # Sanitize server name — capture original for text replacement
+        original_server = result.get("server")
         if "server" in result:
             result["server"] = self.sanitize_server_name(result["server"])
 
-        # Sanitize title - may contain agreement names, suffixes, etc.
-        if "title" in result and isinstance(result["title"], str):
-            result["title"] = self._sanitize_text_field(result["title"])
-
-        # Sanitize impact - may contain hostnames, suffixes, ports
-        if "impact" in result and isinstance(result["impact"], str):
-            result["impact"] = self._sanitize_text_field(result["impact"])
-
-        # Sanitize details - redact specific values but keep structure
-        if "details" in result and isinstance(result["details"], str):
-            result["details"] = self._sanitize_text_field(result["details"])
+        # Sanitize all free-text fields that may embed sensitive data
+        for text_key in ("title", "impact", "details", "remediation"):
+            if text_key in result and isinstance(result[text_key], str):
+                text = result[text_key]
+                # Replace bare server name before regex pass (server names
+                # like "ds-live" aren't FQDNs and won't be caught by regex)
+                if original_server and original_server in text:
+                    text = text.replace(original_server, result["server"])
+                result[text_key] = self._sanitize_text_field(text)
 
         # Sanitize metadata
         if "metadata" in result and isinstance(result["metadata"], dict):
@@ -309,10 +327,23 @@ class PrivacySanitizer:
                     sanitized_meta[key] = self.sanitize_suffix(str(value)) if value else value
                 elif key_lower in ("server", "supplier", "consumer"):
                     sanitized_meta[key] = self.sanitize_server_name(str(value)) if value else value
+                elif key_lower == "consumers" and isinstance(value, list):
+                    sanitized_meta[key] = [self.sanitize_server_name(str(v)) for v in value]
                 elif key_lower in ("agreement", "name"):
                     sanitized_meta[key] = "[agreement]" if value else value
-                elif key_lower in ("dn", "entry"):
+                elif key_lower in ("dn", "entry", "base"):
                     sanitized_meta[key] = self.sanitize_dn(str(value)) if value else value
+                elif key_lower == "backend":
+                    sanitized_meta[key] = "[backend]" if value else value
+                elif key_lower == "partition":
+                    sanitized_meta[key] = "[partition]" if value else value
+                elif key_lower == "filter":
+                    sanitized_meta[key] = "[filter]" if value else value
+                elif key_lower == "items":
+                    if isinstance(value, list):
+                        sanitized_meta[key] = [self._sanitize_text_field(str(item)) for item in value]
+                    else:
+                        sanitized_meta[key] = self._sanitize_text_field(str(value)) if value else value
                 else:
                     # Keep numeric and status values
                     sanitized_meta[key] = value
@@ -342,6 +373,10 @@ class PrivacySanitizer:
             elif key_lower == "status" and isinstance(value, dict):
                 # Keep status structure but sanitize any embedded values
                 result[key] = self._sanitize_status(value)
+            elif "csn" in key_lower:
+                result[key] = "[csn]"
+            elif key_lower == "reason" and isinstance(value, str):
+                result[key] = self._sanitize_text_field(value)
             else:
                 result[key] = value
         return result
@@ -351,9 +386,12 @@ class PrivacySanitizer:
         result = {}
         for key, value in status.items():
             key_lower = key.lower()
-            # Keep state/status indicators
-            if key_lower in ("state", "msg", "lag_status", "reason"):
+            # Keep state/status indicators (state, msg, lag_status are enum-like)
+            if key_lower in ("state", "msg", "lag_status"):
                 result[key] = value
+            # Reason may contain free text with hostnames/DNs
+            elif key_lower == "reason" and isinstance(value, str):
+                result[key] = self._sanitize_text_field(value)
             # Redact CSN values (contain timestamps/server IDs)
             elif "csn" in key_lower:
                 result[key] = "[csn]"

@@ -1,6 +1,6 @@
 # 389 Directory Server Tools Reference
 
-Complete reference for all 389 DS MCP tools, resources, and prompts.
+Complete reference for all 389 DS MCP tools (41 tools, 6 prompts, 2 resources).
 
 This documentation covers the `dirsrv_mcp` provider which uses [lib389](https://lib389.readthedocs.io/) for 389 Directory Server operations.
 
@@ -490,35 +490,55 @@ list_all_groups(limit: int = 50)
 
 ---
 
+## Server Management
+
+### list_servers()
+
+List all configured servers with their mode and connection status.
+
+```
+list_servers()
+```
+
+**Returns:** All servers with name, mode (live/offline/archive), and provider type.
+
+---
+
 ## Monitoring
 
-### run_monitor(backend?, suffix?)
+### run_monitor(backend?, suffix?, server_name?)
 
-Get server and backend monitor data.
+Get raw cn=monitor attributes. LIVE only.
 
 ```
-run_monitor(backend: str = "", suffix: str = "")
+run_monitor(backend: str = "", suffix: str = "", server_name: str = None)
 ```
 
-**Returns:** Monitor metrics including connections, operations, and backend statistics.
+**Returns:** Monitor metrics including connections, operations, and backend statistics. In privacy mode, filtered to safe diagnostic keys only.
 
 ---
 
 ## Log Analysis
 
-### parse_access_log(operation?, result_code?, pattern?, start_time?, end_time?, limit?, server_name?)
+Log tools come in two variants:
+- **parse_*** — Return full log entries (disabled in privacy mode)
+- **analyze_*** — Return only statistics and counts (safe in privacy mode)
 
-Parse and filter access log entries.
+All log tools require local or archive server access. The `time_range` parameter supports: single date (`"2024-01-01"`), range (`"2024-01-01 to 2024-01-02"`), or relative (`"last 24h"`, `"last 30m"`).
+
+### parse_access_log(server_name?, operation?, result_code?, time_range?, pattern?, include_archived_logs?, limit?)
+
+Parse and filter access log entries. **Disabled in privacy mode** — use `analyze_access_log` instead.
 
 ```
 parse_access_log(
+    server_name: str = None,
     operation: str = None,
     result_code: int = None,
+    time_range: str = None,
     pattern: str = None,
-    start_time: str = None,
-    end_time: str = None,
-    limit: int = 100,
-    server_name: str = None
+    include_archived_logs: bool = False,
+    limit: int = 100
 )
 ```
 
@@ -527,31 +547,28 @@ parse_access_log(
 |------|------|----------|-------------|
 | operation | str | No | Filter by operation type (SEARCH, BIND, MOD, etc.) |
 | result_code | int | No | Filter by LDAP result code (e.g., 0 for success) |
+| time_range | str | No | Time filter (e.g., "last 1h", "2024-01-01 to 2024-01-02") |
 | pattern | str | No | Regex pattern to match against log lines |
-| start_time | str | No | Start of time range (ISO 8601 or log timestamp format) |
-| end_time | str | No | End of time range |
+| include_archived_logs | bool | No | Include rotated log files (default: false) |
 | limit | int | No | Maximum entries to return (default: 100) |
 | server_name | str | No | Target server |
 
 **Returns:** Parsed log entries with operation statistics.
 
-**Note:** Requires local or archive server access.
-
 ---
 
-### parse_error_log(severity?, component?, pattern?, start_time?, end_time?, limit?, server_name?)
+### parse_error_log(server_name?, severity?, component?, time_range?, pattern?, limit?)
 
-Parse and filter error log entries.
+Parse and filter error log entries. **Disabled in privacy mode** — use `analyze_error_log` instead.
 
 ```
 parse_error_log(
+    server_name: str = None,
     severity: str = None,
     component: str = None,
+    time_range: str = None,
     pattern: str = None,
-    start_time: str = None,
-    end_time: str = None,
-    limit: int = 100,
-    server_name: str = None
+    limit: int = 100
 )
 ```
 
@@ -560,9 +577,8 @@ parse_error_log(
 |------|------|----------|-------------|
 | severity | str | No | Minimum severity (ERR, WARN, INFO, DEBUG) |
 | component | str | No | Filter by server component |
+| time_range | str | No | Time filter |
 | pattern | str | No | Regex pattern to match |
-| start_time | str | No | Start of time range |
-| end_time | str | No | End of time range |
 | limit | int | No | Maximum entries (default: 100) |
 | server_name | str | No | Target server |
 
@@ -570,19 +586,18 @@ parse_error_log(
 
 ---
 
-### parse_audit_log(operation?, target_dn?, bind_dn?, start_time?, end_time?, limit?, server_name?)
+### parse_audit_log(server_name?, operation?, bind_dn?, target_dn?, time_range?, limit?)
 
-Parse and filter audit log change records.
+Parse and filter audit log change records. **Disabled in privacy mode** — use `analyze_audit_log` instead.
 
 ```
 parse_audit_log(
+    server_name: str = None,
     operation: str = None,
-    target_dn: str = None,
     bind_dn: str = None,
-    start_time: str = None,
-    end_time: str = None,
-    limit: int = 100,
-    server_name: str = None
+    target_dn: str = None,
+    time_range: str = None,
+    limit: int = 100
 )
 ```
 
@@ -592,12 +607,66 @@ parse_audit_log(
 | operation | str | No | Filter by change type (add, modify, delete, modrdn) |
 | target_dn | str | No | Filter by target DN (exact or subtree match) |
 | bind_dn | str | No | Filter by who made the change |
-| start_time | str | No | Start of time range |
-| end_time | str | No | End of time range |
+| time_range | str | No | Time filter |
 | limit | int | No | Maximum entries (default: 100) |
 | server_name | str | No | Target server |
 
 **Returns:** Parsed change records with operation and actor statistics.
+
+---
+
+### analyze_access_log(server_name?, operation?, result_code?, time_range?, pattern?, include_archived_logs?)
+
+Statistics-only access log analysis. **Works in privacy mode** — returns counts and distributions without raw entries.
+
+```
+analyze_access_log(
+    server_name: str = None,
+    operation: str = None,
+    result_code: int = None,
+    time_range: str = None,
+    pattern: str = None,
+    include_archived_logs: bool = False
+)
+```
+
+**Returns:** Operation counts, result code distribution, and time-based statistics.
+
+---
+
+### analyze_error_log(server_name?, severity?, component?, time_range?, pattern?)
+
+Statistics-only error log analysis. **Works in privacy mode.**
+
+```
+analyze_error_log(
+    server_name: str = None,
+    severity: str = None,
+    component: str = None,
+    time_range: str = None,
+    pattern: str = None
+)
+```
+
+**Returns:** Severity distribution, component breakdown, and error frequency.
+
+---
+
+### analyze_audit_log(server_name?, operation?, bind_dn?, target_dn?, time_range?)
+
+Statistics-only audit log analysis. **Works in privacy mode.**
+
+```
+analyze_audit_log(
+    server_name: str = None,
+    operation: str = None,
+    bind_dn: str = None,
+    target_dn: str = None,
+    time_range: str = None
+)
+```
+
+**Returns:** Operation type counts, actor statistics, and change frequency.
 
 ---
 
@@ -766,6 +835,15 @@ To configure:
 }
 ```
 
+For SOS reports with multiple instances, specify which one:
+```json
+{
+  "is_archive": true,
+  "archive_path": "/path/to/sosreport-host-2025/",
+  "instance_name": "slapd-supplier1"
+}
+```
+
 Or with explicit paths:
 ```json
 {
@@ -774,6 +852,8 @@ Or with explicit paths:
   "logs_path": "/path/to/var/log/dirsrv/slapd-instance/"
 }
 ```
+
+`archive_path` accepts both directories and `.tar.xz`/`.tar.gz` tarballs (auto-extracted to a temp directory).
 
 Archive auto-detection supports:
 - **SOS reports** (standard `etc/dirsrv/slapd-*/` + `var/log/dirsrv/` layout)
@@ -835,3 +915,18 @@ You: "Are there unindexed searches?"
 Assistant: [Calls find_unindexed_searches()]
 Result: Search patterns needing indexes
 ```
+
+---
+
+## Prompts
+
+Prompts provide guided multi-step investigation workflows.
+
+| Prompt | Description |
+|--------|-------------|
+| `tool_navigator(goal)` | Recommends which tools to use for a given goal |
+| `diagnose_replication()` | Guided replication troubleshooting session |
+| `performance_investigation()` | Guided performance investigation session |
+| `daily_health_check()` | Comprehensive daily health check workflow |
+| `troubleshoot_connectivity()` | Guided connectivity troubleshooting session |
+| `archive_investigation()` | Guided SOS report / archive analysis session |

@@ -33,8 +33,9 @@ if TYPE_CHECKING:
 def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize performance result for privacy mode.
 
-    Performance metrics are numeric and diagnostic - we keep them.
-    We only sanitize server names and backend names.
+    Performance metrics are numeric and diagnostic — we keep them.
+    We only sanitize server names, backend names, suffixes, partitions,
+    and findings.  Creates new dicts to avoid mutating the input.
     """
     if not mcp.privacy_enabled:
         return result
@@ -42,26 +43,45 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
+    original_server = sanitized.get("server")
     if "server" in sanitized:
         sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    if "error" in sanitized and isinstance(sanitized["error"], str):
+        err = sanitized["error"]
+        if original_server and original_server in err:
+            err = err.replace(original_server, sanitized.get("server", "[server]"))
+        sanitized["error"] = sanitizer._sanitize_text_field(err)
 
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
-        for be in sanitized["backends"]:
-            if isinstance(be, dict) and "name" in be:
-                be["name"] = "[backend]"
-            if isinstance(be, dict) and "suffix" in be:
-                be["suffix"] = sanitizer.sanitize_suffix(be["suffix"])
+        sanitized["backends"] = [
+            {**be, "name": "[backend]", "suffix": sanitizer.sanitize_suffix(be.get("suffix"))}
+            if isinstance(be, dict) and "name" in be
+            else be
+            for be in sanitized["backends"]
+        ]
 
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
     if "resources" in sanitized and isinstance(sanitized["resources"], dict):
-        if "disk" in sanitized["resources"] and isinstance(sanitized["resources"]["disk"], dict):
-            disk = sanitized["resources"]["disk"]
+        resources = dict(sanitized["resources"])
+        if "disk" in resources and isinstance(resources["disk"], dict):
+            disk = dict(resources["disk"])
             if "partitions" in disk and isinstance(disk["partitions"], list):
                 disk["partitions"] = [
                     {**p, "partition": "[partition]"} for p in disk["partitions"]
                 ]
+            resources["disk"] = disk
+        sanitized["resources"] = resources
+
+    # Handle top-level disk key (from get_resource_utilization)
+    if "disk" in sanitized and isinstance(sanitized["disk"], dict):
+        disk = dict(sanitized["disk"])
+        if "partitions" in disk and isinstance(disk["partitions"], list):
+            disk["partitions"] = [
+                {**p, "partition": "[partition]"} for p in disk["partitions"]
+            ]
+        sanitized["disk"] = disk
 
     return sanitized
 
@@ -92,10 +112,11 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Analyze database and entry cache efficiency.
+        """Analyze database and entry cache efficiency. LIVE only.
 
-        Returns comprehensive cache statistics including entry cache,
-        DN cache, and database cache with health assessments.
+        Use this to drill into cache problems identified by ``first_look``
+        or ``get_performance_summary``. Returns per-backend hit ratios and
+        sizing recommendations.
 
         Args:
             backend: Specific backend to analyze (e.g., 'userroot').
@@ -103,12 +124,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Cache analysis including:
-            - Entry cache hit ratio and utilization
-            - DN cache statistics
-            - Database cache metrics
-            - Normalized DN cache stats
-            - Health assessment and recommendations
+            Cache analysis with entry/DN/DB cache hit ratios, utilization
+            percentages, health assessments, and tuning recommendations.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -308,21 +325,18 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_connection_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze connection patterns and resource usage.
+        """Analyze connection patterns and file descriptor usage. LIVE only.
 
-        Returns detailed connection statistics including current connections,
-        connection history, and connection state analysis.
+        Use this to investigate connection-related issues (FD exhaustion,
+        CLOSE_WAIT buildup, connection spikes). Connection state breakdown
+        requires local server access.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Connection analysis including:
-            - Current vs max connections
-            - Total connections since startup
-            - Connection state breakdown (established, waiting, etc.)
-            - File descriptor utilization
-            - Recommendations for tuning
+            Connection counts, FD utilization, connection state breakdown
+            (local only), and tuning recommendations.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -457,20 +471,17 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_operation_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get operation counts and performance metrics.
+        """Get operation counts by type and bind method distribution. LIVE only.
 
-        Returns comprehensive operation statistics including counts by type,
-        bind patterns, and search operation breakdown.
+        Use this to understand workload composition (search-heavy vs write-heavy),
+        identify bind errors, or track data transfer volumes.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Operation metrics including:
-            - Operations initiated vs completed
-            - Operation breakdown by type (search, bind, modify, etc.)
-            - Entries sent and bytes transferred
-            - Bind method distribution
+            Operation breakdown by type (search, bind, modify, add, delete),
+            entries sent, bytes transferred, and bind method distribution.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -620,20 +631,17 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_thread_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze worker thread utilization.
+        """Analyze worker thread utilization and contention. LIVE only.
 
-        Returns thread pool statistics including current usage,
-        contention indicators, and tuning recommendations.
+        Use this when ``first_look`` reports thread contention or
+        connections hitting max-threads limits.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Thread analysis including:
-            - Current thread count and configuration
-            - Connections at max threads
-            - Max threads per connection hits
-            - Utilization assessment
+            Thread count, connections-at-max-threads, per-connection thread
+            hits, utilization assessment, and tuning recommendations.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -728,28 +736,18 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_resource_utilization(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get system resource usage from Directory Server perspective.
+        """Get memory, CPU, and disk usage for the Directory Server process. LIVE only.
 
-        Returns resource utilization including memory, CPU, and disk usage
-        with health assessments and recommendations.
-
-        **Note:** Some metrics require local server access (is_local=True):
-        - Process memory (RSS, VMS, swap) - requires psutil access
-        - CPU utilization - requires psutil access
-        - Disk space - requires file system access
-
-        For remote servers, these metrics will show as "unavailable" but
-        server uptime (from cn=monitor) will still be reported.
+        Most metrics (RSS, CPU, disk) require local server access.
+        Remote servers only report uptime from cn=monitor.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Resource metrics including:
-            - Memory usage (RSS, VMS, swap) - LOCAL ONLY
-            - CPU utilization - LOCAL ONLY
-            - Disk space for database paths - LOCAL ONLY
-            - Server uptime - available for all servers
+            Memory (RSS, VMS, swap), CPU utilization, disk space per
+            partition, and server uptime. Local-only metrics show as
+            unavailable for remote servers.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -960,21 +958,18 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool()
     def get_performance_summary(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get a comprehensive performance overview in a single call.
+        """Combined performance overview — the first tool for performance questions. LIVE only.
 
-        This is a convenience tool that combines key metrics from cache,
-        connections, operations, threads, and resources into a single
-        summary view with prioritized findings.
+        Aggregates cache, connection, operation, thread, and resource metrics
+        into a single response with prioritized findings. Use the individual
+        tools (``get_cache_statistics``, etc.) to drill into specific areas.
 
         Args:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Combined performance summary including:
-            - Overall health status
-            - Key metrics from each category
-            - Prioritized list of all findings
-            - Top recommendations
+            Overall health status, key metrics from each category,
+            prioritized findings, and top recommendations.
         """
         target = server_name or mcp.default_server
         if not target:

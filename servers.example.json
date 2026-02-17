@@ -23,7 +23,36 @@
       "bind_dn": "cn=Directory Manager",
       "bind_password": "Secret.123",
       "provider_type": "389ds"
+    },
+    {
+      "name": "ds-offline-example",
+      "base_dn": "dc=example,dc=com",
+      "bind_dn": "cn=Directory Manager",
+      "bind_password": "Secret.123",
+      "provider_type": "389ds",
+      "is_local": true,
+      "serverid": "localhost",
+      "is_offline": true
+    },
+    {
+      "name": "ds-archive-single-instance",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "archive_path": "~/ds-archive/sosreport-hostname"
+    },
+    {
+      "name": "ds-archive-tarball-supplier1",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "archive_path": "sosreport-hostname-123456-2026-01-15-abcdefg.tar.xz",
+      "instance_name": "slapd-supplier1"
+    },
+    {
+      "name": "ds-archive-tarball-supplier2",
+      "provider_type": "389ds",
+      "is_archive": true,
+      "archive_path": "sosreport-hostname-123456-2026-01-15-abcdefg.tar.xz",
+      "instance_name": "slapd-supplier2"
     }
   ]
 }
-

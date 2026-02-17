@@ -49,9 +49,8 @@ The assistant:
 - `get_backend_configuration()` - Backend-specific settings
 
 ### Log Analysis
-- `parse_access_log()` - Parse and filter access log entries
-- `parse_error_log()` - Parse and filter error log entries
-- `parse_audit_log()` - Parse and filter audit log change records
+- `parse_access_log()` / `parse_error_log()` / `parse_audit_log()` - Parse and filter log entries (disabled in privacy mode)
+- `analyze_access_log()` / `analyze_error_log()` / `analyze_audit_log()` - Statistics-only log analysis (works in privacy mode)
 
 ### Archive & Offline Analysis
 - `analyze_archive()` - Inventory and summarize SOS report / archive data
@@ -132,7 +131,8 @@ Create a `servers.json` file with your LDAP server(s):
       "name": "sos-report",
       "provider_type": "389ds",
       "is_archive": true,
-      "archive_path": "/path/to/sosreport-host-2025/"
+      "archive_path": "/path/to/sosreport-host-2025/",
+      "instance_name": "slapd-instance"
     }
   ]
 }
