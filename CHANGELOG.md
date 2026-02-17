@@ -2,6 +2,56 @@
 
 All notable changes to LDAP Assistant MCP will be documented in this file.
 
+## [0.3.0] - 2026-02-16
+
+### Added
+
+#### Offline Mode
+- Analyze stopped DS instances via dse.ldif and logs without LDAP connection
+- `is_offline: true` server config option
+- Health, config, index, and log tools work in offline mode
+
+#### Archive Mode
+- Analyze SOS reports or extracted configs from any machine
+- `ArchiveDirSrv` stub for archive instances — no local DS installation required
+- Auto-detection of SOS report layout, direct instance dirs, and config-only archives
+- Tarball auto-extraction (`.tar.xz`, `.tar.gz`)
+- `instance_name` config for multi-instance SOS reports
+
+#### Archive & Offline Tools
+- **analyze_archive()** - Inventory and summarize archive/offline data sources
+- **validate_configuration()** - Static dse.ldif lint checks
+- **compare_dse_configs()** - Entry-by-entry dse.ldif comparison between servers
+
+#### Log Analysis Tools
+- **parse_access_log()** - Parse and filter access log entries (local/archive)
+- **parse_error_log()** - Parse and filter error log entries (local/archive)
+- **parse_audit_log()** - Parse and filter audit log change records (local/archive)
+- **analyze_access_log()** - Statistics-only access log analysis (privacy-safe)
+- **analyze_error_log()** - Statistics-only error log analysis (privacy-safe)
+- **analyze_audit_log()** - Statistics-only audit log analysis (privacy-safe)
+- Support for both traditional and JSON log formats
+
+#### Server Management
+- **list_servers()** - List all configured servers with mode and status
+
+#### Prompts
+- **archive_investigation** - Guided SOS report / archive analysis workflow
+
+### Changed
+
+#### Privacy Improvements
+- Privacy mode enabled by default
+- Comprehensive sanitization across all tool modules (error messages, server lists, monitor data, VLV indexes, replication conflicts, disk paths, health metrics)
+- analyze_* log tools as privacy-safe alternatives to parse_* tools
+- Monitor data filtered to safe diagnostic keys only in privacy mode
+
+#### Tool Improvements
+- All tool docstrings updated with mode compatibility tags and cross-references
+- `time_range` parameter replaces `start_time`/`end_time` in log tools (supports relative times like "last 24h")
+- `include_archived_logs` parameter for access log tools to include rotated logs
+- Offline/archive mode support added to config, index, health, and replication tools
+
 ## [0.2.0] - 2025-12-31
 
 ### Added
@@ -85,5 +135,6 @@ All notable changes to LDAP Assistant MCP will be documented in this file.
 - **config://config-all** - Returns all cn=config attributes
 - **config://config-attribute/{attribute}** - Returns a single cn=config attribute
 
+[0.3.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/droideck/ldap-assistant-mcp/releases/tag/v0.1.0

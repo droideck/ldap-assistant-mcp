@@ -1,6 +1,6 @@
 # LDAP Assistant MCP
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CHANGELOG.md)
 
 > **Experimental Project - Active Development**
 > This is an experimental MCP server in early development. Current focus: building foundational architecture and health diagnostics for 389 Directory Server. Not production-ready.
