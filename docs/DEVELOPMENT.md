@@ -8,6 +8,7 @@ This guide covers setting up your development environment for LDAP Assistant MCP
 - `uv` package manager
 - Docker
 - 389 Directory Server or OpenLDAP (via containers or local install)
+- System development libraries for building `python-ldap` — see the [Prerequisites](../README.md#prerequisites) section in the README
 
 ## Development Environment Setup
 

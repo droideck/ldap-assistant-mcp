@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import atexit
 import glob
 import logging
 import os
+import shutil
 import tarfile
 import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+_temp_dirs: List[str] = []
+_extraction_cache: dict[str, str] = {}  # resolved archive path -> extracted dir
 
 @dataclass
 class ArchiveLayout:
@@ -62,18 +67,41 @@ def detect_archive_layout(
 def extract_archive(archive_file: str) -> str:
     """Extract .tar.xz or .tar.gz to a temporary directory.
 
-    Returns path to the extracted directory. Caller is responsible for cleanup.
+    Returns the path to the extracted directory.  Repeated calls with
+    the same archive file return the cached result instead of
+    re-extracting.  Tracked for cleanup via :func:`cleanup_temp_dirs`
+    (also registered as an ``atexit`` handler).
     """
     if not os.path.isfile(archive_file):
         raise FileNotFoundError(f"Archive file not found: {archive_file}")
 
+    real_path = os.path.realpath(archive_file)
+    cached = _extraction_cache.get(real_path)
+    if cached and os.path.isdir(cached):
+        logger.debug("Reusing cached extraction for %s at %s", archive_file, cached)
+        return cached
+
     tmp_dir = tempfile.mkdtemp(prefix="ldap-mcp-archive-")
+    _temp_dirs.append(tmp_dir)
     logger.info("Extracting %s to %s", archive_file, tmp_dir)
 
     with tarfile.open(archive_file, "r:*") as tar:
         tar.extractall(tmp_dir, filter="data")
 
+    _extraction_cache[real_path] = tmp_dir
     return tmp_dir
+
+
+def cleanup_temp_dirs() -> None:
+    """Remove all tracked temporary archive directories."""
+    for d in list(_temp_dirs):
+        shutil.rmtree(d, ignore_errors=True)
+        logger.debug("Cleaned up temp dir: %s", d)
+    _temp_dirs.clear()
+    _extraction_cache.clear()
+
+
+atexit.register(cleanup_temp_dirs)
 
 def _is_tarball(path: str) -> bool:
     lower = path.lower()

@@ -117,6 +117,10 @@ def load_config(
     Note: For local instances (is_local=true), the serverid field is required.
     This enables access to server log files, config files, and other local resources.
 
+    Privacy note: The ``name`` field is never redacted in privacy mode — it is
+    passed as-is to AI agents so they can reference servers across tool calls.
+    Do not put hostnames, IPs, or other private information in server names.
+
     Args:
         config_file: Optional path to JSON config file
         config_env_var: Name of environment variable containing config file path
@@ -385,7 +389,19 @@ def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
     else:
         debug = env_settings.debug
 
+    if "tool_timeout" in data:
+        tool_timeout = float(data["tool_timeout"])
+    else:
+        tool_timeout = env_settings.tool_timeout
+
+    if "max_tool_timeout" in data:
+        max_tool_timeout = float(data["max_tool_timeout"])
+    else:
+        max_tool_timeout = env_settings.max_tool_timeout
+
     return MCPSettings(
         expose_sensitive_data=expose,
         debug=debug,
+        tool_timeout=tool_timeout,
+        max_tool_timeout=max_tool_timeout,
     )

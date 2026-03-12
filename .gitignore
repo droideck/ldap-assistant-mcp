@@ -3,3 +3,10 @@
 *.pyc
 /src/*.egg-info
 **/.DS_Store
+/lib389
+
+# Config files that may contain passwords
+servers.json
+dev.fastmcp.json
+tests-servers.json
+tests-local-servers.json

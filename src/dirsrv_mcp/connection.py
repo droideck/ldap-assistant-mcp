@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import ldap
+from fastmcp.exceptions import ToolError
 from lib389 import DirSrv
 
 from src.ldap_assistant_mcp.server import LDAPServerConfig
@@ -28,7 +29,7 @@ __all__ = [
 ]
 
 
-class LocalServerRequired(Exception):
+class LocalServerRequired(ToolError):
     """Raised when a local server is required but a remote connection is used."""
 
     def __init__(self, feature: str, server_name: str):
@@ -66,7 +67,7 @@ class ServerConfig:
     ldap_url: str
     base_dn: str
     bind_dn: str
-    bind_password: str
+    bind_password: Optional[str] = None
     provider_type: str = "389ds"
     auth_method: str = "simple"
     # Local instance support
@@ -97,7 +98,7 @@ class ServerConfig:
             ldap_url=os.environ.get("LDAP_URL", "ldap://localhost:389"),
             base_dn=os.environ.get("LDAP_BASE_DN", "dc=example,dc=com"),
             bind_dn=os.environ.get("LDAP_BIND_DN", "cn=directory manager"),
-            bind_password=os.environ.get("LDAP_BIND_PASSWORD", "Password123"),
+            bind_password=os.environ.get("LDAP_BIND_PASSWORD"),
             provider_type="389ds",
         )
 
@@ -195,6 +196,17 @@ class ConnectionManager:
         # Archive mode: return ArchiveDirSrv stub
         if config.is_archive:
             return self._connect_archive(config)
+
+        if (
+            config.auth_method == "simple"
+            and not config.is_offline
+            and not config.use_ldapi
+            and not config.bind_password
+        ):
+            raise ToolError(
+                f"Server '{server_name}' uses simple auth but no bind password is configured. "
+                "Set LDAP_BIND_PASSWORD or use a config file with bind_password."
+            )
 
         local_info = ""
         if config.is_local:
@@ -393,7 +405,7 @@ def require_local_server(
         raise LocalServerRequired(feature, server_name)
 
 
-class LiveServerRequired(Exception):
+class LiveServerRequired(ToolError):
     """Raised when a live (running) server is required but an offline/archive connection is used."""
 
     def __init__(self, feature: str, server_name: str, mode: str = "offline"):

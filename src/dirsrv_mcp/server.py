@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.prompts import PromptMessage
@@ -20,7 +20,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.loader import load_config
-from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
+from src.dirsrv_mcp.connection import (
+    ConnectionManager,
+    LiveServerRequired,
+    LocalServerRequired,
+    ServerConfig,
+    require_live_server,
+    require_local_server,
+)
+from src.dirsrv_mcp.middleware import LoggingMiddleware, ResponseSizeMiddleware, TimeoutMiddleware
 from src.dirsrv_mcp.tools import (
     register_archive_tools,
     register_config_tools,
@@ -39,6 +47,21 @@ from src.ldap_assistant_mcp.server import LDAPAssistantMCP, LDAPServerConfig, MC
 from src.lib.privacy import PrivacySanitizer, get_sanitizer
 
 __all__ = ["DirSrvMCP"]
+
+_server_logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _server_lifespan(server) -> AsyncIterator[dict]:
+    """FastMCP lifespan: log startup, clean up temp dirs on shutdown."""
+    _server_logger.info("server_starting")
+    try:
+        yield {}
+    finally:
+        from src.dirsrv_mcp.archive.loader import cleanup_temp_dirs
+
+        cleanup_temp_dirs()
+        _server_logger.info("server_stopped")
 
 
 class DirSrvMCP(LDAPAssistantMCP):
@@ -60,16 +83,38 @@ class DirSrvMCP(LDAPAssistantMCP):
             config_path=config_path, extra_servers=servers
         )
 
+        # Use provided settings, loaded settings, or defaults
+        # Note: We use _mcp_settings to avoid conflict with FastMCP's settings property
+        self._mcp_settings = settings or loaded_settings or MCPSettings.from_env()
+
+        # Tools that scan all servers or parse large archives get extra time
+        _max_t = self._mcp_settings.max_tool_timeout
+        tool_timeouts = {
+            "first_look": _max_t,
+            "run_healthcheck": _max_t,
+            "compare_dse_configs": _max_t,
+            "analyze_archive": _max_t,
+            "get_replication_topology": _max_t,
+        }
+
+        middleware = [
+            LoggingMiddleware(),
+            TimeoutMiddleware(
+                default_timeout=self._mcp_settings.tool_timeout,
+                max_timeout=self._mcp_settings.max_tool_timeout,
+                tool_timeouts=tool_timeouts,
+            ),
+            ResponseSizeMiddleware(),
+        ]
+
         super().__init__(
             name=name,
             instructions=instructions,
             servers=merged_servers or None,
+            middleware=middleware,
+            lifespan=_server_lifespan,
             **kwargs,
         )
-
-        # Use provided settings, loaded settings, or defaults
-        # Note: We use _mcp_settings to avoid conflict with FastMCP's settings property
-        self._mcp_settings = settings or loaded_settings or MCPSettings.from_env()
         self._sanitizer = get_sanitizer()
 
         self.connection_manager = connection_manager or ConnectionManager()
@@ -491,25 +536,36 @@ class DirSrvMCP(LDAPAssistantMCP):
         """Return the configured base DN for *server_name*, or raise."""
         config = self.get_server_config(server_name)
         if not config.base_dn:
-            display_name = (
-                self._sanitizer.sanitize_server_name(server_name)
-                if self.privacy_enabled else server_name
-            )
-            raise ToolError(f"Server '{display_name}' does not have a base DN configured")
+            raise ToolError(f"Server '{server_name}' does not have a base DN configured")
         return config.base_dn
 
+    def require_live(self, server_name: str, feature: str) -> None:
+        """Guard that raises LiveServerRequired for offline/archive servers."""
+        require_live_server(self.connection_manager, server_name, feature)
+
+    def require_local(self, server_name: str, feature: str) -> None:
+        """Guard that raises LocalServerRequired for remote servers."""
+        require_local_server(self.connection_manager, server_name, feature)
+
     def describe_servers(self) -> List[Dict[str, Any]]:
-        """Return a list of server descriptions (sanitized in privacy mode)."""
+        """Return a list of server descriptions (sanitized in privacy mode).
+
+        Server names are never sanitized — they are user-chosen config
+        labels and must remain stable so that LLM clients can pass them
+        back to subsequent tool calls.  Do not put private information
+        in server names.
+        """
         descriptions = super().describe_servers()
 
         if not self.privacy_enabled:
             return descriptions
 
-        # Sanitize sensitive information when privacy is enabled
+        # Sanitize sensitive information when privacy is enabled.
+        # Server names are intentionally kept as-is (see docstring).
         sanitized = []
         for desc in descriptions:
             sanitized_desc = {
-                "name": self._sanitizer.sanitize_server_name(desc.get("name")),
+                "name": desc.get("name"),
                 "hostname": self._sanitizer.sanitize_hostname(desc.get("hostname")),
                 "port": "[port]",
                 "use_ssl": desc.get("use_ssl"),

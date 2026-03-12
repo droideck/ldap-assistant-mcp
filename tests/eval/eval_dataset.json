@@ -1,0 +1,157 @@
+[
+  {
+    "query": "Check the health of my directory servers",
+    "expected_tools": ["first_look"],
+    "category": "health"
+  },
+  {
+    "query": "Is the MCP server running OK?",
+    "expected_tools": ["server_health"],
+    "category": "health"
+  },
+  {
+    "query": "Run a deep health check on my LDAP server",
+    "expected_tools": ["run_healthcheck"],
+    "category": "health"
+  },
+  {
+    "query": "What health checks are available?",
+    "expected_tools": ["list_healthchecks"],
+    "category": "health"
+  },
+  {
+    "query": "Show me replication status",
+    "expected_tools": ["get_replication_status"],
+    "category": "replication"
+  },
+  {
+    "query": "Map the replication topology across all servers",
+    "expected_tools": ["get_replication_topology"],
+    "category": "replication"
+  },
+  {
+    "query": "Are there any replication conflicts?",
+    "expected_tools": ["list_replication_conflicts"],
+    "category": "replication"
+  },
+  {
+    "query": "Check if replication is lagging",
+    "expected_tools": ["check_replication_lag"],
+    "category": "replication"
+  },
+  {
+    "query": "Show me the server configuration",
+    "expected_tools": ["get_server_configuration"],
+    "category": "config"
+  },
+  {
+    "query": "Compare configuration between two servers",
+    "expected_tools": ["compare_server_configurations"],
+    "category": "config"
+  },
+  {
+    "query": "List all enabled plugins",
+    "expected_tools": ["list_plugins"],
+    "category": "config"
+  },
+  {
+    "query": "Show backend configuration details",
+    "expected_tools": ["get_backend_configuration"],
+    "category": "config"
+  },
+  {
+    "query": "What indexes are configured?",
+    "expected_tools": ["list_indexes"],
+    "category": "indexes"
+  },
+  {
+    "query": "Are there any unindexed searches happening?",
+    "expected_tools": ["find_unindexed_searches"],
+    "category": "indexes"
+  },
+  {
+    "query": "Give me a performance overview",
+    "expected_tools": ["get_performance_summary"],
+    "category": "performance"
+  },
+  {
+    "query": "Check cache hit ratios",
+    "expected_tools": ["get_cache_statistics"],
+    "category": "performance"
+  },
+  {
+    "query": "How many connections are open?",
+    "expected_tools": ["get_connection_statistics"],
+    "category": "performance"
+  },
+  {
+    "query": "Check thread utilization",
+    "expected_tools": ["get_thread_statistics"],
+    "category": "performance"
+  },
+  {
+    "query": "Show me memory and CPU usage",
+    "expected_tools": ["get_resource_utilization"],
+    "category": "performance"
+  },
+  {
+    "query": "List all users",
+    "expected_tools": ["list_all_users"],
+    "category": "users"
+  },
+  {
+    "query": "Find user john",
+    "expected_tools": ["search_users_by_name"],
+    "category": "users"
+  },
+  {
+    "query": "Show locked user accounts",
+    "expected_tools": ["list_locked_users"],
+    "category": "users"
+  },
+  {
+    "query": "List all groups in the directory",
+    "expected_tools": ["list_all_groups"],
+    "category": "groups"
+  },
+  {
+    "query": "Search for entries matching a custom LDAP filter",
+    "expected_tools": ["ldap_search"],
+    "category": "search"
+  },
+  {
+    "query": "Parse the access log for failed searches",
+    "expected_tools": ["parse_access_log"],
+    "category": "logs"
+  },
+  {
+    "query": "Show me error log statistics",
+    "expected_tools": ["analyze_error_log"],
+    "category": "logs"
+  },
+  {
+    "query": "What changes were made in the audit log?",
+    "expected_tools": ["analyze_audit_log"],
+    "category": "logs"
+  },
+  {
+    "query": "Inventory what data is available in this SOS report",
+    "expected_tools": ["analyze_archive"],
+    "category": "archive"
+  },
+  {
+    "query": "Validate the configuration in this archive",
+    "expected_tools": ["validate_configuration"],
+    "category": "archive"
+  },
+  {
+    "query": "Compare dse.ldif between two archives",
+    "expected_tools": ["compare_dse_configs"],
+    "category": "archive"
+  },
+  {
+    "query": "Which servers are configured?",
+    "expected_tools": ["list_servers"],
+    "category": "servers"
+  }
+]

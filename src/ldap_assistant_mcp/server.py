@@ -23,10 +23,13 @@ class MCPSettings:
         expose_sensitive_data: When False (default), sensitive data is redacted
             from all tool outputs. This includes:
             - User/group DNs and names
-            - Hostnames and server names
+            - Hostnames and ports
             - Configuration values (bind DNs, paths, etc.)
             - Replication agreement targets
             - Suffixes and base DNs
+            Note: Server names (the ``name`` field in servers.json) are never
+            redacted — they are user-chosen labels that must remain stable
+            across tool calls.  Do not put private information in server names.
             When True, full data is exposed (use only in trusted environments).
 
         debug: When True, enables verbose/debug output:
@@ -41,6 +44,8 @@ class MCPSettings:
 
     expose_sensitive_data: bool = False
     debug: bool = False
+    tool_timeout: float = 30.0
+    max_tool_timeout: float = 120.0
 
     # Future: Allow write/modify operations (create users, modify config, etc.)
     # allow_write_operations: bool = False
@@ -55,8 +60,8 @@ class MCPSettings:
         Environment variables:
             LDAP_MCP_EXPOSE_SENSITIVE_DATA: true/false (default: false)
             LDAP_MCP_DEBUG: true/false (default: false)
-            # LDAP_MCP_ALLOW_WRITE_OPERATIONS: true/false (default: false)
-            # LDAP_MCP_ALLOW_TASK_OPERATIONS: true/false (default: false)
+            LDAP_MCP_TOOL_TIMEOUT: seconds (default: 30.0)
+            LDAP_MCP_MAX_TOOL_TIMEOUT: seconds (default: 120.0)
         """
         expose_env = os.environ.get("LDAP_MCP_EXPOSE_SENSITIVE_DATA", "")
         expose_sensitive = str(expose_env).lower() in {"1", "true", "yes", "on"}
@@ -64,9 +69,20 @@ class MCPSettings:
         debug_env = os.environ.get("LDAP_MCP_DEBUG", "")
         debug = str(debug_env).lower() in {"1", "true", "yes", "on"}
 
+        try:
+            tool_timeout = max(1.0, float(os.environ.get("LDAP_MCP_TOOL_TIMEOUT", "30.0")))
+        except (ValueError, TypeError):
+            tool_timeout = 30.0
+        try:
+            max_tool_timeout = max(1.0, float(os.environ.get("LDAP_MCP_MAX_TOOL_TIMEOUT", "120.0")))
+        except (ValueError, TypeError):
+            max_tool_timeout = 120.0
+
         return cls(
             expose_sensitive_data=expose_sensitive,
             debug=debug,
+            tool_timeout=tool_timeout,
+            max_tool_timeout=max_tool_timeout,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,6 +90,8 @@ class MCPSettings:
         return {
             "expose_sensitive_data": self.expose_sensitive_data,
             "debug": self.debug,
+            "tool_timeout": self.tool_timeout,
+            "max_tool_timeout": self.max_tool_timeout,
             # "allow_write_operations": self.allow_write_operations,
             # "allow_task_operations": self.allow_task_operations,
         }
@@ -242,7 +260,7 @@ class LDAPServerConfig:
             bind_password = None
         else:
             bind_dn = os.environ.get("LDAP_BIND_DN", "cn=Directory Manager")
-            bind_password = os.environ.get("LDAP_BIND_PASSWORD", "Password123")
+            bind_password = os.environ.get("LDAP_BIND_PASSWORD")
         provider_type = os.environ.get("LDAP_PROVIDER", "generic")
 
         # Local instance configuration
@@ -281,7 +299,12 @@ class LDAPAssistantMCP(FastMCP):
         include_env_fallback: bool = True,
         **kwargs: Any,
     ) -> None:
-        super().__init__(name=name, instructions=instructions, **kwargs)
+        super().__init__(
+            name=name,
+            instructions=instructions,
+            mask_error_details=True,
+            **kwargs,
+        )
 
         self.server_configs: Dict[str, LDAPServerConfig] = {}
 

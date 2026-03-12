@@ -93,7 +93,7 @@ def test_ldap_server_config_from_env_simple():
 
     assert config.auth_method == LDAPAuthMethod.SIMPLE
     assert config.bind_dn == "cn=Directory Manager"
-    assert config.bind_password == "Password123"
+    assert config.bind_password is None
 
 
 # Unit tests for ConnectionManager with anonymous

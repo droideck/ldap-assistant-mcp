@@ -13,6 +13,8 @@ Thank you for your interest in contributing to LDAP Assistant MCP!
 
 ### 1. Set Up Your Environment
 
+First, install the required system dependencies for building `python-ldap` — see the [Prerequisites](../README.md#prerequisites) section in the README.
+
 ```bash
 # Clone and enter the project
 git clone https://github.com/YOUR_USERNAME/ldap-assistant-mcp.git
