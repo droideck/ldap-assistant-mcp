@@ -78,6 +78,24 @@ The assistant:
 - `uv` package manager
 - MCP client (Claude Desktop, Claude Code, Cursor, Gemini CLI, etc.)
 - Access to LDAP server(s) (389 Directory Server only, for now)
+- System development libraries (needed to build `python-ldap`):
+
+  **Fedora / RHEL / CentOS:**
+  ```bash
+  sudo dnf install python3-devel openldap-devel cyrus-sasl-devel openssl-devel gcc
+  ```
+
+  **Ubuntu / Debian:**
+  ```bash
+  sudo apt install python3-dev libldap2-dev libsasl2-dev libssl-dev gcc
+  ```
+
+  **macOS (Homebrew):**
+  ```bash
+  brew install openldap
+  export LDFLAGS="-L$(brew --prefix openldap)/lib"
+  export CPPFLAGS="-I$(brew --prefix openldap)/include"
+  ```
 
 ### Step 1: Clone and Install Dependencies
 
@@ -93,7 +111,7 @@ uv pip install -r requirements.txt
 
 ### Step 2: Configure Your Servers
 
-Create a `servers.json` file with your LDAP server(s):
+Create a `servers.json` file with your LDAP server(s). **Note:** The `name` field is never redacted in privacy mode — it is passed as-is to AI agents so they can reference servers across tool calls. Do not put hostnames, IPs, or other private information in server names.
 
 ```json
 {
@@ -219,7 +237,7 @@ If you don't have an LDAP server to connect to, see the [Development Guide](docs
 
 ## Privacy Mode
 
-By default, **privacy mode is enabled** - sensitive data (server names, DNs, hostnames, user details) is redacted from tool outputs. Tools that expose individual entries (`get_user_details`, `ldap_search`) are disabled; list tools return counts only.
+By default, **privacy mode is enabled** - sensitive data (DNs, hostnames, user details) is redacted from tool outputs. Tools that expose individual entries (`get_user_details`, `ldap_search`) are disabled; list tools return counts only.
 
 To enable full data access in **trusted environments only**:
 
@@ -234,10 +252,11 @@ To enable full data access in **trusted environments only**:
 **Important:** Only enable this with local models, private cloud LLM instances, or when working with test/sample data. Avoid enabling with public LLMs when connected to production directories - your directory information could be included in their training data or logs.
 
 When privacy mode is enabled (default):
-- Server names, hostnames, and DNs are anonymized
+- Hostnames, DNs, and suffixes are anonymized
 - Configuration values are redacted
 - Sensitive tools are disabled
 - Diagnostic metrics (counts, ratios, percentages) remain visible
+- Server names (the `name` field in `servers.json`) are **never** redacted — they are user-chosen labels that must remain stable across tool calls. Do not put hostnames, IPs, or other private information in server names.
 
 ## Limitations
 

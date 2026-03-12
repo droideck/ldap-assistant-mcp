@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Set
+
+from pydantic import Field
 
 from lib389.backend import Backends
 from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.index import VLVSearches
+
+from mcp.types import ToolAnnotations
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
@@ -28,6 +32,9 @@ from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+_RO_LOCAL = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
 
 
 def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
@@ -38,14 +45,9 @@ def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
         sanitized["backends"] = [
@@ -300,7 +302,7 @@ def _parse_vlv_entry_offline(dse, vlv_dn: str) -> Dict[str, Any]:
 def register_index_tools(mcp: DirSrvMCP) -> None:
     """Register index analysis tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"indexes", "live", "offline", "archive"})
     def list_indexes(
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -463,7 +465,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"indexes", "live", "offline", "archive"})
     def analyze_index_configuration(
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -693,10 +695,10 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO_LOCAL, tags={"indexes", "logs", "live", "offline", "archive"})
     def find_unindexed_searches(
         time_range: str = "1h",
-        limit: int = 50,
+        limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50,
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Find unindexed searches (notes=U/A) in access logs with fix suggestions.

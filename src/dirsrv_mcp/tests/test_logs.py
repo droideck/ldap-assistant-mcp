@@ -863,7 +863,7 @@ class TestAnalyzeAccessLog:
                 )
                 data = result.data
                 assert "error" not in data
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("server") == "priv-archive"
 
         asyncio.run(run())
 
@@ -984,7 +984,7 @@ class TestAnalyzeErrorLog:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("server") == "priv-archive"
 
         asyncio.run(run())
 
@@ -1118,15 +1118,78 @@ class TestRegexValidation:
     def test_overly_long_pattern(self, archive_mcp):
         async def run():
             async with Client(archive_mcp) as client:
-                result = await client.call_tool(
-                    "parse_access_log",
-                    {"server_name": "test-archive", "pattern": "a" * 1001},
-                )
-                data = result.data
-                assert "error" in data
-                assert "too long" in data["error"].lower()
+                # Pydantic Field(max_length=500) rejects the pattern
+                # before the tool code runs, raising a ToolError.
+                with pytest.raises(Exception) as exc_info:
+                    await client.call_tool(
+                        "parse_access_log",
+                        {"server_name": "test-archive", "pattern": "a" * 1001},
+                    )
+                assert "500" in str(exc_info.value) or "too long" in str(exc_info.value).lower()
 
         asyncio.run(run())
+
+
+class TestRedosDetection:
+    """Verify that _validate_regex rejects known ReDoS-prone patterns."""
+
+    def _validate(self, pattern):
+        from src.dirsrv_mcp.tools.logs import _validate_regex
+        return _validate_regex(pattern)
+
+    def test_quantified_group_with_quantifier(self):
+        """(a+)+ is a classic ReDoS pattern."""
+        compiled, err = self._validate("(a+)+")
+        assert err is not None
+        assert "nested" in err["error"].lower() or "unsafe" in err["error"].lower()
+
+    def test_quantified_charclass_group(self):
+        r"""(\d+)+ should be rejected."""
+        compiled, err = self._validate(r"(\d+)+")
+        assert err is not None
+
+    def test_star_star_group(self):
+        """(x*)*  should be rejected."""
+        compiled, err = self._validate("(x*)*")
+        assert err is not None
+
+    def test_quantified_alternation_overlapping(self):
+        """(a|a)* is ambiguous alternation and should be rejected."""
+        compiled, err = self._validate("(a|a)*")
+        assert err is not None
+        assert "alternation" in err["error"].lower() or "unsafe" in err["error"].lower()
+
+    def test_quantified_alternation_overlap_via_quantifier(self):
+        """(a|a?)+ has overlapping arms and should be rejected."""
+        compiled, err = self._validate("(a|a?)+")
+        assert err is not None
+
+    def test_consecutive_quantifiers(self):
+        """a** and a++ should be rejected."""
+        for pat in ("a**", "a++", "a*+"):
+            compiled, err = self._validate(pat)
+            assert err is not None, f"Pattern {pat!r} should be rejected"
+
+    def test_repeated_dotstar(self):
+        """.*.*.*  three or more .* sequences."""
+        compiled, err = self._validate(".*.*.*")
+        assert err is not None
+
+    def test_safe_patterns_pass(self):
+        """Normal patterns should be accepted."""
+        safe = [
+            r"conn=\d+",
+            r"RESULT err=\d+",
+            r"op=\d+ SRCH",
+            r"(ADD|MOD|DEL)",
+            r"(ADD|MOD|DEL)+",
+            r"(err=0|err=49)*",
+            r"uid=[a-z]+",
+        ]
+        for pat in safe:
+            compiled, err = self._validate(pat)
+            assert err is None, f"Safe pattern {pat!r} was rejected: {err}"
+            assert compiled is not None
 
 
 class TestAuditDnMatching:

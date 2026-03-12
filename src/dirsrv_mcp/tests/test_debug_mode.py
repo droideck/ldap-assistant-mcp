@@ -24,11 +24,6 @@ from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_e
 from src.ldap_assistant_mcp.server import LDAPServerConfig, MCPSettings
 
 
-# ---------------------------------------------------------------------------
-# MCPSettings debug defaults
-# ---------------------------------------------------------------------------
-
-
 def test_mcp_settings_debug_default():
     """Debug should default to False."""
     settings = MCPSettings()
@@ -48,11 +43,6 @@ def test_mcp_settings_to_dict_debug_false():
     settings = MCPSettings()
     d = settings.to_dict()
     assert d["debug"] is False
-
-
-# ---------------------------------------------------------------------------
-# MCPSettings.from_env() — LDAP_MCP_DEBUG
-# ---------------------------------------------------------------------------
 
 
 def test_from_env_debug_default():
@@ -85,11 +75,6 @@ def test_from_env_debug_falsy_values():
             assert settings.debug is False, f"Should treat '{value}' as False"
 
 
-# ---------------------------------------------------------------------------
-# Config loader — _settings_from_dict
-# ---------------------------------------------------------------------------
-
-
 def test_settings_from_dict_debug_true():
     """Config loader should parse debug=true from JSON data."""
     with patch.dict(os.environ, {}, clear=True):
@@ -100,7 +85,6 @@ def test_settings_from_dict_debug_true():
 def test_settings_from_dict_debug_false():
     """Config loader should parse debug=false from JSON data."""
     with patch.dict(os.environ, {"LDAP_MCP_DEBUG": "true"}, clear=True):
-        # JSON value should override env var
         settings = _settings_from_dict({"debug": False})
         assert settings.debug is False
 
@@ -144,11 +128,6 @@ def test_server_list_config_from_dict_with_debug():
     with patch.dict(os.environ, {}, clear=True):
         config = ServerListConfig.from_dict(data)
         assert config.settings.debug is True
-
-
-# ---------------------------------------------------------------------------
-# format_error_message
-# ---------------------------------------------------------------------------
 
 
 def test_format_error_message_includes_type():
@@ -198,15 +177,11 @@ def test_format_error_message_preserves_original():
     assert msg.startswith("TypeError:")
 
 
-# ---------------------------------------------------------------------------
-# format_tool_error — without debug
-# ---------------------------------------------------------------------------
-
-
-def _make_mcp_mock(debug_enabled=False):
-    """Create a mock MCP object with debug_enabled property."""
+def _make_mcp_mock(debug_enabled=False, privacy_enabled=False):
+    """Create a mock MCP object with debug_enabled and privacy_enabled properties."""
     mcp = MagicMock()
     mcp.debug_enabled = debug_enabled
+    mcp.privacy_enabled = privacy_enabled
     return mcp
 
 
@@ -250,11 +225,6 @@ def test_format_tool_error_extra_kwargs():
     assert result["type"] == "dse_comparison"
 
 
-# ---------------------------------------------------------------------------
-# format_tool_error — with debug
-# ---------------------------------------------------------------------------
-
-
 def test_format_tool_error_debug_includes_traceback():
     """Should include traceback when debug is enabled."""
     mcp = _make_mcp_mock(debug_enabled=True)
@@ -265,7 +235,6 @@ def test_format_tool_error_debug_includes_traceback():
     assert "traceback" in result
     assert isinstance(result["traceback"], list)
     assert len(result["traceback"]) > 0
-    # Traceback should contain the exception message
     tb_text = "".join(result["traceback"])
     assert "test error for traceback" in tb_text
     assert "ValueError" in tb_text
@@ -290,11 +259,6 @@ def test_format_tool_error_no_traceback_when_no_debug():
     except ValueError as exc:
         result = format_tool_error(exc, mcp, "test_type")
     assert "traceback" not in result
-
-
-# ---------------------------------------------------------------------------
-# DirSrvMCP.debug_enabled property
-# ---------------------------------------------------------------------------
 
 
 def _make_test_server():
@@ -336,11 +300,6 @@ def test_dirsrv_mcp_debug_enabled_true():
         assert mcp.debug_enabled is True
 
 
-# ---------------------------------------------------------------------------
-# Debug mode sets logging level to DEBUG
-# ---------------------------------------------------------------------------
-
-
 def test_debug_mode_sets_log_level():
     """When debug=True, DirSrvMCP logger should be set to DEBUG."""
     env = {
@@ -358,9 +317,6 @@ def test_debug_mode_sets_log_level():
 
 def test_no_debug_does_not_force_debug_level():
     """When debug=False, DirSrvMCP should NOT set the logger to DEBUG."""
-    # Reset the shared logger to WARNING before running this test,
-    # because a previous test may have set it to DEBUG (logger names
-    # are singletons in the logging module).
     logging.getLogger("DirSrvMCP").setLevel(logging.WARNING)
 
     env = {
@@ -373,13 +329,7 @@ def test_no_debug_does_not_force_debug_level():
             settings=MCPSettings(debug=False),
             include_env_fallback=False,
         )
-        # Level should remain WARNING (not lowered to DEBUG)
         assert mcp.logger.level != logging.DEBUG
-
-
-# ---------------------------------------------------------------------------
-# ConnectionManager.debug propagation
-# ---------------------------------------------------------------------------
 
 
 def test_connection_manager_debug_default():
@@ -423,11 +373,6 @@ def test_dirsrv_mcp_no_debug_connection_manager_stays_false():
             include_env_fallback=False,
         )
         assert mcp.connection_manager.debug is False
-
-
-# ---------------------------------------------------------------------------
-# Existing test compatibility — error strings are still strings
-# ---------------------------------------------------------------------------
 
 
 def test_format_error_message_returns_string():

@@ -226,9 +226,9 @@ class TestArchiveSanitization:
         }
         sanitized = _sanitize_archive_result(mcp, result)
 
-        # Server names sanitized
-        assert "[server-" in sanitized["server1"]
-        assert "[server-" in sanitized["server2"]
+        # Server names are never sanitized (user-chosen config labels)
+        assert sanitized["server1"] == "archive1"
+        assert sanitized["server2"] == "archive2"
 
         # DNs sanitized
         for dn in sanitized["only_in_server1"]:
@@ -426,8 +426,8 @@ class TestHealthSanitization:
         }
         result = _sanitize_server_metrics(sanitizer, data)
 
-        # Server name sanitized
-        assert "[server-" in result["server"]
+        # Server names are never sanitized (user-chosen config labels)
+        assert result["server"] == "ds-offline-1"
 
         # Ports sanitized
         assert result["port"] == "[port]"
@@ -449,7 +449,7 @@ class TestHealthSanitization:
         sanitizer = PrivacySanitizer()
         data = {"server": "ds-test-1", "backends": 1}
         result = _sanitize_server_metrics(sanitizer, data)
-        assert "[server-" in result["server"]
+        assert result["server"] == "ds-test-1"
         assert result["backends"] == 1
 
 
@@ -540,17 +540,15 @@ class TestPerformanceSanitization:
 class TestErrorMessageSanitization:
     """Tests that error messages don't leak raw server names."""
 
-    def test_compare_dse_configs_available_list_sanitized(self):
-        """compare_dse_configs 'Available:' list must not leak raw names."""
+    def test_compare_dse_configs_available_list_preserves_names(self):
+        """_sanitize_server_list passes server names through unchanged."""
         from src.dirsrv_mcp.tools.archive import _sanitize_server_list
 
         mcp = _make_mcp(privacy_enabled=True)
         names = ["ds-live", "ds-offline", "ds-archive-supplier1", "ds-archive-supplier2"]
         sanitized = _sanitize_server_list(mcp, names)
-
-        for raw_name in names:
-            assert raw_name not in sanitized, f"Raw name '{raw_name}' leaked"
-        assert len(sanitized) == 4
+        # Server names are never sanitized
+        assert sanitized == names
 
     def test_compare_dse_configs_available_list_unsanitized_when_off(self):
         """When privacy is off, server names pass through unchanged."""
@@ -561,8 +559,8 @@ class TestErrorMessageSanitization:
         sanitized = _sanitize_server_list(mcp, names)
         assert sanitized == names
 
-    def test_archive_error_field_sanitized(self):
-        """Error string in archive results should be sanitized."""
+    def test_archive_error_field_sanitized_but_server_name_kept(self):
+        """Error string is sanitized for DNs/paths; server name passes through."""
         from src.dirsrv_mcp.tools.archive import _sanitize_archive_result
 
         mcp = _make_mcp(privacy_enabled=True)
@@ -572,37 +570,34 @@ class TestErrorMessageSanitization:
             "error": "analyze_archive requires offline. Server 'ds-archive-supplier1' is live.",
         }
         sanitized = _sanitize_archive_result(mcp, result)
-        assert "ds-archive-supplier1" not in sanitized["error"]
-        assert "ds-archive-supplier1" not in sanitized["server"]
+        # Server names are never sanitized
+        assert sanitized["server"] == "ds-archive-supplier1"
 
-    def test_config_error_field_sanitized(self):
-        """Error string with embedded server name should be sanitized."""
+    def test_config_error_field_sanitized_but_server_name_kept(self):
+        """Error string is sanitized for DNs/paths; server name passes through."""
         from src.dirsrv_mcp.tools.config import _sanitize_config_result
 
         mcp = _make_mcp(privacy_enabled=True)
-        # Error from a tool that has a server key (e.g., get_server_configuration)
         result = {
             "type": "server_configuration",
             "server": "ds-live",
             "error": "Failed to connect to ds-live: timeout",
         }
         sanitized = _sanitize_config_result(mcp, result)
-        assert "ds-live" not in sanitized["error"]
-        assert "ds-live" not in sanitized["server"]
+        # Server names are never sanitized
+        assert sanitized["server"] == "ds-live"
 
-    def test_config_available_list_uses_sanitized_names(self):
-        """compare_server_configurations uses _sanitize_server_list for Available."""
+    def test_config_available_list_preserves_server_names(self):
+        """_sanitize_server_list should pass through server names unchanged."""
         from src.dirsrv_mcp.tools.config import _sanitize_server_list
 
         mcp = _make_mcp(privacy_enabled=True)
         names = ["ds-live", "ds-offline"]
         sanitized = _sanitize_server_list(mcp, names)
-        for raw in names:
-            assert raw not in sanitized
-        assert len(sanitized) == 2
+        assert sanitized == names
 
-    def test_finding_text_replaces_bare_server_name(self):
-        """sanitize_finding should replace bare server names in text fields."""
+    def test_finding_text_keeps_server_name(self):
+        """sanitize_finding should keep server names in text and server fields."""
         from src.lib.privacy import PrivacySanitizer
 
         sanitizer = PrivacySanitizer()
@@ -614,11 +609,163 @@ class TestErrorMessageSanitization:
             "server": "ds-archive-supplier1",
         }
         sanitized = sanitizer.sanitize_finding(finding)
-        anon_name = sanitized["server"]
-        assert "ds-archive-supplier1" not in sanitized["title"]
-        assert "ds-archive-supplier1" not in sanitized["impact"]
-        assert "ds-archive-supplier1" not in sanitized["details"]
-        assert anon_name in sanitized["title"]
+        # Server names are never sanitized
+        assert sanitized["server"] == "ds-archive-supplier1"
+
+    def test_log_remote_error_keeps_server_name(self):
+        """Log tool errors keep server name; error text is still sanitized for DNs/paths."""
+        from src.dirsrv_mcp.tools.logs import _sanitize_log_result
+
+        mcp = _make_mcp(privacy_enabled=True)
+        result = {
+            "type": "access_log_analysis",
+            "server": "ds-dev-1",
+            "error": (
+                "Log analysis requires local or archive server access. "
+                "Server 'ds-dev-1' is a remote connection."
+            ),
+        }
+        sanitized = _sanitize_log_result(mcp, result)
+        # Server names are never sanitized
+        assert sanitized["server"] == "ds-dev-1"
+
+    def test_log_remote_error_unsanitized_when_off(self):
+        """Log tool error should preserve server name when privacy is off."""
+        from src.dirsrv_mcp.tools.logs import _sanitize_log_result
+
+        mcp = _make_mcp(privacy_enabled=False)
+        result = {
+            "type": "access_log",
+            "server": "ds-dev-1",
+            "error": "Server 'ds-dev-1' is a remote connection.",
+        }
+        sanitized = _sanitize_log_result(mcp, result)
+        assert sanitized["server"] == "ds-dev-1"
+        assert "ds-dev-1" in sanitized["error"]
+
+    def test_require_live_preserves_server_name_in_privacy_mode(self):
+        """require_live_server() should keep real server name (never sanitized)."""
+        from src.dirsrv_mcp.connection import ConnectionManager, LiveServerRequired, ServerConfig, require_live_server
+
+        cm = ConnectionManager()
+        cm.add_server(ServerConfig(
+            name="ds-offline-1",
+            ldap_url="ldap://localhost:389",
+            base_dn="dc=example,dc=com",
+            bind_dn="cn=Directory Manager",
+            is_local=True,
+            serverid="localhost",
+            is_offline=True,
+        ))
+
+        with pytest.raises(LiveServerRequired) as exc_info:
+            require_live_server(cm, "ds-offline-1", "test_tool")
+        # Server names are never sanitized — they pass through as-is
+        assert "ds-offline-1" in str(exc_info.value)
+
+    def test_require_live_preserves_name_when_privacy_off(self):
+        """require_live_server should preserve raw name when privacy is off."""
+        from src.dirsrv_mcp.connection import ConnectionManager, LiveServerRequired, ServerConfig, require_live_server
+
+        cm = ConnectionManager()
+        cm.add_server(ServerConfig(
+            name="ds-offline-1",
+            ldap_url="ldap://localhost:389",
+            base_dn="dc=example,dc=com",
+            bind_dn="cn=Directory Manager",
+            is_local=True,
+            serverid="localhost",
+            is_offline=True,
+        ))
+        with pytest.raises(LiveServerRequired) as exc_info:
+            require_live_server(cm, "ds-offline-1", "test_tool")
+        assert "ds-offline-1" in str(exc_info.value)
+
+    def test_connect_no_password_error_preserves_name(self):
+        """ConnectionManager.connect() password ToolError should keep real server name."""
+        from fastmcp.exceptions import ToolError
+        from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
+
+        cm = ConnectionManager()
+        cm.add_server(ServerConfig(
+            name="ds-prod-1",
+            ldap_url="ldap://localhost:389",
+            base_dn="dc=example,dc=com",
+            bind_dn="cn=Directory Manager",
+            bind_password=None,
+        ))
+        with pytest.raises(ToolError) as exc_info:
+            cm.connect("ds-prod-1")
+        # Server names are never sanitized
+        assert "ds-prod-1" in str(exc_info.value)
+
+    def test_connect_no_password_error_raw_when_no_sanitizer(self):
+        """Without _sanitize_name, connect() error shows raw server name."""
+        from fastmcp.exceptions import ToolError
+        from src.dirsrv_mcp.connection import ConnectionManager, ServerConfig
+
+        cm = ConnectionManager()
+        cm.add_server(ServerConfig(
+            name="ds-prod-1",
+            ldap_url="ldap://localhost:389",
+            base_dn="dc=example,dc=com",
+            bind_dn="cn=Directory Manager",
+            bind_password=None,
+        ))
+        with pytest.raises(ToolError) as exc_info:
+            cm.connect("ds-prod-1")
+        assert "ds-prod-1" in str(exc_info.value)
+
+    def test_nested_error_fields_sanitized_in_health_metrics(self):
+        """Error fields inside nested health metric dicts must be sanitized."""
+        from src.dirsrv_mcp.tools.health import _sanitize_server_metrics
+
+        sanitizer = PrivacySanitizer()
+        data = {
+            "server": "ds-test",
+            "replication": {"configured": False, "error": "Failed on cn=replica,cn=dc=example,dc=com"},
+            "cache": {"error": "Cannot read /etc/dirsrv/slapd-test/dse.ldif"},
+            "disk": {"available": False, "error": "Permission denied /var/log/dirsrv/slapd-test"},
+            "certificates": {"available": False, "error": "NSS db at /etc/dirsrv/slapd-test not found"},
+            "dse_error": "FileNotFoundError: /etc/dirsrv/slapd-test/dse.ldif",
+        }
+        result = _sanitize_server_metrics(sanitizer, data)
+        assert "/etc/dirsrv" not in result.get("dse_error", "")
+        assert "/etc/dirsrv" not in result["replication"].get("error", "")
+        assert "/etc/dirsrv" not in result["cache"].get("error", "")
+        assert "/var/log/dirsrv" not in result["disk"].get("error", "")
+        assert "/etc/dirsrv" not in result["certificates"].get("error", "")
+
+    def test_nested_error_fields_sanitized_in_performance(self):
+        """Error fields inside performance backend dicts must be sanitized."""
+        from src.dirsrv_mcp.tools.performance import _sanitize_performance_result
+
+        mcp = _make_mcp(privacy_enabled=True)
+        result = {
+            "type": "cache_statistics",
+            "server": "ds-test",
+            "global_db_cache": {"error": "Failed at /etc/dirsrv/slapd-test/db"},
+            "backends": [
+                {"name": "userroot", "error": "Cannot read cn=config,cn=ldbm database on host.example.com"},
+            ],
+        }
+        sanitized = _sanitize_performance_result(mcp, result)
+        assert "/etc/dirsrv" not in sanitized["global_db_cache"]["error"]
+        assert "example.com" not in sanitized["backends"][0]["error"]
+
+    def test_nested_error_fields_sanitized_in_replica(self):
+        """Error fields inside replica/agreement dicts must be sanitized."""
+        sanitizer = PrivacySanitizer()
+        replica = {
+            "suffix": "dc=example,dc=com",
+            "error": "Cannot connect to ldaps://host.example.com:636",
+            "agreements": [
+                {"name": "agmt1", "error": "Bind failed on cn=config,dc=example,dc=com"},
+            ],
+        }
+        result = sanitizer.sanitize_replica(replica)
+        assert "example.com" not in result.get("error", "")
+        assert "example.com" not in result["agreements"][0].get("error", "")
 
     def test_all_sanitizers_handle_error_field(self):
         """Every module sanitizer should sanitize the error field."""

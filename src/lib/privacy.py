@@ -4,12 +4,20 @@ This module provides utilities to redact sensitive information from tool
 outputs to prevent accidental exposure to AI agents/LLMs. By default,
 the MCP server operates in privacy mode where sensitive data is redacted.
 
-The sanitization maintains consistent anonymization - the same hostname
-will always map to the same [server-N] identifier within a session.
+Anonymization is keyed-hash based: each sanitizer instance holds a random
+128-bit key (generated once at startup via ``os.urandom``).  Placeholders
+are derived via BLAKE2s keyed by this secret, so:
+
+- Same instance + same input = same placeholder (deterministic across
+  parallel tool calls).
+- Different instances = different placeholders (the key never leaves RAM).
+- Brute-force reversal requires ~2^128 work — physically infeasible.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 from typing import Any, Dict, List, Optional, Set
 
@@ -51,11 +59,20 @@ class PrivacySanitizer:
     """Sanitizes sensitive data from tool outputs.
 
     Maintains consistent anonymization mappings within a session so that
-    the same value always maps to the same anonymized identifier.
+    the same value always maps to the same anonymized identifier — even
+    across parallel tool calls.
+
+    Placeholders are derived via BLAKE2s with a per-instance random key
+    and the category as the ``person`` parameter (domain separation).
+    The key is generated once at init and never leaves memory, making
+    brute-force reversal require ~2^128 work — physically infeasible.
+
+    A mapping cache avoids recomputing hashes on repeated lookups.
     """
 
     def __init__(self) -> None:
-        """Initialize the sanitizer with empty mapping caches."""
+        """Initialize the sanitizer with a random key and empty caches."""
+        self._key: bytes = os.urandom(16)
         self._hostname_map: Dict[str, str] = {}
         self._dn_map: Dict[str, str] = {}
         self._suffix_map: Dict[str, str] = {}
@@ -64,7 +81,7 @@ class PrivacySanitizer:
         self._group_map: Dict[str, str] = {}
 
     def reset(self) -> None:
-        """Reset all anonymization mappings."""
+        """Reset all anonymization mapping caches."""
         self._hostname_map.clear()
         self._dn_map.clear()
         self._suffix_map.clear()
@@ -72,58 +89,78 @@ class PrivacySanitizer:
         self._user_map.clear()
         self._group_map.clear()
 
+    def _token(self, category: str, value: str) -> str:
+        """Derive a deterministic placeholder token from *value*.
+
+        Uses BLAKE2s with each parameter for its designed purpose:
+
+        - ``key``:    per-instance random secret (prevents reversal).
+        - ``person``: category string (domain separation — same value
+          in different categories yields different tokens).
+        - message:    the value to anonymize.
+
+        The 8-byte digest (16 hex chars) balances readability with
+        collision resistance (~2^64 birthday bound).
+        """
+        return hashlib.blake2s(
+            value.encode("utf-8"),
+            key=self._key,
+            person=category.encode("utf-8"),
+            digest_size=8,
+        ).hexdigest()
+
     def _get_anon_hostname(self, hostname: str) -> str:
-        """Get anonymized hostname, maintaining consistent mapping."""
+        """Get anonymized hostname, deterministic within this session."""
         if not hostname:
             return hostname
         key = hostname.lower()
         if key not in self._hostname_map:
-            self._hostname_map[key] = f"[host-{len(self._hostname_map) + 1}]"
+            self._hostname_map[key] = f"[host-{self._token('host', key)}]"
         return self._hostname_map[key]
 
     def _get_anon_server(self, server_name: str) -> str:
-        """Get anonymized server name, maintaining consistent mapping."""
+        """Get anonymized server name, deterministic within this session."""
         if not server_name:
             return server_name
         key = server_name.lower()
         if key not in self._server_map:
-            self._server_map[key] = f"[server-{len(self._server_map) + 1}]"
+            self._server_map[key] = f"[server-{self._token('server', key)}]"
         return self._server_map[key]
 
     def _get_anon_suffix(self, suffix: str) -> str:
-        """Get anonymized suffix, maintaining consistent mapping."""
+        """Get anonymized suffix, deterministic within this session."""
         if not suffix:
             return suffix
         key = suffix.lower()
         if key not in self._suffix_map:
-            self._suffix_map[key] = f"[suffix-{len(self._suffix_map) + 1}]"
+            self._suffix_map[key] = f"[suffix-{self._token('suffix', key)}]"
         return self._suffix_map[key]
 
     def _get_anon_dn(self, dn: str) -> str:
-        """Get anonymized DN, maintaining consistent mapping."""
+        """Get anonymized DN, deterministic within this session."""
         if not dn:
             return dn
         key = dn.lower()
         if key not in self._dn_map:
-            self._dn_map[key] = f"[entry-{len(self._dn_map) + 1}]"
+            self._dn_map[key] = f"[entry-{self._token('entry', key)}]"
         return self._dn_map[key]
 
     def _get_anon_user(self, user: str) -> str:
-        """Get anonymized user identifier, maintaining consistent mapping."""
+        """Get anonymized user, deterministic within this session."""
         if not user:
             return user
         key = user.lower()
         if key not in self._user_map:
-            self._user_map[key] = f"[user-{len(self._user_map) + 1}]"
+            self._user_map[key] = f"[user-{self._token('user', key)}]"
         return self._user_map[key]
 
     def _get_anon_group(self, group: str) -> str:
-        """Get anonymized group identifier, maintaining consistent mapping."""
+        """Get anonymized group, deterministic within this session."""
         if not group:
             return group
         key = group.lower()
         if key not in self._group_map:
-            self._group_map[key] = f"[group-{len(self._group_map) + 1}]"
+            self._group_map[key] = f"[group-{self._token('group', key)}]"
         return self._group_map[key]
 
     def sanitize_hostname(self, hostname: Optional[str]) -> Optional[str]:
@@ -265,7 +302,7 @@ class PrivacySanitizer:
         """Sanitize a list of LDAP entries."""
         return [self.sanitize_entry(e) for e in entries]
 
-    def _sanitize_text_field(self, text: str) -> str:
+    def sanitize_text(self, text: str) -> str:
         """Sanitize a text field by replacing sensitive patterns.
 
         Handles (in order): LDAP URLs, file paths, multi-component LDAP DNs,
@@ -303,20 +340,12 @@ class PrivacySanitizer:
         """
         result = dict(finding)
 
-        # Sanitize server name — capture original for text replacement
-        original_server = result.get("server")
-        if "server" in result:
-            result["server"] = self.sanitize_server_name(result["server"])
+        # Server names are never sanitized (user-chosen config labels).
 
         # Sanitize all free-text fields that may embed sensitive data
         for text_key in ("title", "impact", "details", "remediation"):
             if text_key in result and isinstance(result[text_key], str):
-                text = result[text_key]
-                # Replace bare server name before regex pass (server names
-                # like "ds-live" aren't FQDNs and won't be caught by regex)
-                if original_server and original_server in text:
-                    text = text.replace(original_server, result["server"])
-                result[text_key] = self._sanitize_text_field(text)
+                result[text_key] = self.sanitize_text(result[text_key])
 
         # Sanitize metadata
         if "metadata" in result and isinstance(result["metadata"], dict):
@@ -325,10 +354,8 @@ class PrivacySanitizer:
                 key_lower = key.lower()
                 if key_lower in ("suffix", "base_dn"):
                     sanitized_meta[key] = self.sanitize_suffix(str(value)) if value else value
-                elif key_lower in ("server", "supplier", "consumer"):
-                    sanitized_meta[key] = self.sanitize_server_name(str(value)) if value else value
-                elif key_lower == "consumers" and isinstance(value, list):
-                    sanitized_meta[key] = [self.sanitize_server_name(str(v)) for v in value]
+                elif key_lower in ("server", "supplier", "consumer", "consumers"):
+                    sanitized_meta[key] = value  # Server names are never sanitized
                 elif key_lower in ("agreement", "name"):
                     sanitized_meta[key] = "[agreement]" if value else value
                 elif key_lower in ("dn", "entry", "base"):
@@ -341,9 +368,9 @@ class PrivacySanitizer:
                     sanitized_meta[key] = "[filter]" if value else value
                 elif key_lower == "items":
                     if isinstance(value, list):
-                        sanitized_meta[key] = [self._sanitize_text_field(str(item)) for item in value]
+                        sanitized_meta[key] = [self.sanitize_text(str(item)) for item in value]
                     else:
-                        sanitized_meta[key] = self._sanitize_text_field(str(value)) if value else value
+                        sanitized_meta[key] = self.sanitize_text(str(value)) if value else value
                 else:
                     # Keep numeric and status values
                     sanitized_meta[key] = value
@@ -376,7 +403,9 @@ class PrivacySanitizer:
             elif "csn" in key_lower:
                 result[key] = "[csn]"
             elif key_lower == "reason" and isinstance(value, str):
-                result[key] = self._sanitize_text_field(value)
+                result[key] = self.sanitize_text(value)
+            elif key_lower == "error" and isinstance(value, str):
+                result[key] = self.sanitize_text(value)
             else:
                 result[key] = value
         return result
@@ -391,10 +420,12 @@ class PrivacySanitizer:
                 result[key] = value
             # Reason may contain free text with hostnames/DNs
             elif key_lower == "reason" and isinstance(value, str):
-                result[key] = self._sanitize_text_field(value)
+                result[key] = self.sanitize_text(value)
             # Redact CSN values (contain timestamps/server IDs)
             elif "csn" in key_lower:
                 result[key] = "[csn]"
+            elif key_lower == "error" and isinstance(value, str):
+                result[key] = self.sanitize_text(value)
             else:
                 result[key] = value
         return result
@@ -410,6 +441,8 @@ class PrivacySanitizer:
                 result[key] = [self.sanitize_agreement(a) for a in value]
             elif key_lower == "ruv" and isinstance(value, dict):
                 result[key] = self._sanitize_ruv(value)
+            elif key_lower == "error" and isinstance(value, str):
+                result[key] = self.sanitize_text(value)
             else:
                 result[key] = value
         return result
@@ -444,11 +477,13 @@ class PrivacySanitizer:
         for key, value in server_info.items():
             key_lower = key.lower()
             if key_lower == "name":
-                result[key] = self.sanitize_server_name(value)
+                result[key] = value  # Server names are never sanitized
             elif key_lower == "url":
                 result[key] = self.sanitize_url(value)
             elif key_lower == "replicas" and isinstance(value, list):
                 result[key] = [self.sanitize_replica(r) for r in value]
+            elif key_lower == "error" and isinstance(value, str):
+                result[key] = self.sanitize_text(value)
             else:
                 result[key] = value
         return result
@@ -491,10 +526,9 @@ def create_count_only_response(
     sanitizer: Optional[PrivacySanitizer] = None,
 ) -> Dict[str, Any]:
     """Create a count-only response for privacy mode."""
-    s = sanitizer or get_sanitizer()
     return {
         "type": tool_type,
-        "server": s.sanitize_server_name(server),
+        "server": server,  # Server names are never sanitized
         "privacy_mode": True,
         "count": count,
         "message": f"Found {count} entries. Enable expose_sensitive_data for details.",

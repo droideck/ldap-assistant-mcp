@@ -1029,7 +1029,7 @@ class TestAnalyzeArchive:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("server") == "priv-archive"
                 assert data.get("instance_name") == "[instance]"
 
         asyncio.run(run())
@@ -1129,7 +1129,7 @@ class TestValidateConfiguration:
                     {"server_name": "priv-archive"},
                 )
                 data = result.data
-                assert data.get("server", "").startswith("[server-")
+                assert data.get("server") == "priv-archive"
 
         asyncio.run(run())
 
@@ -1501,9 +1501,9 @@ class TestCompareDseConfigs:
                     )
                     data = result.data
                     assert "error" not in data
-                    # Server names should be sanitized
-                    assert data.get("server1", "").startswith("[server-")
-                    assert data.get("server2", "").startswith("[server-")
+                    # Server names should pass through unsanitized
+                    assert data.get("server1") == "priv1"
+                    assert data.get("server2") == "priv2"
 
             asyncio.run(run())
 

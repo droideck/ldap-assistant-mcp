@@ -38,17 +38,23 @@ def format_tool_error(
     """Build a standard error dict for tool responses.
 
     Always includes the exception type in the ``"error"`` value.  When
-    debug mode is enabled on *mcp*, a ``"traceback"`` key is added with
-    the full stack trace.
+    privacy mode is active, the error message is scrubbed for embedded
+    paths, DNs, hostnames, and server names.  When debug mode is enabled
+    on *mcp*, a ``"traceback"`` key is added with the full stack trace.
 
     Extra keyword arguments are merged into the returned dict (e.g.
     ``server1=..., server2=...``).
     """
     result: Dict[str, Any] = {"type": type_str}
+    privacy = getattr(mcp, "privacy_enabled", False)
     if server is not None:
         result["server"] = server
     result.update(extra)
-    result["error"] = format_error_message(exc)
+
+    error_msg = format_error_message(exc)
+    if getattr(mcp, "privacy_enabled", False):
+        error_msg = mcp.sanitizer.sanitize_text(error_msg)
+    result["error"] = error_msg
 
     if getattr(mcp, "debug_enabled", False):
         result["traceback"] = traceback.format_exception(type(exc), exc, exc.__traceback__)

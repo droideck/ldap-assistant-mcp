@@ -22,10 +22,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from lib389.backend import Backends
 from lib389.monitor import Monitor, MonitorLDBM, MonitorDiskSpace, MonitorSNMP
 
-from src.dirsrv_mcp.connection import is_local_server, require_live_server
+from mcp.types import ToolAnnotations
+
+from src.dirsrv_mcp.connection import is_local_server
 from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 from src.lib.value_utils import format_bytes, safe_float, safe_int
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
@@ -43,22 +47,19 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     if "backends" in sanitized and isinstance(sanitized["backends"], list):
-        sanitized["backends"] = [
-            {**be, "name": "[backend]", "suffix": sanitizer.sanitize_suffix(be.get("suffix"))}
-            if isinstance(be, dict) and "name" in be
-            else be
-            for be in sanitized["backends"]
-        ]
+        new_backends = []
+        for be in sanitized["backends"]:
+            if isinstance(be, dict) and "name" in be:
+                be = {**be, "name": "[backend]", "suffix": sanitizer.sanitize_suffix(be.get("suffix"))}
+                if "error" in be and isinstance(be["error"], str):
+                    be["error"] = sanitizer.sanitize_text(be["error"])
+            new_backends.append(be)
+        sanitized["backends"] = new_backends
 
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
@@ -82,6 +83,11 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
                 {**p, "partition": "[partition]"} for p in disk["partitions"]
             ]
         sanitized["disk"] = disk
+
+    # Sanitize error fields in any nested sub-dicts (e.g. global_db_cache, operation_breakdown)
+    for key, value in sanitized.items():
+        if isinstance(value, dict) and "error" in value and isinstance(value["error"], str):
+            sanitized[key] = {**value, "error": sanitizer.sanitize_text(value["error"])}
 
     return sanitized
 
@@ -107,7 +113,7 @@ def _assess_cache_health(hit_ratio: float) -> tuple[str, Severity]:
 def register_performance_tools(mcp: DirSrvMCP) -> None:
     """Register performance diagnostic tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_cache_statistics(
         backend: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -133,7 +139,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "cache_statistics",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_cache_statistics")
+        mcp.require_live(target,"get_cache_statistics")
 
         ds = None
         try:
@@ -323,7 +329,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_connection_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Analyze connection patterns and file descriptor usage. LIVE only.
 
@@ -344,7 +350,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "connection_statistics",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_connection_statistics")
+        mcp.require_live(target,"get_connection_statistics")
 
         ds = None
         try:
@@ -469,7 +475,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_operation_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Get operation counts by type and bind method distribution. LIVE only.
 
@@ -489,7 +495,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "operation_statistics",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_operation_statistics")
+        mcp.require_live(target,"get_operation_statistics")
 
         ds = None
         try:
@@ -629,7 +635,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_thread_statistics(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Analyze worker thread utilization and contention. LIVE only.
 
@@ -649,7 +655,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "thread_statistics",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_thread_statistics")
+        mcp.require_live(target,"get_thread_statistics")
 
         ds = None
         try:
@@ -734,7 +740,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_resource_utilization(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Get memory, CPU, and disk usage for the Directory Server process. LIVE only.
 
@@ -755,7 +761,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "resource_utilization",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_resource_utilization")
+        mcp.require_live(target,"get_resource_utilization")
 
         ds = None
         try:
@@ -956,7 +962,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_performance_summary(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Combined performance overview — the first tool for performance questions. LIVE only.
 
@@ -977,7 +983,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "type": "performance_summary",
                 "error": "No server configured",
             })
-        require_live_server(mcp.connection_manager, target, "get_performance_summary")
+        mcp.require_live(target,"get_performance_summary")
 
         ds = None
         try:

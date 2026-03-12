@@ -19,6 +19,8 @@ from lib389.config import Config
 from lib389.plugins import Plugins
 from lib389.replica import Replicas
 
+from mcp.types import ToolAnnotations
+
 from src.dirsrv_mcp.connection import is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_all_entry_attrs, get_dse_ldif_path
 from src.dirsrv_mcp.tools.error_utils import format_tool_error
@@ -27,12 +29,16 @@ from src.lib.privacy import create_privacy_error
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+
 
 def _sanitize_server_list(mcp: "DirSrvMCP", names) -> List[str]:
-    """Sanitize a list of server names for privacy mode."""
-    if not mcp.privacy_enabled:
-        return list(names)
-    return [mcp.sanitizer.sanitize_server_name(n) for n in names]
+    """Return server names as a list.
+
+    Server names are never sanitized — they are user-chosen config labels
+    that must remain stable across tool calls.
+    """
+    return list(names)
 
 
 def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,18 +49,9 @@ def _sanitize_config_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Capture original server names for targeted text replacement
-    original_names = {}
-    for server_key in ("server", "server1", "server2"):
-        if server_key in sanitized:
-            original_names[server_key] = sanitized[server_key]
-            sanitized[server_key] = sanitizer.sanitize_server_name(sanitized[server_key])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        for key, orig in original_names.items():
-            if orig and orig in err:
-                err = err.replace(orig, sanitized[key])
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     if "config" in sanitized and isinstance(sanitized["config"], dict):
         sanitized["config"] = {
@@ -249,7 +246,7 @@ def _get_backends_offline(
 def register_config_tools(mcp: DirSrvMCP) -> None:
     """Register configuration analysis tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"config", "live", "offline", "archive"})
     def get_server_configuration(
         pattern: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -331,7 +328,7 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"config", "live", "offline", "archive"})
     def compare_server_configurations(
         server1: str,
         server2: str,
@@ -461,7 +458,7 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"config", "live", "offline", "archive"})
     def list_plugins(
         enabled_only: bool = True,
         server_name: Optional[str] = None,
@@ -533,7 +530,7 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"config", "live", "offline", "archive"})
     def get_backend_configuration(
         backend: Optional[str] = None,
         server_name: Optional[str] = None,

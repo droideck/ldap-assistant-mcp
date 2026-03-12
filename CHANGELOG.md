@@ -91,7 +91,7 @@ All notable changes to LDAP Assistant MCP will be documented in this file.
 #### Privacy Mode
 - Added `LDAP_MCP_EXPOSE_SENSITIVE_DATA` environment variable for controlling data exposure
 - Privacy sanitization for all tool outputs when privacy mode is enabled
-- Server names, DNs, hostnames, and suffixes are anonymized in privacy mode
+- DNs, hostnames, and suffixes are anonymized in privacy mode (server names are never redacted — they are user-chosen config labels)
 
 ### Changed
 - Enhanced multi-server support with consistent server_name parameter across all tools

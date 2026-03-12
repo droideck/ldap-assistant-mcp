@@ -82,7 +82,7 @@ def test_sanitizer_hostname_consistency():
     result1 = sanitizer.sanitize_hostname("server1.example.com")
     result2 = sanitizer.sanitize_hostname("server1.example.com")
     assert result1 == result2, "Same hostname should map to same value"
-    assert result1 == "[host-1]", "First hostname should be [host-1]"
+    assert result1.startswith("[host-") and result1.endswith("]")
 
 
 def test_sanitizer_different_hostnames():
@@ -91,15 +91,25 @@ def test_sanitizer_different_hostnames():
     result1 = sanitizer.sanitize_hostname("server1.example.com")
     result2 = sanitizer.sanitize_hostname("server2.example.com")
     assert result1 != result2, "Different hostnames should differ"
-    assert result1 == "[host-1]"
-    assert result2 == "[host-2]"
+    assert result1.startswith("[host-")
+    assert result2.startswith("[host-")
+
+
+def test_sanitizer_placeholders_are_opaque():
+    """Placeholders are random tokens with no relationship to the input."""
+    s1 = PrivacySanitizer()
+    s2 = PrivacySanitizer()
+    # Same input, different instances → different random tokens
+    assert s1.sanitize_hostname("a.example.com") != s2.sanitize_hostname("a.example.com")
+    assert s1.sanitize_server_name("srv") != s2.sanitize_server_name("srv")
+    assert s1.sanitize_dn("cn=config") != s2.sanitize_dn("cn=config")
 
 
 def test_sanitizer_server_name():
     """Test server name sanitization."""
     sanitizer = PrivacySanitizer()
     result = sanitizer.sanitize_server_name("ds-test-1")
-    assert result == "[server-1]"
+    assert result.startswith("[server-") and result.endswith("]")
     result2 = sanitizer.sanitize_server_name("ds-test-1")
     assert result == result2, "Same server should map to same value"
 
@@ -108,14 +118,14 @@ def test_sanitizer_dn():
     """Test DN sanitization."""
     sanitizer = PrivacySanitizer()
     result = sanitizer.sanitize_dn("uid=admin,ou=people,dc=example,dc=com")
-    assert result == "[entry-1]"
+    assert result.startswith("[entry-") and result.endswith("]")
 
 
 def test_sanitizer_suffix():
     """Test suffix sanitization."""
     sanitizer = PrivacySanitizer()
     result = sanitizer.sanitize_suffix("dc=example,dc=com")
-    assert result == "[suffix-1]"
+    assert result.startswith("[suffix-") and result.endswith("]")
 
 
 def test_sanitizer_url():
@@ -142,14 +152,12 @@ def test_sanitizer_empty_values():
 
 
 def test_sanitizer_reset():
-    """Test that reset clears all mappings."""
+    """Test that reset clears caches but key is preserved (same output)."""
     sanitizer = PrivacySanitizer()
-    sanitizer.sanitize_hostname("server.example.com")
-    sanitizer.sanitize_server_name("ds-test-1")
+    before = sanitizer.sanitize_hostname("server.example.com")
     sanitizer.reset()
-    # After reset, first values should be [X-1] again
-    assert sanitizer.sanitize_hostname("different.example.com") == "[host-1]"
-    assert sanitizer.sanitize_server_name("other-server") == "[server-1]"
+    after = sanitizer.sanitize_hostname("server.example.com")
+    assert before == after, "Same instance + same key → same token after reset"
 
 
 def test_sanitizer_case_insensitive():
@@ -172,7 +180,7 @@ def test_sanitizer_attribute_value_dn():
     """Test that DN attribute values are sanitized."""
     sanitizer = PrivacySanitizer()
     result = sanitizer.sanitize_attribute_value("member", "uid=user,dc=example,dc=com")
-    assert result == "[entry-1]"
+    assert result.startswith("[entry-") and result.endswith("]")
 
 
 def test_sanitizer_attribute_value_path():
@@ -202,7 +210,7 @@ def test_sanitizer_entry():
         }
     }
     result = sanitizer.sanitize_entry(entry)
-    assert result["dn"] == "[entry-1]"
+    assert result["dn"].startswith("[entry-") and result["dn"].endswith("]")
     assert result["attrs"]["userPassword"] == "[REDACTED]"
     assert result["attrs"]["objectClass"] == ["inetOrgPerson"]
 
@@ -220,9 +228,9 @@ def test_sanitizer_finding():
         }
     }
     result = sanitizer.sanitize_finding(finding)
-    assert result["server"] == "[server-1]"
-    assert result["metadata"]["suffix"] == "[suffix-1]"
-    assert result["metadata"]["server"] == "[server-1]"
+    assert result["server"] == "ds-test-1"  # Server names pass through unsanitized
+    assert result["metadata"]["suffix"].startswith("[suffix-")
+    assert result["metadata"]["server"] == result["server"]
     assert result["severity"] == "high"  # Preserved
 
 
@@ -238,9 +246,9 @@ def test_sanitizer_agreement():
     }
     result = sanitizer.sanitize_agreement(agreement)
     assert result["name"] == "[agreement]"
-    assert result["consumer_host"] == "[host-1]"
+    assert result["consumer_host"].startswith("[host-")
     assert result["consumer_port"] == "[port]"
-    assert result["suffix"] == "[suffix-1]"
+    assert result["suffix"].startswith("[suffix-")
     assert result["status"]["state"] == "online"
 
 
@@ -254,12 +262,12 @@ def test_sanitizer_backend():
     }
     result = sanitizer.sanitize_backend(backend)
     assert result["name"] == "[backend]"
-    assert result["suffix"] == "[suffix-1]"
+    assert result["suffix"].startswith("[suffix-")
     assert result["entry_count"] == 1000  # Numeric preserved
 
 
 def test_sanitizer_finding_metadata_items():
-    """Test that finding metadata 'items' list is sanitized via _sanitize_text_field."""
+    """Test that finding metadata 'items' list is sanitized via sanitize_text."""
     sanitizer = PrivacySanitizer()
     finding = {
         "title": "Test",
@@ -274,7 +282,7 @@ def test_sanitizer_finding_metadata_items():
         }
     }
     result = sanitizer.sanitize_finding(finding)
-    # Items should be processed by _sanitize_text_field (DN patterns replaced)
+    # Items should be processed by sanitize_text (DN patterns replaced)
     for item in result["metadata"]["items"]:
         assert "example" not in item, f"DN should be sanitized: {item}"
     # Non-items metadata preserved
@@ -347,7 +355,7 @@ def test_create_count_only_response():
     assert result["type"] == "user_list"
     assert result["privacy_mode"] is True
     assert result["count"] == 42
-    assert result["server"] == "[server-1]"  # Sanitized
+    assert result["server"] == "ds-test-1"  # Server names pass through unsanitized
     assert "42" in result["message"]
 
 
@@ -357,9 +365,10 @@ def test_global_sanitizer():
     s1 = get_sanitizer()
     s2 = get_sanitizer()
     assert s1 is s2, "Should return same instance"
-    s1.sanitize_hostname("test.example.com")
-    # Same sanitizer should maintain mappings
-    assert s2.sanitize_hostname("test.example.com") == "[host-1]"
+    val = s1.sanitize_hostname("test.example.com")
+    assert val.startswith("[host-")
+    # Same sanitizer instance should give same result
+    assert s2.sanitize_hostname("test.example.com") == val
 
 
 # DirSrvMCP privacy mode fixtures
@@ -431,7 +440,7 @@ async def test_list_users_privacy_mode_returns_count_only(privacy_server):
         assert data["privacy_mode"] is True, "Should indicate privacy mode"
         assert "count" in data, "Should include count"
         assert "items" not in data, "Should NOT include items"
-        assert "[server-" in data["server"], "Server name should be sanitized"
+        assert "[server-" not in data["server"], "Server name should not be sanitized"
 
 
 @pytest.mark.asyncio
@@ -510,10 +519,10 @@ async def test_health_check_sanitizes_server_names(privacy_server):
         result = await client.call_tool("first_look", {})
         data = result.data
 
-        # Server names in results should be sanitized
+        # Server names in results should pass through unsanitized
         if "servers_checked" in data:
             for server in data["servers_checked"]:
-                assert "[server-" in server or server == "[server-1]"
+                assert "[server-" not in server
 
 
 @pytest.mark.asyncio
@@ -524,7 +533,7 @@ async def test_config_comparison_sanitizes_servers(privacy_server):
         data = result.data
 
         if "server" in data:
-            assert "[server-" in data["server"], "Server name should be sanitized"
+            assert "[server-" not in data["server"], "Server name should not be sanitized"
 
         # Config values should be redacted
         if "config" in data and isinstance(data["config"], dict):
@@ -555,7 +564,7 @@ async def test_replication_status_sanitizes_in_privacy_mode(privacy_server):
         data = result.data
 
         if "server" in data:
-            assert "[server-" in data["server"]
+            assert "[server-" not in data["server"]
 
         # Agreements should be sanitized
         if "replicas" in data:
@@ -572,7 +581,7 @@ async def test_performance_summary_sanitizes_server(privacy_server):
         data = result.data
 
         if "server" in data:
-            assert "[server-" in data["server"]
+            assert "[server-" not in data["server"]
 
 
 @pytest.mark.asyncio

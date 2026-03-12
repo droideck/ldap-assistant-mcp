@@ -18,6 +18,8 @@ from lib389.plugins import MemberOfPlugin, ReferentialIntegrityPlugin
 from lib389.replica import Replica, Replicas
 from lib389.tunables import Tunables
 
+from mcp.types import ToolAnnotations
+
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server, is_offline_or_archive
 from src.dirsrv_mcp.tools.dse_utils import find_child_dns, get_dse_ldif_path
 from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
@@ -28,6 +30,9 @@ if TYPE_CHECKING:
     from src.dirsrv_mcp.connection import ServerConfig
     from src.dirsrv_mcp.server import DirSrvMCP
 
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+_RO_LOCAL = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
+
 
 def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize health check result for privacy mode."""
@@ -37,23 +42,9 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
-
-    if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
-        sanitized["servers_checked"] = [
-            sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
-        ]
-    if "servers_failed" in sanitized and isinstance(sanitized["servers_failed"], list):
-        sanitized["servers_failed"] = [
-            sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
-        ]
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
@@ -68,14 +59,13 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
 
 
 def _sanitize_metrics(sanitizer, metrics: Dict[str, Any]) -> Dict[str, Any]:
-    """Sanitize metrics dictionary."""
+    """Sanitize metrics dictionary (server names kept as-is)."""
     result = {}
     for server_name, server_data in metrics.items():
-        anon_server = sanitizer.sanitize_server_name(server_name)
         if isinstance(server_data, dict):
-            result[anon_server] = _sanitize_server_metrics(sanitizer, server_data)
+            result[server_name] = _sanitize_server_metrics(sanitizer, server_data)
         else:
-            result[anon_server] = server_data
+            result[server_name] = server_data
     return result
 
 
@@ -84,7 +74,7 @@ def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
     result = {}
     for key, value in data.items():
         if key == "server":
-            result[key] = sanitizer.sanitize_server_name(value)
+            result[key] = value  # Server names are never sanitized
         elif key == "replication" and isinstance(value, dict):
             result[key] = _sanitize_replication_metrics(sanitizer, value)
         elif key == "cache" and isinstance(value, dict):
@@ -92,11 +82,13 @@ def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
         elif key == "disk" and isinstance(value, dict):
             result[key] = _sanitize_disk_metrics(sanitizer, value)
         elif key == "certificates" and isinstance(value, dict):
-            result[key] = _sanitize_cert_metrics(value)
+            result[key] = _sanitize_cert_metrics(value, sanitizer)
         elif key == "suffixes" and isinstance(value, list):
             result[key] = [sanitizer.sanitize_suffix(s) for s in value]
         elif key in ("port", "secure_port"):
             result[key] = "[port]"
+        elif key in ("error", "dse_error") and isinstance(value, str):
+            result[key] = sanitizer.sanitize_text(value)
         else:
             # Keep numeric metrics and status flags
             result[key] = value
@@ -106,6 +98,8 @@ def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
 def _sanitize_replication_metrics(sanitizer, repl: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize replication metrics."""
     result = dict(repl)
+    if "error" in result and isinstance(result["error"], str):
+        result["error"] = sanitizer.sanitize_text(result["error"])
     if "agreements" in result and isinstance(result["agreements"], list):
         result["agreements"] = [
             {
@@ -121,6 +115,8 @@ def _sanitize_replication_metrics(sanitizer, repl: Dict[str, Any]) -> Dict[str, 
 def _sanitize_cache_metrics(sanitizer, cache: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize cache metrics."""
     result = dict(cache)
+    if "error" in result and isinstance(result["error"], str):
+        result["error"] = sanitizer.sanitize_text(result["error"])
     if "backends" in result and isinstance(result["backends"], list):
         result["backends"] = [
             {
@@ -136,6 +132,8 @@ def _sanitize_cache_metrics(sanitizer, cache: Dict[str, Any]) -> Dict[str, Any]:
 def _sanitize_disk_metrics(sanitizer, disk: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize disk metrics."""
     result = dict(disk)
+    if "error" in result and isinstance(result["error"], str):
+        result["error"] = sanitizer.sanitize_text(result["error"])
     if "partitions" in result and isinstance(result["partitions"], list):
         result["partitions"] = [
             {
@@ -149,9 +147,11 @@ def _sanitize_disk_metrics(sanitizer, disk: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _sanitize_cert_metrics(certs: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_cert_metrics(certs: Dict[str, Any], sanitizer=None) -> Dict[str, Any]:
     """Sanitize certificate metrics."""
     result = dict(certs)
+    if "error" in result and isinstance(result["error"], str) and sanitizer:
+        result["error"] = sanitizer.sanitize_text(result["error"])
     if "certs" in result and isinstance(result["certs"], list):
         result["certs"] = [
             {
@@ -471,7 +471,30 @@ def _list_check_targets_offline(ds, is_archive: bool) -> Dict[str, Any]:
 def register_health_tools(mcp: DirSrvMCP) -> None:
     """Register health check tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO_LOCAL, tags={"health", "live", "offline", "archive"})
+    def server_health() -> Dict[str, Any]:
+        """Return MCP server health status and diagnostics.
+
+        Lightweight probe suitable for readiness checks.  Returns the
+        number of configured servers, privacy/debug modes, and overall
+        health status.
+
+        Returns:
+            Dictionary with status, server_count, privacy_mode, debug_mode.
+        """
+        try:
+            return {
+                "type": "server_health",
+                "status": "healthy",
+                "server_count": len(mcp.server_configs),
+                "privacy_mode": mcp.privacy_enabled,
+                "debug_mode": mcp.debug_enabled,
+            }
+        except Exception as e:
+            mcp.logger.error("Error in server_health: %s", e)
+            return format_tool_error(e, mcp, "server_health")
+
+    @mcp.tool(annotations=_RO, tags={"health", "live", "offline", "archive"})
     def first_look() -> Dict[str, Any]:
         """Multi-server health overview — the first tool to call for any directory investigation.
 
@@ -647,7 +670,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         mcp.logger.info("first_look completed: %s", summary)
         return _sanitize_health_result(mcp, result)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO_LOCAL, tags={"health", "live", "offline", "archive"})
     def list_healthcheck_errors() -> Dict[str, Any]:
         """List all known DSLE error codes that ``run_healthcheck`` can return.
 
@@ -655,14 +678,18 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         Equivalent to ``dsctl <instance> healthcheck --list-errors``.
         No server connection required — this is a static reference list.
         """
-        errors = _get_all_error_codes()
-        return {
-            "type": "healthcheck_errors",
-            "total_count": len(errors),
-            "errors": errors,
-        }
+        try:
+            errors = _get_all_error_codes()
+            return {
+                "type": "healthcheck_errors",
+                "total_count": len(errors),
+                "errors": errors,
+            }
+        except Exception as e:
+            mcp.logger.error("Error listing healthcheck errors: %s", e)
+            return format_tool_error(e, mcp, "healthcheck_errors")
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"health", "live", "offline", "archive"})
     def list_healthchecks(server_name: Optional[str] = None) -> Dict[str, Any]:
         """List available health checks for a server in ``category:check`` format.
 
@@ -727,7 +754,7 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"health", "live", "offline", "archive"})
     def run_healthcheck(
         checks: Optional[List[str]] = None,
         exclude_checks: Optional[List[str]] = None,

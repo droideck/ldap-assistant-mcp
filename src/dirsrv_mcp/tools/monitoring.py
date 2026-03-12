@@ -9,10 +9,14 @@ from fastmcp.exceptions import ToolError
 from lib389.backend import Backends
 from lib389.monitor import Monitor
 
-from src.dirsrv_mcp.connection import require_live_server
+from mcp.types import ToolAnnotations
+
+
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
 
 # Monitor attributes safe to expose in privacy mode (numeric/diagnostic only)
 SAFE_MONITOR_KEYS = {
@@ -54,15 +58,9 @@ def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Sanitize server name
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     # Sanitize backend name
     if "backend" in sanitized and sanitized["backend"] != "main":
@@ -87,7 +85,7 @@ def _sanitize_monitor_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
 def register_monitoring_tools(mcp: DirSrvMCP) -> None:
     """Register monitoring tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"monitoring", "live"})
     def run_monitor(
         backend: str = "", suffix: str = "", server_name: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -111,7 +109,7 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
             only safe diagnostic/numeric keys are included.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "run_monitor")
+        mcp.require_live(target,"run_monitor")
         with mcp._connection(target) as (srv, ds):
             try:
                 if backend or suffix:
@@ -129,10 +127,6 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
                     "item": result,
                 })
             except Exception as exc:
-                display_name = (
-                    mcp.sanitizer.sanitize_server_name(srv)
-                    if mcp.privacy_enabled else srv
-                )
-                mcp.logger.error("Error accessing monitor on %s: %s", display_name, exc)
-                raise ToolError(f"Error accessing monitor on {display_name}: {exc}") from exc
+                mcp.logger.error("Error accessing monitor on %s: %s", srv, exc)
+                raise ToolError(f"Error accessing monitor on {srv}: {exc}") from exc
 

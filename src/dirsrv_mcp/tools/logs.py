@@ -19,7 +19,11 @@ import gzip
 import json
 import os
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
+
+from mcp.types import ToolAnnotations
 
 from src.dirsrv_mcp.connection import is_archive_server, is_local_server
 from src.dirsrv_mcp.tools.dse_utils import dn_equals, is_under_dn
@@ -28,6 +32,8 @@ from src.lib.privacy import create_privacy_error
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
 
 
 def _sanitize_pattern_text(text: str) -> str:
@@ -54,14 +60,9 @@ def _sanitize_log_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, 
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     for key in ("entries", "matches"):
         if key in sanitized and isinstance(sanitized[key], list):
@@ -109,7 +110,7 @@ def _sanitize_log_entry(sanitizer, entry: Dict[str, Any]) -> Dict[str, Any]:
     if "filter" in result:
         result["filter"] = "[filter]"
     if "message" in result:
-        result["message"] = sanitizer._sanitize_text_field(result["message"])
+        result["message"] = sanitizer.sanitize_text(result["message"])
     if "raw" in result:
         result["raw"] = "[raw-line]"
     return result
@@ -220,11 +221,42 @@ def _validate_regex(pattern: Optional[str]) -> tuple:
 
     Returns ``(compiled_re | None, error_dict | None)``.
     If the pattern is None or empty, returns ``(None, None)``.
+
+    Rejects patterns exceeding 500 chars and known ReDoS-prone
+    constructs:
+    - Quantified groups followed by a quantifier: ``(a+)+``, ``(x*)*``
+    - Overlapping alternation inside a quantified group: ``(a|a)*``, ``(a|a?)+``
+    - Repeated ``.*`` sequences: ``.*.*.*``
+    - Consecutive quantifiers: ``a++``, ``a**``, ``a*+``
+    - Quantified character-class groups: ``(\\d+)+``, ``([a-z]+)*``
+    - Deeply nested groups with quantifiers: ``((a+))+``
     """
     if not pattern:
         return None, None
-    if len(pattern) > 1000:
-        return None, {"error": "Pattern too long (max 1000 chars)"}
+    if len(pattern) > 500:
+        return None, {"error": "Pattern too long (max 500 chars)"}
+
+    # 1. Quantifier on a group that itself contains a quantifier: (X+)+ (X*){2,} etc.
+    #    Covers character classes like (\d+)+ and ([a-z]+)*
+    if re.search(r'\([^)]*[+*][^)]*\)\s*[+*?{]', pattern):
+        return None, {"error": "Pattern contains potentially unsafe nested quantifiers"}
+    # 2. Overlapping alternation in a quantified group: (a|a)+, (a|a?)+ etc.
+    m = re.search(r'\(([^)]*\|[^)]*)\)\s*[+*?{]', pattern)
+    if m:
+        arms = [a.strip() for a in m.group(1).split("|")]
+        if len(arms) != len(set(arms)):
+            return None, {"error": "Pattern contains potentially unsafe overlapping alternation"}
+        # Strip quantifiers and compare base content: (a+|a*) → ["a","a"]
+        base_chars = [re.sub(r'[+*?{}\[\]\\]', '', a) for a in arms]
+        if len(base_chars) != len(set(base_chars)):
+            return None, {"error": "Pattern contains potentially unsafe overlapping alternation"}
+    # 3. Consecutive quantifiers: a**, a++, a*+, a+? followed by another quantifier
+    if re.search(r'[+*?]\s*[+*]', pattern):
+        return None, {"error": "Pattern contains potentially unsafe consecutive quantifiers"}
+    # 4. Repeated .* sequences (polynomial blowup)
+    if re.search(r'(\.\*.*){3,}', pattern):
+        return None, {"error": "Pattern contains too many .* sequences"}
+
     try:
         return re.compile(pattern, re.IGNORECASE), None
     except re.error as exc:
@@ -826,15 +858,15 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
     # Parse tools — full entry detail, require expose_sensitive_data
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def parse_access_log(
         server_name: Optional[str] = None,
         operation: Optional[str] = None,
         result_code: Optional[int] = None,
         time_range: Optional[str] = None,
-        pattern: Optional[str] = None,
+        pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
         include_archived_logs: bool = False,
-        limit: int = 100,
+        limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 100,
     ) -> Dict[str, Any]:
         """Parse access log entries with full detail (requires expose_sensitive_data).
 
@@ -864,13 +896,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "access_log", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "access_log",
+                "server": target,
                 "error": (
                     "Log parsing requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -893,14 +926,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def parse_error_log(
         server_name: Optional[str] = None,
         severity: Optional[str] = None,
         component: Optional[str] = None,
         time_range: Optional[str] = None,
-        pattern: Optional[str] = None,
-        limit: int = 100,
+        pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
+        limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 100,
     ) -> Dict[str, Any]:
         """Parse error log entries with full detail (requires expose_sensitive_data).
 
@@ -925,13 +958,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "error_log", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "error_log",
+                "server": target,
                 "error": (
                     "Log parsing requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -954,14 +988,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def parse_audit_log(
         server_name: Optional[str] = None,
         operation: Optional[str] = None,
         bind_dn: Optional[str] = None,
         target_dn: Optional[str] = None,
         time_range: Optional[str] = None,
-        limit: int = 100,
+        limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 100,
     ) -> Dict[str, Any]:
         """Parse audit log entries with full detail (requires expose_sensitive_data).
 
@@ -987,13 +1021,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "audit_log", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "audit_log",
+                "server": target,
                 "error": (
                     "Log parsing requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -1020,13 +1055,13 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
     # Analyze tools — statistics only, safe in all privacy modes
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def analyze_access_log(
         server_name: Optional[str] = None,
         operation: Optional[str] = None,
         result_code: Optional[int] = None,
         time_range: Optional[str] = None,
-        pattern: Optional[str] = None,
+        pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
         include_archived_logs: bool = False,
     ) -> Dict[str, Any]:
         """Analyze access log statistics (operations, errors, slow queries). LOCAL/ARCHIVE.
@@ -1055,13 +1090,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "access_log_analysis", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "access_log_analysis",
+                "server": target,
                 "error": (
                     "Log analysis requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -1085,13 +1121,13 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def analyze_error_log(
         server_name: Optional[str] = None,
         severity: Optional[str] = None,
         component: Optional[str] = None,
         time_range: Optional[str] = None,
-        pattern: Optional[str] = None,
+        pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
     ) -> Dict[str, Any]:
         """Analyze error log statistics (severity, components, patterns). LOCAL/ARCHIVE.
 
@@ -1114,13 +1150,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "error_log_analysis", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "error_log_analysis",
+                "server": target,
                 "error": (
                     "Log analysis requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:
@@ -1144,7 +1181,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"logs", "live", "offline", "archive"})
     def analyze_audit_log(
         server_name: Optional[str] = None,
         operation: Optional[str] = None,
@@ -1173,13 +1210,14 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             return {"type": "audit_log_analysis", "error": "No server configured"}
 
         if not _can_access_logs(mcp, target):
-            return {
+            return _sanitize_log_result(mcp, {
                 "type": "audit_log_analysis",
+                "server": target,
                 "error": (
                     "Log analysis requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
-            }
+            })
 
         ds = None
         try:

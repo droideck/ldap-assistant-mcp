@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from lib389._ldifconn import LDIFConn
 from lib389.dseldif import DSEldif
 
+from mcp.types import ToolAnnotations
+
 from src.dirsrv_mcp.connection import is_offline_or_archive
 from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.dirsrv_mcp.tools.dse_utils import (
@@ -28,12 +30,16 @@ from src.lib.result_formatter import Severity, format_finding
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
+
 
 def _sanitize_server_list(mcp: "DirSrvMCP", names: List[str]) -> List[str]:
-    """Sanitize a list of server names for privacy mode."""
-    if not mcp.privacy_enabled:
-        return list(names)
-    return [mcp.sanitizer.sanitize_server_name(n) for n in names]
+    """Return server names as a list.
+
+    Server names are never sanitized — they are user-chosen config labels
+    that must remain stable across tool calls.
+    """
+    return list(names)
 
 
 def _sanitize_archive_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
@@ -47,20 +53,11 @@ def _sanitize_archive_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    # Common keys across all archive result types — capture originals for text replacement
-    original_names = {}
-    for server_key in ("server", "server1", "server2"):
-        if server_key in sanitized:
-            original_names[server_key] = sanitized[server_key]
-            sanitized[server_key] = sanitizer.sanitize_server_name(sanitized[server_key])
+    # Server names are never sanitized (user-chosen config labels).
     if "instance_name" in sanitized:
         sanitized["instance_name"] = "[instance]"
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        for key, orig in original_names.items():
-            if orig and orig in err:
-                err = err.replace(orig, sanitized[key])
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
@@ -117,8 +114,8 @@ def _sanitize_analysis(sanitizer, sanitized: Dict[str, Any]) -> None:
                 {
                     "code": f.get("code"),
                     "severity": f.get("severity"),
-                    "description": sanitizer._sanitize_text_field(f.get("description", "")),
-                    "details": sanitizer._sanitize_text_field(f.get("details", "")),
+                    "description": sanitizer.sanitize_text(f.get("description", "")),
+                    "details": sanitizer.sanitize_text(f.get("details", "")),
                 }
                 for f in hc["findings"]
             ]
@@ -534,7 +531,7 @@ def _compare_ldif_entries(
 def register_archive_tools(mcp: "DirSrvMCP") -> None:
     """Register archive analysis tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"archive", "offline"})
     def analyze_archive(
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -586,7 +583,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"archive", "offline"})
     def validate_configuration(
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -637,7 +634,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"archive", "offline"})
     def compare_dse_configs(
         server1: str,
         server2: str,

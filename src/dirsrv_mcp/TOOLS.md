@@ -777,11 +777,12 @@ Returns a single `cn=config` attribute.
 **Privacy mode is enabled by default.** Set `LDAP_MCP_EXPOSE_SENSITIVE_DATA=true` only in trusted environments (local models or approved private cloud instances).
 
 When privacy mode is enabled (default):
-- Server names, hostnames, and DNs are anonymized
+- Hostnames, DNs, and suffixes are anonymized
 - Sensitive configuration values are redacted
 - Tools like `get_user_details` and `ldap_search` are disabled
 - List tools return counts only
 - Safe for use with cloud-hosted LLMs
+- Server names (the `name` field in `servers.json`) are **never** redacted — they are user-chosen labels that must remain stable across tool calls. Do not put hostnames, IPs, or other private information in server names.
 
 **Warning:** Avoid enabling with public LLMs when connected to production directories. Test/sample data is fine.
 

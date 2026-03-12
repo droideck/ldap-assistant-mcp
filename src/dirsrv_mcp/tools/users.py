@@ -3,31 +3,40 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+import re
+from typing import TYPE_CHECKING, Annotated, Any, Dict, Iterable, List, Optional
 
+from pydantic import Field
+
+from ldap.filter import escape_filter_chars
 from lib389.idm.account import Accounts
 from lib389.idm.user import nsUserAccounts
 
-from src.dirsrv_mcp.connection import require_live_server
+from fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+
 from src.lib.datetime_utils import convert_datetimes_to_strings
 from src.lib.privacy import create_count_only_response, create_privacy_error
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
 
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+
 
 def register_user_tools(mcp: DirSrvMCP) -> None:
     """Register user management tools with the MCP server."""
 
-    @mcp.tool()
-    def list_all_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
+    def list_all_users(limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
         """List users in the directory with computed status.
 
         Note: In privacy mode (default), returns count only.
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "list_all_users")
+        mcp.require_live(target,"list_all_users")
         with mcp._connection(target) as (name, ds):
             base_dn = mcp._get_base_dn(name)
             users = nsUserAccounts(ds, base_dn)
@@ -46,9 +55,9 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "items": results,
             }
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
     def search_users_by_name(
-        name: str, limit: int = 50, server_name: Optional[str] = None
+        name: str, limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50, server_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """Search for users by name (uid, cn, givenName, sn, displayName, mail).
 
@@ -56,18 +65,22 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "search_users_by_name")
+        mcp.require_live(target,"search_users_by_name")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             if "*" in name:
+                # Escape segments between wildcards, preserve '*' for LDAP
+                parts = name.split("*")
+                safe_name = "*".join(escape_filter_chars(p) for p in parts)
                 search_filter = (
-                    f"(|(uid={name})(cn={name})(givenName={name})(sn={name})"
-                    f"(displayName={name})(mail={name}))"
+                    f"(|(uid={safe_name})(cn={safe_name})(givenName={safe_name})(sn={safe_name})"
+                    f"(displayName={safe_name})(mail={safe_name}))"
                 )
             else:
+                safe_name = escape_filter_chars(name)
                 search_filter = (
-                    f"(|(uid=*{name}*)(cn=*{name}*)(givenName=*{name}*)(sn=*{name}*)"
-                    f"(displayName=*{name}*)(mail=*{name}*))"
+                    f"(|(uid=*{safe_name}*)(cn=*{safe_name}*)(givenName=*{safe_name}*)(sn=*{safe_name}*)"
+                    f"(displayName=*{safe_name}*)(mail=*{safe_name}*))"
                 )
             users = nsUserAccounts(ds, base_dn)
 
@@ -87,7 +100,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "items": results,
             }
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
     def get_user_details(username: str, server_name: Optional[str] = None) -> Dict[str, Any]:
         """Get detailed information about a specific user.
 
@@ -99,7 +112,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
             return create_privacy_error("get_user_details")
 
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "get_user_details")
+        mcp.require_live(target,"get_user_details")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -107,15 +120,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
             record = _build_user_record(mcp, user, ds, base_dn)
             return {"type": "user_details", "server": srv, "username": username, "user": record}
 
-    @mcp.tool()
-    def list_active_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
+    def list_active_users(limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
         """List active (unlocked) users.
 
         Note: In privacy mode (default), returns count only.
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "list_active_users")
+        mcp.require_live(target,"list_active_users")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -143,15 +156,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "items": records,
             }
 
-    @mcp.tool()
-    def list_locked_users(limit: int = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
+    def list_locked_users(limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50, server_name: Optional[str] = None) -> Dict[str, Any]:
         """List locked users.
 
         Note: In privacy mode (default), returns count only.
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "list_locked_users")
+        mcp.require_live(target,"list_locked_users")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             users = nsUserAccounts(ds, base_dn)
@@ -179,9 +192,9 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "items": records,
             }
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"users", "live"})
     def search_users_by_attribute(
-        attribute: str, value: str, limit: int = 50, server_name: Optional[str] = None
+        attribute: str, value: str, limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50, server_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """Search for users by arbitrary attribute.
 
@@ -189,10 +202,18 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true for full user details.
         """
         target = server_name or mcp.default_server
-        require_live_server(mcp.connection_manager, target, "search_users_by_attribute")
+        mcp.require_live(target,"search_users_by_attribute")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
-            search_filter = f"({attribute}={value})" if "*" in value else f"({attribute}=*{value}*)"
+            if not re.match(r'^[a-zA-Z][a-zA-Z0-9-]*$', attribute):
+                raise ToolError(f"Invalid attribute name: {attribute!r}")
+            if "*" in value:
+                parts = value.split("*")
+                safe_value = "*".join(escape_filter_chars(p) for p in parts)
+                search_filter = f"({attribute}={safe_value})"
+            else:
+                safe_value = escape_filter_chars(value)
+                search_filter = f"({attribute}=*{safe_value}*)"
             users = nsUserAccounts(ds, base_dn)
 
             # In privacy mode, return count only
@@ -317,4 +338,3 @@ def _get_user_status(mcp: DirSrvMCP, ds, user_dn: str, basedn: str) -> Dict[str,
             "status_params": {},
             "calc_time": None,
         }
-

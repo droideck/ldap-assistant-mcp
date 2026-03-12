@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict
 
+from mcp.types import ToolAnnotations
+
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
 
 
 def register_server_tools(mcp: "DirSrvMCP") -> None:
     """Register server discovery tools."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"servers", "live", "offline", "archive"})
     def list_servers() -> Dict[str, Any]:
         """List all configured servers with their connection modes.
 

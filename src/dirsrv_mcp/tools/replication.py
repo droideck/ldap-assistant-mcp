@@ -13,12 +13,16 @@ from lib389._constants import ReplicaRole
 from lib389.conflicts import ConflictEntries, GlueEntries
 from lib389.replica import Replicas, RUV
 
-from src.dirsrv_mcp.connection import is_offline_or_archive, require_live_server
+from mcp.types import ToolAnnotations
+
+from src.dirsrv_mcp.connection import is_offline_or_archive
 from src.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from src.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
     from src.dirsrv_mcp.server import DirSrvMCP
+
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
 
 def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize replication result for privacy mode."""
@@ -28,14 +32,9 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     sanitizer = mcp.sanitizer
     sanitized = dict(result)
 
-    original_server = sanitized.get("server")
-    if "server" in sanitized:
-        sanitized["server"] = sanitizer.sanitize_server_name(sanitized["server"])
+    # Server names are never sanitized (user-chosen config labels).
     if "error" in sanitized and isinstance(sanitized["error"], str):
-        err = sanitized["error"]
-        if original_server and original_server in err:
-            err = err.replace(original_server, sanitized.get("server", "[server]"))
-        sanitized["error"] = sanitizer._sanitize_text_field(err)
+        sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
     if "replicas" in sanitized and isinstance(sanitized["replicas"], list):
         sanitized["replicas"] = [sanitizer.sanitize_replica(r) for r in sanitized["replicas"]]
@@ -58,10 +57,8 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             anon_suffix = sanitizer.sanitize_suffix(suffix)
             new_data = {}
             for key, servers in data.items():
-                if isinstance(servers, list):
-                    new_data[key] = [sanitizer.sanitize_server_name(s) for s in servers]
-                else:
-                    new_data[key] = servers
+                # Server names are never sanitized
+                new_data[key] = servers
             new_suffixes[anon_suffix] = new_data
         sanitized["suffixes"] = new_suffixes
 
@@ -73,14 +70,7 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
             sanitizer.sanitize_suffix(s) for s in sanitized["suffixes_checked"]
         ]
 
-    if "servers_checked" in sanitized and isinstance(sanitized["servers_checked"], list):
-        sanitized["servers_checked"] = [
-            sanitizer.sanitize_server_name(s) for s in sanitized["servers_checked"]
-        ]
-    if "servers_failed" in sanitized and isinstance(sanitized["servers_failed"], list):
-        sanitized["servers_failed"] = [
-            sanitizer.sanitize_server_name(s) for s in sanitized["servers_failed"]
-        ]
+    # servers_checked / servers_failed: server names are never sanitized.
 
     if "conflicts" in sanitized and isinstance(sanitized["conflicts"], list):
         sanitized["conflicts"] = [
@@ -89,7 +79,7 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
                 "dn": sanitizer.sanitize_dn(c.get("dn")),
                 "suffix": sanitizer.sanitize_suffix(c.get("suffix")),
                 "valid_entry_dn": sanitizer.sanitize_dn(c.get("valid_entry_dn")) if c.get("valid_entry_dn") else None,
-                "conflict_attribute": sanitizer._sanitize_text_field(c.get("conflict_attribute", "")) if c.get("conflict_attribute") else None,
+                "conflict_attribute": sanitizer.sanitize_text(c.get("conflict_attribute", "")) if c.get("conflict_attribute") else None,
             }
             for c in sanitized["conflicts"]
         ]
@@ -170,7 +160,7 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
 def register_replication_tools(mcp: DirSrvMCP) -> None:
     """Register replication diagnostic tools with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"replication", "live"})
     def get_replication_status(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Get replication configuration, RUV, and agreement status for one server. LIVE only.
 
@@ -192,7 +182,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "error": "No server configured",
                 "replicas": [],
             }
-        require_live_server(mcp.connection_manager, target, "get_replication_status")
+        mcp.require_live(target,"get_replication_status")
 
         ds = None
         try:
@@ -382,7 +372,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"replication", "live"})
     def get_replication_topology() -> Dict[str, Any]:
         """Map the complete replication topology across all configured servers. LIVE only.
 
@@ -555,7 +545,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         return _sanitize_replication_result(mcp, topology)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"replication", "live"})
     def check_replication_lag(
         suffix: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -579,7 +569,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "replication_lag",
                 "error": "No server configured",
             }
-        require_live_server(mcp.connection_manager, target, "check_replication_lag")
+        mcp.require_live(target,"check_replication_lag")
 
         ds = None
         try:
@@ -719,7 +709,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"replication", "live"})
     def list_replication_conflicts(
         base_dn: Optional[str] = None,
         server_name: Optional[str] = None,
@@ -744,7 +734,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "replication_conflicts",
                 "error": "No server configured",
             }
-        require_live_server(mcp.connection_manager, target, "list_replication_conflicts")
+        mcp.require_live(target,"list_replication_conflicts")
 
         ds = None
         try:
@@ -901,7 +891,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception:
                     pass
 
-    @mcp.tool()
+    @mcp.tool(annotations=_RO, tags={"replication", "live"})
     def get_agreement_status(
         agreement_name: Optional[str] = None,
         suffix: Optional[str] = None,
@@ -928,7 +918,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "type": "agreement_status",
                 "error": "No server configured",
             }
-        require_live_server(mcp.connection_manager, target, "get_agreement_status")
+        mcp.require_live(target,"get_agreement_status")
 
         ds = None
         try:
