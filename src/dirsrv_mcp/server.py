@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from fastmcp.exceptions import ResourceError, ToolError
-from fastmcp.prompts import PromptMessage
-from mcp.types import TextContent
+from fastmcp.prompts import Message
 from lib389.config import Config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -191,236 +190,215 @@ class DirSrvMCP(LDAPAssistantMCP):
         """Register guided troubleshooting prompts."""
 
         @self.prompt()
-        def tool_navigator(goal: str) -> List[PromptMessage]:
+        def tool_navigator(goal: str) -> list[Message]:
             """Guide users through available tools and their usage."""
 
             return [
-                PromptMessage(role="user", content=TextContent(type="text", text=f"Directory task: {goal}")),
-                PromptMessage(
+                Message(role="user", content=f"Directory task: {goal}"),
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "Use the available MCP tools to accomplish the task. "
-                            "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
-                            "**Server Modes:**\n"
-                            "- LIVE = running server with LDAP connection\n"
-                            "- OFFLINE = stopped local instance (dse.ldif + logs)\n"
-                            "- ARCHIVE = SOS report or extracted tarball\n"
-                            "Call `list_servers` to see which mode each server is in.\n\n"
-                            "**Start Here — Health & Diagnostics:** [LIVE, OFFLINE, ARCHIVE]\n"
-                            "- first_look: Comprehensive health overview across ALL servers (start here).\n"
-                            "- run_healthcheck: Deep lint checks (dseldif, config, backends, tls, etc.).\n"
-                            "- list_healthchecks / list_healthcheck_errors: Discover available checks and error codes.\n\n"
-                            "**Performance (LIVE only):**\n"
-                            "- get_performance_summary: Combined overview — use first for performance questions.\n"
-                            "- get_cache_statistics: Entry/DN/DB cache hit ratios (drill into cache problems).\n"
-                            "- get_connection_statistics: Connection counts, FD usage, CLOSE_WAIT.\n"
-                            "- get_operation_statistics: Op counts by type, bind errors, data transfer.\n"
-                            "- get_thread_statistics: Thread contention and max-threads hits.\n"
-                            "- get_resource_utilization: Memory (RSS/swap), CPU, disk space.\n"
-                            "- run_monitor: Raw cn=monitor attributes (use only when above tools lack a specific counter).\n\n"
-                            "**Replication (LIVE only):**\n"
-                            "- get_replication_status: Per-server replica config, RUV, and agreements.\n"
-                            "- get_replication_topology: Cross-server topology map with role distribution.\n"
-                            "- check_replication_lag: CSN lag analysis per agreement.\n"
-                            "- list_replication_conflicts: Find conflict and glue entries needing resolution.\n"
-                            "- get_agreement_status: Detailed single-agreement status with schedule and flow control.\n\n"
-                            "**Configuration:** [LIVE, OFFLINE, ARCHIVE]\n"
-                            "- get_server_configuration: View cn=config attributes (supports offline/archive).\n"
-                            "- compare_server_configurations: Diff cn=config between two LIVE servers.\n"
-                            "- get_backend_configuration: Backend settings and cache config.\n"
-                            "- list_plugins: Plugin inventory with enabled/disabled status.\n"
-                            "- list_indexes / analyze_index_configuration: Index review and best-practice audit.\n"
-                            "- find_unindexed_searches: Parse access logs for notes=U/A patterns (local/archive).\n\n"
-                            "**Log Analysis:** [LOCAL, ARCHIVE]\n"
-                            "- analyze_access_log: Statistics only — operations, errors, slow queries (privacy-safe).\n"
-                            "- analyze_error_log: Statistics only — severity distribution, components (privacy-safe).\n"
-                            "- analyze_audit_log: Statistics only — change types and actors (privacy-safe).\n"
-                            "- parse_access_log: Full entries (requires expose_sensitive_data=true).\n"
-                            "- parse_error_log: Full entries (requires expose_sensitive_data=true).\n"
-                            "- parse_audit_log: Full entries (requires expose_sensitive_data=true).\n\n"
-                            "**Archive & Offline Analysis:** [OFFLINE, ARCHIVE only]\n"
-                            "- analyze_archive: Inventory available data (config, logs, schema, SOS healthcheck).\n"
-                            "- validate_configuration: Static config lint on dse.ldif.\n"
-                            "- compare_dse_configs: Full entry-by-entry dse.ldif diff between two archives.\n\n"
-                            "**User & Group Management (LIVE only):**\n"
-                            "- list_all_users / list_active_users / list_locked_users\n"
-                            "- search_users_by_name / search_users_by_attribute / get_user_details\n"
-                            "- list_all_groups\n\n"
-                            "**Advanced (LIVE only):**\n"
-                            "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
-                            "State which tool you'll call next and why; keep outputs concise."
-                        ),
+                    content=(
+                        "Use the available MCP tools to accomplish the task. "
+                        "Prefer specialized tools first, falling back to ldap_search for advanced queries.\n\n"
+                        "**Server Modes:**\n"
+                        "- LIVE = running server with LDAP connection\n"
+                        "- OFFLINE = stopped local instance (dse.ldif + logs)\n"
+                        "- ARCHIVE = SOS report or extracted tarball\n"
+                        "Call `list_servers` to see which mode each server is in.\n\n"
+                        "**Start Here — Health & Diagnostics:** [LIVE, OFFLINE, ARCHIVE]\n"
+                        "- first_look: Comprehensive health overview across ALL servers (start here).\n"
+                        "- run_healthcheck: Deep lint checks (dseldif, config, backends, tls, etc.).\n"
+                        "- list_healthchecks / list_healthcheck_errors: Discover available checks and error codes.\n\n"
+                        "**Performance (LIVE only):**\n"
+                        "- get_performance_summary: Combined overview — use first for performance questions.\n"
+                        "- get_cache_statistics: Entry/DN/DB cache hit ratios (drill into cache problems).\n"
+                        "- get_connection_statistics: Connection counts, FD usage, CLOSE_WAIT.\n"
+                        "- get_operation_statistics: Op counts by type, bind errors, data transfer.\n"
+                        "- get_thread_statistics: Thread contention and max-threads hits.\n"
+                        "- get_resource_utilization: Memory (RSS/swap), CPU, disk space.\n"
+                        "- run_monitor: Raw cn=monitor attributes (use only when above tools lack a specific counter).\n\n"
+                        "**Replication (LIVE only):**\n"
+                        "- get_replication_status: Per-server replica config, RUV, and agreements.\n"
+                        "- get_replication_topology: Cross-server topology map with role distribution.\n"
+                        "- check_replication_lag: CSN lag analysis per agreement.\n"
+                        "- list_replication_conflicts: Find conflict and glue entries needing resolution.\n"
+                        "- get_agreement_status: Detailed single-agreement status with schedule and flow control.\n\n"
+                        "**Configuration:** [LIVE, OFFLINE, ARCHIVE]\n"
+                        "- get_server_configuration: View cn=config attributes (supports offline/archive).\n"
+                        "- compare_server_configurations: Diff cn=config between two LIVE servers.\n"
+                        "- get_backend_configuration: Backend settings and cache config.\n"
+                        "- list_plugins: Plugin inventory with enabled/disabled status.\n"
+                        "- list_indexes / analyze_index_configuration: Index review and best-practice audit.\n"
+                        "- find_unindexed_searches: Parse access logs for notes=U/A patterns (local/archive).\n\n"
+                        "**Log Analysis:** [LOCAL, ARCHIVE]\n"
+                        "- analyze_access_log: Statistics only — operations, errors, slow queries (privacy-safe).\n"
+                        "- analyze_error_log: Statistics only — severity distribution, components (privacy-safe).\n"
+                        "- analyze_audit_log: Statistics only — change types and actors (privacy-safe).\n"
+                        "- parse_access_log: Full entries (requires expose_sensitive_data=true).\n"
+                        "- parse_error_log: Full entries (requires expose_sensitive_data=true).\n"
+                        "- parse_audit_log: Full entries (requires expose_sensitive_data=true).\n\n"
+                        "**Archive & Offline Analysis:** [OFFLINE, ARCHIVE only]\n"
+                        "- analyze_archive: Inventory available data (config, logs, schema, SOS healthcheck).\n"
+                        "- validate_configuration: Static config lint on dse.ldif.\n"
+                        "- compare_dse_configs: Full entry-by-entry dse.ldif diff between two archives.\n\n"
+                        "**User & Group Management (LIVE only):**\n"
+                        "- list_all_users / list_active_users / list_locked_users\n"
+                        "- search_users_by_name / search_users_by_attribute / get_user_details\n"
+                        "- list_all_groups\n\n"
+                        "**Advanced (LIVE only):**\n"
+                        "- ldap_search(base_dn, scope, filter, attributes, attrs_only, limit)\n\n"
+                        "State which tool you'll call next and why; keep outputs concise."
                     ),
                 ),
             ]
 
         @self.prompt()
-        def diagnose_replication() -> List[PromptMessage]:
+        def diagnose_replication() -> list[Message]:
             """Start a guided replication troubleshooting session."""
 
             return [
-                PromptMessage(
+                Message(
                     role="user",
-                    content=TextContent(type="text", text="I need help diagnosing replication issues in my directory."),
+                    content="I need help diagnosing replication issues in my directory.",
                 ),
-                PromptMessage(
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "I'll help you diagnose replication issues. Let me perform a systematic analysis:\n\n"
-                            "**Step 1: Check replication topology and agreement status**\n"
-                            "I'll use `get_replication_status` to get an overview of all replicas and agreements.\n\n"
-                            "**Step 2: Look for replication conflicts**\n"
-                            "I'll use `list_replication_conflicts` to find any conflict or glue entries that need resolution.\n\n"
-                            "**Step 3: Analyze replication lag**\n"
-                            "I'll use `check_replication_lag` to identify any sync delays between servers.\n\n"
-                            "**Step 4: Examine specific agreements if needed**\n"
-                            "I'll use `get_agreement_status` to dive deeper into any problematic agreements.\n\n"
-                            "Let me start by getting the replication status across your servers..."
-                        ),
+                    content=(
+                        "I'll help you diagnose replication issues. Let me perform a systematic analysis:\n\n"
+                        "**Step 1: Check replication topology and agreement status**\n"
+                        "I'll use `get_replication_status` to get an overview of all replicas and agreements.\n\n"
+                        "**Step 2: Look for replication conflicts**\n"
+                        "I'll use `list_replication_conflicts` to find any conflict or glue entries that need resolution.\n\n"
+                        "**Step 3: Analyze replication lag**\n"
+                        "I'll use `check_replication_lag` to identify any sync delays between servers.\n\n"
+                        "**Step 4: Examine specific agreements if needed**\n"
+                        "I'll use `get_agreement_status` to dive deeper into any problematic agreements.\n\n"
+                        "Let me start by getting the replication status across your servers..."
                     ),
                 ),
             ]
 
         @self.prompt()
-        def performance_investigation() -> List[PromptMessage]:
+        def performance_investigation() -> list[Message]:
             """Start a guided performance troubleshooting session."""
 
             return [
-                PromptMessage(
+                Message(
                     role="user",
-                    content=TextContent(type="text", text="I need help investigating performance issues with my directory server."),
+                    content="I need help investigating performance issues with my directory server.",
                 ),
-                PromptMessage(
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "I'll help investigate performance issues. Here's my systematic approach:\n\n"
-                            "**Step 1: Get performance overview**\n"
-                            "I'll use `get_performance_summary` for a quick view of key metrics and any obvious issues.\n\n"
-                            "**Step 2: Check connection and operation load**\n"
-                            "I'll use `get_connection_statistics` and `get_operation_statistics` to understand the workload.\n\n"
-                            "**Step 3: Analyze cache efficiency**\n"
-                            "I'll use `get_cache_statistics` to check if cache sizes are adequate - low hit ratios cause disk I/O.\n\n"
-                            "**Step 4: Check thread utilization**\n"
-                            "I'll use `get_thread_statistics` to identify thread pool contention.\n\n"
-                            "**Step 5: Review resource usage**\n"
-                            "I'll use `get_resource_utilization` to check memory, CPU, and disk space.\n\n"
-                            "Let me start by getting a performance summary..."
-                        ),
+                    content=(
+                        "I'll help investigate performance issues. Here's my systematic approach:\n\n"
+                        "**Step 1: Get performance overview**\n"
+                        "I'll use `get_performance_summary` for a quick view of key metrics and any obvious issues.\n\n"
+                        "**Step 2: Check connection and operation load**\n"
+                        "I'll use `get_connection_statistics` and `get_operation_statistics` to understand the workload.\n\n"
+                        "**Step 3: Analyze cache efficiency**\n"
+                        "I'll use `get_cache_statistics` to check if cache sizes are adequate - low hit ratios cause disk I/O.\n\n"
+                        "**Step 4: Check thread utilization**\n"
+                        "I'll use `get_thread_statistics` to identify thread pool contention.\n\n"
+                        "**Step 5: Review resource usage**\n"
+                        "I'll use `get_resource_utilization` to check memory, CPU, and disk space.\n\n"
+                        "Let me start by getting a performance summary..."
                     ),
                 ),
             ]
 
         @self.prompt()
-        def daily_health_check() -> List[PromptMessage]:
+        def daily_health_check() -> list[Message]:
             """Perform a comprehensive daily health check suitable for operations review."""
 
             return [
-                PromptMessage(
+                Message(
                     role="user",
-                    content=TextContent(type="text", text="Please perform a daily health check of my directory infrastructure."),
+                    content="Please perform a daily health check of my directory infrastructure.",
                 ),
-                PromptMessage(
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "I'll perform a comprehensive daily health check covering all critical areas:\n\n"
-                            "**1. Overall Health Assessment**\n"
-                            "I'll use `first_look` to get a complete health overview including:\n"
-                            "- Server connectivity\n"
-                            "- Connection/thread utilization\n"
-                            "- Replication status\n"
-                            "- Cache efficiency\n"
-                            "- Disk space\n"
-                            "- Certificate expiration\n\n"
-                            "**2. Detailed Health Checks**\n"
-                            "I'll use `run_healthcheck` to run the full lint suite for configuration issues.\n\n"
-                            "**3. Replication Verification** (if applicable)\n"
-                            "I'll check for any replication lag or conflicts.\n\n"
-                            "**4. Performance Baseline**\n"
-                            "I'll capture current performance metrics for trending.\n\n"
-                            "Let me start with the comprehensive health overview..."
-                        ),
+                    content=(
+                        "I'll perform a comprehensive daily health check covering all critical areas:\n\n"
+                        "**1. Overall Health Assessment**\n"
+                        "I'll use `first_look` to get a complete health overview including:\n"
+                        "- Server connectivity\n"
+                        "- Connection/thread utilization\n"
+                        "- Replication status\n"
+                        "- Cache efficiency\n"
+                        "- Disk space\n"
+                        "- Certificate expiration\n\n"
+                        "**2. Detailed Health Checks**\n"
+                        "I'll use `run_healthcheck` to run the full lint suite for configuration issues.\n\n"
+                        "**3. Replication Verification** (if applicable)\n"
+                        "I'll check for any replication lag or conflicts.\n\n"
+                        "**4. Performance Baseline**\n"
+                        "I'll capture current performance metrics for trending.\n\n"
+                        "Let me start with the comprehensive health overview..."
                     ),
                 ),
             ]
 
         @self.prompt()
-        def troubleshoot_connectivity() -> List[PromptMessage]:
+        def troubleshoot_connectivity() -> list[Message]:
             """Start a guided session to troubleshoot connection issues."""
 
             return [
-                PromptMessage(
+                Message(
                     role="user",
-                    content=TextContent(type="text", text="I'm having trouble connecting to my directory server or clients are reporting connection issues."),
+                    content="I'm having trouble connecting to my directory server or clients are reporting connection issues.",
                 ),
-                PromptMessage(
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "I'll help troubleshoot connectivity issues. Let me check several areas:\n\n"
-                            "**Step 1: Basic connectivity check**\n"
-                            "I'll use `first_look` to verify server accessibility and basic health.\n\n"
-                            "**Step 2: Connection capacity analysis**\n"
-                            "I'll use `get_connection_statistics` to check:\n"
-                            "- Current connection count vs. limits\n"
-                            "- File descriptor utilization\n"
-                            "- Connection states (CLOSE_WAIT can indicate client issues)\n\n"
-                            "**Step 3: Thread availability**\n"
-                            "I'll use `get_thread_statistics` to see if thread exhaustion is causing connection issues.\n\n"
-                            "**Step 4: Resource constraints**\n"
-                            "I'll use `get_resource_utilization` to check for resource exhaustion.\n\n"
-                            "Let me start by checking basic connectivity..."
-                        ),
+                    content=(
+                        "I'll help troubleshoot connectivity issues. Let me check several areas:\n\n"
+                        "**Step 1: Basic connectivity check**\n"
+                        "I'll use `first_look` to verify server accessibility and basic health.\n\n"
+                        "**Step 2: Connection capacity analysis**\n"
+                        "I'll use `get_connection_statistics` to check:\n"
+                        "- Current connection count vs. limits\n"
+                        "- File descriptor utilization\n"
+                        "- Connection states (CLOSE_WAIT can indicate client issues)\n\n"
+                        "**Step 3: Thread availability**\n"
+                        "I'll use `get_thread_statistics` to see if thread exhaustion is causing connection issues.\n\n"
+                        "**Step 4: Resource constraints**\n"
+                        "I'll use `get_resource_utilization` to check for resource exhaustion.\n\n"
+                        "Let me start by checking basic connectivity..."
                     ),
                 ),
             ]
 
         @self.prompt()
-        def archive_investigation() -> List[PromptMessage]:
+        def archive_investigation() -> list[Message]:
             """Start a guided SOS report or archive analysis session."""
 
             return [
-                PromptMessage(
+                Message(
                     role="user",
-                    content=TextContent(
-                        type="text",
-                        text="I have an SOS report or archive from a 389 Directory Server and need help investigating it.",
-                    ),
+                    content="I have an SOS report or archive from a 389 Directory Server and need help investigating it.",
                 ),
-                PromptMessage(
+                Message(
                     role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text=(
-                            "I'll help you investigate this archive systematically. Here's my approach:\n\n"
-                            "**Step 1: Inventory available data**\n"
-                            "I'll use `analyze_archive` to discover what data is available — config, logs, "
-                            "schema, certificates, and any SOS healthcheck output.\n\n"
-                            "**Step 2: Validate configuration**\n"
-                            "I'll use `validate_configuration` to run static lint checks on dse.ldif — "
-                            "security settings, password schemes, TLS versions, and more.\n\n"
-                            "**Step 3: Check error logs**\n"
-                            "I'll use `analyze_error_log` to look for error severity distribution, "
-                            "component breakdown, and common patterns.\n\n"
-                            "**Step 4: Analyze access patterns**\n"
-                            "I'll use `analyze_access_log` to check for failed operations, slow queries, "
-                            "and unindexed searches.\n\n"
-                            "**Step 5: Review recent changes**\n"
-                            "If an audit log is available, I'll use `analyze_audit_log` to review change "
-                            "type distribution and actor activity.\n\n"
-                            "**Step 6: Compare against baseline**\n"
-                            "If a known-good archive is available, I'll use `compare_dse_configs` to do a "
-                            "full entry-by-entry comparison to identify what changed.\n\n"
-                            "Let me start by inventorying the available data..."
-                        ),
+                    content=(
+                        "I'll help you investigate this archive systematically. Here's my approach:\n\n"
+                        "**Step 1: Inventory available data**\n"
+                        "I'll use `analyze_archive` to discover what data is available — config, logs, "
+                        "schema, certificates, and any SOS healthcheck output.\n\n"
+                        "**Step 2: Validate configuration**\n"
+                        "I'll use `validate_configuration` to run static lint checks on dse.ldif — "
+                        "security settings, password schemes, TLS versions, and more.\n\n"
+                        "**Step 3: Check error logs**\n"
+                        "I'll use `analyze_error_log` to look for error severity distribution, "
+                        "component breakdown, and common patterns.\n\n"
+                        "**Step 4: Analyze access patterns**\n"
+                        "I'll use `analyze_access_log` to check for failed operations, slow queries, "
+                        "and unindexed searches.\n\n"
+                        "**Step 5: Review recent changes**\n"
+                        "If an audit log is available, I'll use `analyze_audit_log` to review change "
+                        "type distribution and actor activity.\n\n"
+                        "**Step 6: Compare against baseline**\n"
+                        "If a known-good archive is available, I'll use `compare_dse_configs` to do a "
+                        "full entry-by-entry comparison to identify what changed.\n\n"
+                        "Let me start by inventorying the available data..."
                     ),
                 ),
             ]
