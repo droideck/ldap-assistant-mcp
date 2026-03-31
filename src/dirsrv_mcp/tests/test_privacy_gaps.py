@@ -230,15 +230,18 @@ class TestArchiveSanitization:
         assert sanitized["server1"] == "archive1"
         assert sanitized["server2"] == "archive2"
 
-        # DNs sanitized
-        for dn in sanitized["only_in_server1"]:
-            assert "[entry-" in dn
-        for dn in sanitized["only_in_server2"]:
-            assert "[entry-" in dn
+        # Config DNs (under cn=config) are preserved — they are server
+        # metadata, not user data, and redacting them makes the comparison
+        # output uninterpretable.
+        assert sanitized["only_in_server1"] == [
+            "cn=MemberOf Plugin,cn=plugins,cn=config",
+        ]
+        assert sanitized["only_in_server2"] == [
+            "cn=Retro Changelog,cn=plugins,cn=config",
+        ]
 
-        # Differences sanitized
         diff = sanitized["differences"][0]
-        assert "[entry-" in diff["dn"]
+        assert diff["dn"] == "cn=config"
 
         # Sensitive attribute values sanitized
         for dv in diff["different_values"]:

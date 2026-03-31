@@ -126,18 +126,34 @@ def _sanitize_analysis(sanitizer, sanitized: Dict[str, Any]) -> None:
         sanitized["sos_healthcheck"] = safe_hc
 
 
+def _is_config_dn(dn: str) -> bool:
+    """Return True if *dn* lives under cn=config (server metadata, not user data)."""
+    return dn.lower().endswith(",cn=config") or dn.lower() == "cn=config"
+
+
 def _sanitize_dse_comparison(sanitizer, sanitized: Dict[str, Any]) -> None:
-    """Sanitize dse_comparison results in place."""
+    """Sanitize dse_comparison results in place.
+
+    Config entry DNs (everything under cn=config) are kept in clear text
+    because they are server metadata — plugin names, backend names, index
+    names, etc. — not user data.
+
+    Attribute *values* that could contain sensitive data (suffixes, bind DNs,
+    hostnames, paths) are still sanitized.
+    """
     for list_key in ("only_in_server1", "only_in_server2"):
         if list_key in sanitized and isinstance(sanitized[list_key], list):
-            sanitized[list_key] = [sanitizer.sanitize_dn(dn) for dn in sanitized[list_key]]
+            sanitized[list_key] = [
+                dn if _is_config_dn(dn) else sanitizer.sanitize_dn(dn)
+                for dn in sanitized[list_key]
+            ]
 
     if "differences" in sanitized and isinstance(sanitized["differences"], list):
         sanitized_diffs = []
         for diff in sanitized["differences"]:
             sd = dict(diff)
             if "dn" in sd:
-                sd["dn"] = sanitizer.sanitize_dn(sd["dn"])
+                sd["dn"] = sd["dn"] if _is_config_dn(sd["dn"]) else sanitizer.sanitize_dn(sd["dn"])
             if "different_values" in sd and isinstance(sd["different_values"], list):
                 sd["different_values"] = [
                     {
@@ -274,7 +290,7 @@ def _build_archive_analysis(
 
 
 _GOOD_PW_SCHEMES = {"pbkdf2_sha256", "pbkdf2-sha256", "pbkdf2_sha512", "pbkdf2-sha512",
-                     "ssha512", "ssha256", "ssha"}
+                     "ssha512", "ssha256"}
 _GOOD_TLS_VERSIONS = {"tls1.2", "tls1.3"}
 
 
