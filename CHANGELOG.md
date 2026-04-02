@@ -2,6 +2,48 @@
 
 All notable changes to LDAP Assistant MCP will be documented in this file.
 
+## [0.4.0] - 2026-04-01
+
+### Added
+
+#### Middleware
+- **LoggingMiddleware** - Logs tool invocations (name + status only, no args/results)
+- **TimeoutMiddleware** - Per-call time limits with per-tool overrides (configurable via `LDAP_MCP_TOOL_TIMEOUT` / `LDAP_MCP_MAX_TOOL_TIMEOUT`)
+- **ResponseSizeMiddleware** - Truncates oversized responses with a notice (100k chars default)
+
+#### Tool Annotations & Tags
+- All 42 tools annotated with `ToolAnnotations` (`readOnlyHint`, `idempotentHint`, `openWorldHint`)
+- Domain and mode tags on every tool (e.g. `{"health", "live", "offline", "archive"}`)
+
+#### Health
+- **server_health()** - Lightweight MCP server readiness probe (server count, privacy/debug modes)
+
+#### Eval Framework
+- `tests/eval/eval_dataset.json` with 31 tool-discovery test cases
+- `tests/eval/run_eval.py` keyword-overlap scorer for tool routing evaluation
+
+### Changed
+
+#### Security Hardening
+- `mask_error_details=True` on `LDAPAssistantMCP` — unhandled exceptions hidden from clients
+- `LiveServerRequired` / `LocalServerRequired` now subclass `ToolError` so mode errors remain visible despite masking
+- No default password: `LDAPServerConfig.from_env()` returns `None` if `LDAP_BIND_PASSWORD` is unset
+- Connection hardening: bind password validated before LDAP open, error paths sanitized
+
+#### Privacy Hardening
+- Input bounds on all `limit` parameters (`ge=1, le=10000`)
+- ReDoS-safe regex validation: rejects nested quantifiers, max 500 chars
+- Privacy-aware error formatting via `format_tool_error()` — sanitizes server names and error text
+- Config entry DNs preserved in `compare_dse_configs` output (attribute values still sanitized)
+
+#### Server Lifecycle
+- Server lifespan: `_server_lifespan()` calls `cleanup_temp_dirs()` on shutdown
+- Temp dir tracking with `atexit.register()` fallback
+- Archive tarball extraction caching to avoid re-extraction
+
+#### Compatibility
+- FastMCP 3.x prompt compatibility — all prompts return `list[Message]`
+
 ## [0.3.0] - 2026-02-16
 
 ### Added
@@ -135,6 +177,7 @@ All notable changes to LDAP Assistant MCP will be documented in this file.
 - **config://config-all** - Returns all cn=config attributes
 - **config://config-attribute/{attribute}** - Returns a single cn=config attribute
 
+[0.4.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/droideck/ldap-assistant-mcp/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 # 389 Directory Server Tools Reference
 
-Complete reference for all 389 DS MCP tools (41 tools, 6 prompts, 2 resources).
+Complete reference for all 389 DS MCP tools (42 tools, 6 prompts, 2 resources).
 
 This documentation covers the `dirsrv_mcp` provider which uses [lib389](https://lib389.readthedocs.io/) for 389 Directory Server operations.
 
@@ -9,6 +9,20 @@ This documentation covers the `dirsrv_mcp` provider which uses [lib389](https://
 ---
 
 ## Health & Diagnostics
+
+### server_health()
+
+Lightweight MCP server readiness probe. Returns server count, privacy/debug mode status, and overall health.
+
+```
+server_health()
+```
+
+**Returns:** `status`, `server_count`, `privacy_mode`, `debug_mode`.
+
+**Modes:** Live, Offline, Archive.
+
+---
 
 ### first_look()
 
