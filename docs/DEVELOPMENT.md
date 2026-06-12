@@ -88,7 +88,7 @@ The `fastmcp.json` configures the MCP server runtime:
 ```json
 {
   "source": {
-    "path": "src/main.py",
+    "path": "src/ldap_assistant_mcp/main.py",
     "entrypoint": "create_server"
   },
   "environment": {
@@ -194,20 +194,20 @@ ldap-assistant-mcp/
 │   ├── openldap_mcp/        # OpenLDAP implementation
 │   ├── lib/                 # Shared utilities
 │   └── config/              # Configuration management
-├── src/main.py              # FastMCP entry point + server factory
+├── src/ldap_assistant_mcp/main.py              # FastMCP entry point + server factory
 └── fastmcp.json             # Declarative runtime config for fastmcp CLI
 ```
 
 ### Project Structure
 
 - `src/ldap_assistant_mcp/` - Base FastMCP server + shared config objects
-- `src/dirsrv_mcp/` - 389 DS implementation (connection manager, tools, health)
-- `src/dirsrv_mcp/tools/` - Tool modules: health, config, indexes, performance, replication, logs, archive, and `dse_utils.py` (shared DN/DSE helpers)
-- `src/dirsrv_mcp/archive/` - Archive mode: `loader.py` (auto-detection), `stub.py` (ArchiveDirSrv), `healthcheck_parser.py`
-- `src/openldap_mcp/` - OpenLDAP implementation
-- `src/lib/` - Shared utilities (datetime, formatting, LDAP helpers, privacy)
-- `src/config/` - Configuration loader
-- `src/main.py` - FastMCP-ready server factory
+- `src/ldap_assistant_mcp/dirsrv_mcp/` - 389 DS implementation (connection manager, tools, health)
+- `src/ldap_assistant_mcp/dirsrv_mcp/tools/` - Tool modules: health, config, indexes, performance, replication, logs, archive, and `dse_utils.py` (shared DN/DSE helpers)
+- `src/ldap_assistant_mcp/dirsrv_mcp/archive/` - Archive mode: `loader.py` (auto-detection), `stub.py` (ArchiveDirSrv), `healthcheck_parser.py`
+- `src/ldap_assistant_mcp/openldap_mcp/` - OpenLDAP implementation
+- `src/ldap_assistant_mcp/lib/` - Shared utilities (datetime, formatting, LDAP helpers, privacy)
+- `src/ldap_assistant_mcp/config/` - Configuration loader
+- `src/ldap_assistant_mcp/main.py` - FastMCP-ready server factory
 - `fastmcp.json` - Declarative runtime configuration for FastMCP CLI
 
 ### Design Decisions

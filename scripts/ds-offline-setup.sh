@@ -316,7 +316,7 @@ print_claude_desktop_config() {
       "command": "uv",
       "args": [
         "run", "--directory", "$REPO_ROOT",
-        "fastmcp", "run", "src/main.py:create_server"
+        "fastmcp", "run", "src/ldap_assistant_mcp/main.py:create_server"
       ],
       "env": {
         "LDAP_SERVERS_CONFIG": "$REPO_ROOT/servers.json",

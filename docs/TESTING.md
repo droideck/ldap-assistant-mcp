@@ -65,12 +65,18 @@ export LDAP_BIND_PASSWORD="TestPassword123"
 
 ### 3. Run pytest
 
+pytest and pytest-asyncio are dev dependencies and are not installed by `uv run` alone, so install them first:
+
+```bash
+uv pip install pytest pytest-asyncio
+```
+
 ```bash
 # Run all tests
 uv run pytest -v -s
 
 # Run specific test file
-uv run pytest src/dirsrv_mcp/tests/test_users.py -v -s
+uv run pytest tests/dirsrv_mcp/test_users.py -v -s
 
 # Run tests matching a pattern
 uv run pytest -k "test_user" -v -s
@@ -79,7 +85,7 @@ uv run pytest -k "test_user" -v -s
 ## Test Structure
 
 ```
-src/dirsrv_mcp/tests/
+tests/dirsrv_mcp/
 ├── conftest.py              # Shared fixtures
 ├── test_users.py            # User management tool tests
 ├── test_groups.py           # Group management tool tests
@@ -98,8 +104,25 @@ src/dirsrv_mcp/tests/
 ├── test_offline_mode.py     # Offline instance mode tests
 ├── test_archive_mode.py     # Archive mode infrastructure tests
 ├── test_archive_tools.py    # Archive/offline tool tests + DSE comparison
-└── test_logs.py             # Log parsing tool tests
+├── test_logs.py             # Log parsing tool tests
+├── test_debug_mode.py       # Debug mode behavior tests
+├── test_middleware.py       # Middleware timeout/size/logging tests
+└── test_privacy_gaps.py     # Privacy gap regression tests
 ```
+
+## Tool-selection eval
+
+The `tests/eval/` directory contains a tool-selection evaluation framework. It runs a 31-case dataset (`tests/eval/eval_dataset.json`) that checks whether tool descriptions route prompts to the right tool, plus guards for annotation and tag completeness.
+
+```bash
+# Run via pytest
+pytest tests/eval/run_eval.py -v
+
+# Or standalone
+python tests/eval/run_eval.py
+```
+
+When tools are added or renamed, `eval_dataset.json` should gain corresponding cases.
 
 ## Writing Tests
 
@@ -141,7 +164,7 @@ uv run pytest -v -s --tb=long
 ### Run Single Test
 
 ```bash
-uv run pytest src/dirsrv_mcp/tests/test_users.py::test_list_all_users -v -s
+uv run pytest tests/dirsrv_mcp/test_users.py::test_list_all_users -v -s
 ```
 
 ### Stop on First Failure

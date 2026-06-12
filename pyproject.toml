@@ -1,13 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "ldap-assistant-mcp"
 version = "0.4.0"
-description = "An MCP Server for 389 Directory Server interactions"
+description = "MCP server for 389 Directory Server health diagnostics, log analysis, and SOS-report investigation"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Simon Pichugin", email = "simon.pichugin@gmail.com" },
+]
+keywords = ["mcp", "ldap", "389ds", "directory-server", "diagnostics", "lib389", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration :: Authentication/Directory :: LDAP",
+]
+requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.10.1",
     "lib389>=3.1.3",
 ]
+
+[project.scripts]
+ldap-assistant-mcp = "ldap_assistant_mcp.main:main"
+
+[project.urls]
+Homepage = "https://github.com/droideck/ldap-assistant-mcp"
+Repository = "https://github.com/droideck/ldap-assistant-mcp"
+Changelog = "https://github.com/droideck/ldap-assistant-mcp/blob/main/CHANGELOG.md"
+Issues = "https://github.com/droideck/ldap-assistant-mcp/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -15,10 +45,17 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/ldap_assistant_mcp"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/ldap_assistant_mcp", "CHANGELOG.md"]
+
 [tool.pytest.ini_options]
-testpaths = ["src/dirsrv_mcp/tests", "src/openldap_mcp/tests"]
+testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-python_files = ["test_*.py"]
+python_files = ["test_*.py", "run_eval.py"]
 python_functions = ["test_*"]
 addopts = "-v"

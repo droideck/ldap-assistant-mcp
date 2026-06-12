@@ -7,6 +7,15 @@
 
 # Config files that may contain passwords
 servers.json
+demo-servers.json
 dev.fastmcp.json
 tests-servers.json
 tests-local-servers.json
+*-servers.json
+
+# Build artifacts
+/build
+/dist
+
+# Local Claude Code state
+.claude/

@@ -60,36 +60,37 @@ See [TESTING.md](TESTING.md) for more testing options.
 
 When adding new features:
 
-- **New tools:** Add to `src/dirsrv_mcp/tools/` or `src/openldap_mcp/tools/`
-- **Shared utilities:** Add to `src/lib/`
-- **Configuration:** Modify `src/config/`
-- **Tests:** Add to `tests/`
+- **New tools:** 389 DS tools live in `src/ldap_assistant_mcp/dirsrv_mcp/tools/`; OpenLDAP tools are registered directly in `src/ldap_assistant_mcp/openldap_mcp/server.py`
+- **Shared utilities:** Add to `src/ldap_assistant_mcp/lib/`
+- **Configuration:** Modify `src/ldap_assistant_mcp/config/`
+- **Tests:** Add to `tests/dirsrv_mcp/` (all tests live in the top-level `tests/` directory, outside the distribution package)
 
 ## Adding New Tools
 
 1. Create the tool function in the appropriate provider module
 2. Register it with the MCP server
 3. Add tests
-4. Document in [TOOLS.md](TOOLS.md)
+4. Document in [TOOLS.md](../src/ldap_assistant_mcp/dirsrv_mcp/TOOLS.md)
 
-Example tool structure:
+Example tool structure (see `src/ldap_assistant_mcp/dirsrv_mcp/tools/groups.py` for a full example):
 
 ```python
-from fastmcp import tool
+from mcp.types import ToolAnnotations
 
-@tool
-def my_new_tool(param: str) -> dict:
-    """Tool description.
+_RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
 
-    Args:
-        param: Description of parameter
 
-    Returns:
-        Dictionary with results
-    """
-    # Implementation
-    return {"result": "value"}
+def register_my_tools(mcp: DirSrvMCP) -> None:
+    """Register tools with the MCP server."""
+
+    @mcp.tool(annotations=_RO, tags={"mydomain", "live"})
+    def my_new_tool(param: str) -> Dict[str, Any]:
+        """Tool description (this docstring becomes the MCP tool description)."""
+        # Implementation
+        return {"result": "value"}
 ```
+
+Each `src/ldap_assistant_mcp/dirsrv_mcp/tools/<module>.py` exposes a `register_*_tools(mcp)` function that is called during server setup in `src/ldap_assistant_mcp/dirsrv_mcp/server.py`.
 
 ## Reporting Issues
 

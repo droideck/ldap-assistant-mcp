@@ -15,22 +15,16 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
-
-# Ensure the project root is on sys.path so ``src.*`` imports work.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from unittest.mock import patch
 
 from fastmcp import Client
 
-from src.dirsrv_mcp.server import DirSrvMCP
-from src.ldap_assistant_mcp.server import LDAPServerConfig, MCPSettings
+from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
+from ldap_assistant_mcp.core import LDAPServerConfig, MCPSettings
 
 DATASET_PATH = Path(__file__).with_name("eval_dataset.json")
 

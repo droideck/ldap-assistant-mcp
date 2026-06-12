@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from src.dirsrv_mcp.server import DirSrvMCP
+    from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
 
 
 def _helper_function() -> str:
@@ -114,7 +114,7 @@ All tools return `Dict[str, Any]` with consistent keys:
 Use `format_finding()` from `src.lib.result_formatter`:
 
 ```python
-from src.lib.result_formatter import Severity, format_finding
+from ldap_assistant_mcp.lib.result_formatter import Severity, format_finding
 
 findings.append(format_finding(
     title="Descriptive Title",
@@ -172,14 +172,14 @@ status = monitor.get_status()  # returns dict
 
 Put reusable helpers in appropriate locations:
 
-- `src/lib/result_formatter.py` - Finding formatting, severity
-- `src/lib/datetime_utils.py` - Date/time conversion
-- `src/lib/value_utils.py` - Safe value conversion, byte formatting
-- `src/dirsrv_mcp/connection.py` - Connection management, local server checks
-- `src/dirsrv_mcp/tools/dse_utils.py` - DN normalization, DSEldif helpers (shared across config, indexes, health, archive tools)
+- `src/ldap_assistant_mcp/lib/result_formatter.py` - Finding formatting, severity
+- `src/ldap_assistant_mcp/lib/datetime_utils.py` - Date/time conversion
+- `src/ldap_assistant_mcp/lib/value_utils.py` - Safe value conversion, byte formatting
+- `src/ldap_assistant_mcp/dirsrv_mcp/connection.py` - Connection management, local server checks
+- `src/ldap_assistant_mcp/dirsrv_mcp/tools/dse_utils.py` - DN normalization, DSEldif helpers (shared across config, indexes, health, archive tools)
 
 ```python
-from src.lib.value_utils import safe_int, safe_float, format_bytes
+from ldap_assistant_mcp.lib.value_utils import safe_int, safe_float, format_bytes
 
 # Use for status dict values (handles None, lists, invalid strings)
 value = safe_int(status.get("currentconnections"))
@@ -286,7 +286,7 @@ Handle missing attributes gracefully:
 
 ```python
 # GOOD - Safe retrieval with fallbacks
-from src.lib.value_utils import safe_int, safe_float
+from ldap_assistant_mcp.lib.value_utils import safe_int, safe_float
 
 value = safe_int(status.get("some_attribute"))  # Returns 0 if missing
 ratio = safe_float(status.get("hit_ratio"))     # Returns 0.0 if missing

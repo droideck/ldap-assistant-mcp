@@ -271,7 +271,7 @@ if [[ "$RUN_PYTEST" == true ]]; then
     -e LDAP_SERVERID="localhost" \
     ds-local-1 bash -c "
       cd /mcp && \
-      python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py -v -s 2>&1 || \
+      python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s 2>&1 || \
       echo 'Local connection tests completed (some failures may be expected if test file does not exist yet)'
     "
   STEP=$((STEP + 1))
@@ -294,4 +294,4 @@ echo "  cd /mcp"
 echo "  export LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json"
 echo "  export LDAP_IS_LOCAL=true"
 echo "  export LDAP_SERVERID=localhost"
-echo "  python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py -v -s"
+echo "  python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s"

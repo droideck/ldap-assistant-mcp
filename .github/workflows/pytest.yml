@@ -55,7 +55,7 @@ jobs:
           LDAP_BIND_DN: "cn=Directory Manager"
           LDAP_BIND_PASSWORD: "TestPassword123"
         run: |
-          uv run pytest -v -s --ignore=src/dirsrv_mcp/tests/test_local_connection.py
+          uv run pytest -v -s --ignore=tests/dirsrv_mcp/test_local_connection.py
 
       - name: Debug environment
         if: failure()
@@ -188,7 +188,7 @@ jobs:
             -e LDAP_SERVERID="localhost" \
             ds-local-ci bash -c "
               cd /mcp
-              python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py -v -s --tb=short
+              python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s --tb=short
             "
 
       - name: Debug local test environment
@@ -331,7 +331,7 @@ jobs:
             -e LDAP_SERVERID="localhost" \
             ds-multi-local bash -c "
               cd /mcp
-              python3 -m pytest src/dirsrv_mcp/tests/test_local_connection.py::TestMixedLocalRemoteConfig -v -s --tb=short
+              python3 -m pytest tests/dirsrv_mcp/test_local_connection.py::TestMixedLocalRemoteConfig -v -s --tb=short
             "
 
       - name: Debug multi-server environment
@@ -467,7 +467,7 @@ jobs:
             -e LDAP_MCP_EXPOSE_SENSITIVE_DATA="true" \
             ds-offline-ci bash -c "
               cd /mcp
-              python3 -m pytest src/dirsrv_mcp/tests/test_offline_mode.py -v -s --tb=short \
+              python3 -m pytest tests/dirsrv_mcp/test_offline_mode.py -v -s --tb=short \
                 -k 'not Integration'
             "
 
@@ -483,7 +483,7 @@ jobs:
             -e LDAP_MCP_EXPOSE_SENSITIVE_DATA="true" \
             ds-offline-ci bash -c "
               cd /mcp
-              python3 -m pytest src/dirsrv_mcp/tests/test_offline_mode.py::TestOfflineConnectionIntegration -v -s --tb=short
+              python3 -m pytest tests/dirsrv_mcp/test_offline_mode.py::TestOfflineConnectionIntegration -v -s --tb=short
             "
 
       - name: Debug offline test environment

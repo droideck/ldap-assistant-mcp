@@ -1,23 +1,24 @@
 {
   "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
   "source": {
-    "path": "src/main.py",
+    "path": "src/ldap_assistant_mcp/main.py",
     "entrypoint": "create_server"
   },
   "environment": {
     "type": "uv",
     "python": "3.13",
     "dependencies": [
-      "fastmcp",
-      "lib389"
-    ]
+      "fastmcp>=2.10.1",
+      "lib389>=3.1.3"
+    ],
+    "editable": ["."]
   },
   "deployment": {
     "transport": "stdio",
-    "log_level": "INFO"
-  },
-  "env": {
-    "LDAP_SERVERS_CONFIG": "./servers.json"
+    "log_level": "INFO",
+    "env": {
+      "LDAP_SERVERS_CONFIG": "./servers.json"
+    }
   }
 }
 
