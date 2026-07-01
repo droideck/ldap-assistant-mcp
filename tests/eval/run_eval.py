@@ -139,7 +139,8 @@ async def test_all_tools_have_tags(mcp_server):
 
     missing = []
     for tool in tools:
-        tags = (tool.meta or {}).get("_fastmcp", {}).get("tags", [])
+        meta = tool.meta or {}
+        tags = (meta.get("_fastmcp") or meta.get("fastmcp") or {}).get("tags", [])
         if not tags:
             missing.append(tool.name)
     assert not missing, f"Tools missing tags: {missing}"
