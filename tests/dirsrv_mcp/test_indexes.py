@@ -11,7 +11,9 @@ from fastmcp import Client
 
 from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
 
-pytestmark = pytest.mark.asyncio
+# Every test in this module drives live LDAP tools against a running DS
+# instance — deselect without containers via `pytest -m "not live"`.
+pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 
 
 # list_indexes tests

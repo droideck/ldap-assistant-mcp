@@ -17,7 +17,6 @@ Tests use tmp_path JSON files and mocks only — no live LDAP server needed.
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest

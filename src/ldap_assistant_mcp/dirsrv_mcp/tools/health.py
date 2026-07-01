@@ -13,7 +13,7 @@ from lib389.backend import Backends
 from lib389.config import Config, Encryption
 from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.dseldif import DSEldif, FSChecks
-from lib389.monitor import Monitor, MonitorDiskSpace, MonitorLDBM
+from lib389.monitor import Monitor, MonitorDiskSpace
 from lib389.nss_ssl import NssSsl
 from lib389.plugins import MemberOfPlugin, ReferentialIntegrityPlugin
 from lib389.replica import Replica, Replicas
@@ -27,7 +27,7 @@ from ldap_assistant_mcp.dirsrv_mcp.tools.dse_utils import find_child_dns, get_ds
 from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from ldap_assistant_mcp.lib.disk_utils import parse_dsdisk_entry
 from ldap_assistant_mcp.lib.result_formatter import Severity, format_finding
-from ldap_assistant_mcp.lib.value_utils import format_bytes, safe_float, safe_int
+from ldap_assistant_mcp.lib.value_utils import safe_float, safe_int
 
 if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.connection import ServerConfig
@@ -1031,71 +1031,6 @@ def _check_server_health(
         )
 
 
-def _check_connection_limits(
-    mcp: DirSrvMCP,
-    monitor_data: Dict[str, Any],
-    server_name: str,
-    findings: List[Dict[str, Any]],
-) -> None:
-    """Check if connection limits are approaching capacity."""
-    try:
-        current_conns = int(monitor_data.get("currentconnections", [0])[0])
-        max_conns = int(monitor_data.get("maxconnections", [0])[0])
-        if max_conns <= 0:
-            return
-        utilization = (current_conns / max_conns) * 100
-        if utilization >= 90:
-            severity = Severity.CRITICAL
-            title = f"Connection Limit Critical: {server_name}"
-        elif utilization >= 75:
-            severity = Severity.HIGH
-            title = f"Connection Limit Warning: {server_name}"
-        else:
-            return
-        findings.append(
-            format_finding(
-                title=title,
-                severity=severity,
-                impact="Server approaching maximum connections",
-                details=f"Current connections: {current_conns} / {max_conns} ({utilization:.1f}% utilization)",
-                remediation="Review connection usage and increase limits if necessary",
-                server=server_name,
-                metadata={
-                    "current": current_conns,
-                    "max": max_conns,
-                    "utilization": utilization,
-                },
-            )
-        )
-    except (KeyError, ValueError, IndexError):
-        mcp.logger.debug("Could not check connection limits for %s", server_name)
-
-
-def _check_threads(
-    mcp: DirSrvMCP,
-    monitor_data: Dict[str, Any],
-    server_name: str,
-    findings: List[Dict[str, Any]],
-) -> None:
-    """Check if thread count is concerning."""
-    try:
-        threads = int(monitor_data.get("threads", [0])[0])
-        if 0 < threads < 5:
-            findings.append(
-                format_finding(
-                    title=f"Low Thread Count: {server_name}",
-                    severity=Severity.MEDIUM,
-                    impact="Server may have reduced capacity to handle concurrent requests",
-                    details=f"Only {threads} worker threads active",
-                    remediation="Check server configuration and resource availability (CPU, memory)",
-                    server=server_name,
-                    metadata={"threads": threads},
-                )
-            )
-    except (KeyError, ValueError, IndexError):
-        mcp.logger.debug("Could not check threads for %s", server_name)
-
-
 def _check_replication_health(
     mcp: DirSrvMCP,
     ds,
@@ -1121,14 +1056,12 @@ def _check_replication_health(
         for replica in replica_list:
             try:
                 suffix = replica.get_suffix()
-                role = replica.get_role()
                 agreements = replica.get_agreements()
 
                 for agmt in agreements.list():
                     agmt_name = agmt.get_attr_val_utf8("cn")
                     consumer = agmt.get_attr_val_utf8("nsDS5ReplicaHost")
                     last_result = agmt.get_attr_val_utf8("nsds5replicaLastUpdateStatus") or ""
-                    last_update = agmt.get_attr_val_utf8("nsds5replicaLastUpdateEnd") or ""
 
                     agmt_info = {
                         "name": agmt_name,

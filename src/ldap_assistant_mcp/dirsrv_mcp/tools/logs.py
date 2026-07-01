@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import glob as globmod
 import gzip
+import heapq
 import json
 import os
 import re
@@ -437,25 +438,76 @@ def _matches_audit_filters(
 # these helpers can be replaced — the field names and tool logic are
 # kept compatible so the switch will be straightforward.
 
+# Cap on detailed slow-operation records kept in memory while scanning.
+_SLOW_OPS_TOP_N = 20
 
-def _read_log_lines(log_path: str, include_archived: bool = False) -> List[str]:
-    """Read lines from a log file, optionally including rotated/compressed logs."""
-    lines: List[str] = []
+
+def _read_log_lines(log_path: str, include_archived: bool = False):
+    """Yield lines from a log file, optionally including rotated/compressed logs.
+
+    A generator so multi-GB logs are streamed instead of loaded whole.
+    Rotated files (``access.20240128-110131`` style) are read in sorted
+    (chronological) order, current file last.
+    """
     if include_archived:
-        for path in globmod.glob(f"{log_path}.*-*") + [log_path]:
-            try:
-                if path.endswith(".gz"):
-                    with gzip.open(path, "rt", errors="replace") as fh:
-                        lines += fh.readlines()
-                else:
-                    with open(path, "r", errors="replace") as fh:
-                        lines += fh.readlines()
-            except OSError:
-                continue
+        paths = sorted(globmod.glob(f"{log_path}.*-*")) + [log_path]
     else:
-        with open(log_path, "r", errors="replace") as fh:
-            lines = fh.readlines()
-    return lines
+        paths = [log_path]
+    for path in paths:
+        try:
+            if path.endswith(".gz"):
+                fh = gzip.open(path, "rt", errors="replace")
+            else:
+                fh = open(path, "r", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            yield from fh
+
+
+def _read_json_log_entries(
+    log_path: str,
+    counters: Dict[str, int],
+    include_archived: bool = False,
+):
+    """Yield parsed entries from a JSON-lines DS log, streaming line-by-line.
+
+    Replaces lib389 ``parse_log()``, which loads the whole file into memory
+    and aborts on the first malformed line.  Malformed/blank lines are
+    counted in ``counters["malformed_lines"]`` and skipped.
+    """
+    for line in _read_log_lines(log_path, include_archived):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except ValueError:
+            counters["malformed_lines"] = counters.get("malformed_lines", 0) + 1
+            continue
+        if isinstance(entry, dict):
+            yield entry
+        else:
+            counters["malformed_lines"] = counters.get("malformed_lines", 0) + 1
+
+
+class _TopNHeap:
+    """Keep the N highest-scoring items seen, in O(log N) per push."""
+
+    def __init__(self, n: int):
+        self._n = n
+        self._heap: List[tuple] = []
+        self._counter = 0  # tiebreak — dicts are not comparable
+
+    def push(self, score: float, item: Any) -> None:
+        self._counter += 1
+        if len(self._heap) < self._n:
+            heapq.heappush(self._heap, (score, self._counter, item))
+        elif score > self._heap[0][0]:
+            heapq.heapreplace(self._heap, (score, self._counter, item))
+
+    def items_desc(self) -> List[Any]:
+        return [item for _, _, item in sorted(self._heap, reverse=True)]
 
 _ACCESS_TS_RE = re.compile(r"^\[(?P<timestamp>[^\]]+)\]\s*(?P<rest>.*)")
 _ACCESS_RESULT_RE = re.compile(
@@ -559,8 +611,6 @@ def _parse_access_log_entries(
     When *stats_only* is True, individual entries and slow-op details are
     omitted — only aggregate statistics are returned.
     """
-    from lib389.dirsrv_log import DirsrvAccessJSONLog
-
     log_path = ds.ds_paths.access_log
     if not log_path or not os.path.isfile(log_path):
         return {"error": f"Access log not found at {log_path}"}
@@ -574,7 +624,8 @@ def _parse_access_log_entries(
     entries: List[Dict[str, Any]] = []
     op_stats: Dict[str, int] = {}
     failed_ops: Dict[int, int] = {}
-    slow_ops: List[Dict[str, Any]] = []
+    slow_ops = _TopNHeap(_SLOW_OPS_TOP_N)
+    counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
     # Stats-only accumulators for slow-op summary
     slow_count = 0
@@ -585,11 +636,7 @@ def _parse_access_log_entries(
     is_json = _detect_json_log(log_path)
 
     if is_json:
-        log_obj = DirsrvAccessJSONLog(ds)
-        json_entries = log_obj.parse_log()
-        for jentry in json_entries:
-            if not isinstance(jentry, dict):
-                continue
+        for jentry in _read_json_log_entries(log_path, counters, include_archived):
             total_parsed += 1
             # 389 DS JSON access logs use "operation" (e.g. SEARCH, RESULT)
             action = jentry.get(
@@ -632,7 +679,9 @@ def _parse_access_log_entries(
                         if etime_f > slow_max:
                             slow_max = etime_f
                         if not stats_only:
-                            slow_ops.append({"etime": etime_f, **jentry})
+                            # normalized float etime last so it wins over the
+                            # raw string value in jentry
+                            slow_ops.push(etime_f, {**jentry, "etime": etime_f})
                 except (ValueError, TypeError):
                     pass
 
@@ -686,7 +735,10 @@ def _parse_access_log_entries(
                         if etime_f > slow_max:
                             slow_max = etime_f
                         if not stats_only:
-                            slow_ops.append({"etime": etime_f, "raw": line.rstrip(), **parsed})
+                            slow_ops.push(
+                                etime_f,
+                                {**parsed, "raw": line.rstrip(), "etime": etime_f},
+                            )
                 except (ValueError, TypeError):
                     pass
 
@@ -710,18 +762,21 @@ def _parse_access_log_entries(
             },
             "unindexed_search_count": unindexed_count,
         }
+        if is_json:
+            result["malformed_lines"] = counters["malformed_lines"]
         return result
 
-    slow_ops.sort(key=lambda x: x.get("etime", 0), reverse=True)
-
-    return {
+    result = {
         "entries": entries,
         "total_parsed": total_parsed,
         "matched_count": sum(op_stats.values()),
         "operation_stats": op_stats,
         "failed_operations": {str(k): v for k, v in sorted(failed_ops.items())},
-        "slow_operations": slow_ops[:20],
+        "slow_operations": slow_ops.items_desc(),
     }
+    if is_json:
+        result["malformed_lines"] = counters["malformed_lines"]
+    return result
 
 
 _ERROR_SEVERITY_RE = re.compile(
@@ -744,8 +799,6 @@ def _parse_error_log_entries(
     aggregate statistics (severity_counts, component_counts,
     common_patterns) are returned.
     """
-    from lib389.dirsrv_log import DirsrvErrorJSONLog
-
     log_path = ds.ds_paths.error_log
     if not log_path or not os.path.isfile(log_path):
         return {"error": f"Error log not found at {log_path}"}
@@ -759,6 +812,7 @@ def _parse_error_log_entries(
     entries: List[Dict[str, Any]] = []
     severity_counts: Dict[str, int] = {}
     component_counts: Dict[str, int] = {}
+    counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
     matched_count = 0
     pattern_counts: Dict[str, int] = {}
@@ -766,11 +820,7 @@ def _parse_error_log_entries(
     is_json = _detect_json_log(log_path)
 
     if is_json:
-        log_obj = DirsrvErrorJSONLog(ds)
-        json_entries = log_obj.parse_log()
-        for jentry in json_entries:
-            if not isinstance(jentry, dict):
-                continue
+        for jentry in _read_json_log_entries(log_path, counters):
             total_parsed += 1
             entry_sev = jentry.get("severity", "INFO").upper()
             severity_counts[entry_sev] = severity_counts.get(entry_sev, 0) + 1
@@ -840,20 +890,23 @@ def _parse_error_log_entries(
             {"pattern": p, "count": c}
             for p, c in sorted(pattern_counts.items(), key=lambda x: -x[1])[:10]
         ]
-        return {
+        result: Dict[str, Any] = {
             "total_parsed": total_parsed,
             "matched_count": matched_count,
             "severity_counts": severity_counts,
             "component_counts": component_counts,
             "common_patterns": common_patterns,
         }
+        if is_json:
+            result["malformed_lines"] = counters["malformed_lines"]
+        return result
 
     common_patterns = [
         {"pattern": p, "count": c, "example": p[:80]}
         for p, c in sorted(pattern_counts.items(), key=lambda x: -x[1])[:10]
     ]
 
-    return {
+    result = {
         "entries": entries,
         "total_parsed": total_parsed,
         "matched_count": matched_count,
@@ -861,6 +914,9 @@ def _parse_error_log_entries(
         "component_counts": component_counts,
         "common_patterns": common_patterns,
     }
+    if is_json:
+        result["malformed_lines"] = counters["malformed_lines"]
+    return result
 
 
 def _track_pattern(counts: Dict[str, int], message: str) -> None:
@@ -875,8 +931,11 @@ _AUDIT_TIME_RE = re.compile(r"^time:\s+(\d+)$")
 _AUDIT_DN_RE = re.compile(r"^dn:\s+(.+)$")
 
 
-def _parse_audit_log_traditional(lines: List[str]) -> List[Dict[str, Any]]:
-    """Parse traditional LDIF-style audit log into change records."""
+def _parse_audit_log_traditional(lines) -> List[Dict[str, Any]]:
+    """Parse traditional LDIF-style audit log into change records.
+
+    *lines* may be any iterable of strings (list or generator).
+    """
     records: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
     current_lines: List[str] = []
@@ -931,8 +990,6 @@ def _parse_audit_log_entries(
     When *stats_only* is True, individual change records are omitted —
     only aggregate statistics are returned.
     """
-    from lib389.dirsrv_log import DirsrvAuditJSONLog
-
     log_path = ds.ds_paths.audit_log
     if not log_path or not os.path.isfile(log_path):
         return {"error": f"Audit log not found at {log_path}"}
@@ -943,17 +1000,14 @@ def _parse_audit_log_entries(
     changes: List[Dict[str, Any]] = []
     change_type_counts: Dict[str, int] = {}
     actor_counts: Dict[str, int] = {}
+    counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
     matched_count = 0
 
     is_json = _detect_json_log(log_path)
 
     if is_json:
-        log_obj = DirsrvAuditJSONLog(ds)
-        json_entries = log_obj.parse_log()
-        for jentry in json_entries:
-            if not isinstance(jentry, dict):
-                continue
+        for jentry in _read_json_log_entries(log_path, counters):
             total_parsed += 1
             ct = jentry.get("changetype", jentry.get("op_type", "")).lower()
             change_type_counts[ct] = change_type_counts.get(ct, 0) + 1
@@ -977,11 +1031,10 @@ def _parse_audit_log_entries(
         # Traditional LDIF-style audit log — use our own parser
         try:
             with open(log_path, "r", errors="ignore") as fh:
-                raw_lines = fh.readlines()
+                records = _parse_audit_log_traditional(fh)
         except OSError:
             return {"error": f"Could not read audit log at {log_path}"}
 
-        records = _parse_audit_log_traditional(raw_lines)
         for rec in records:
             total_parsed += 1
             ct = rec.get("changetype", "unknown").lower()
@@ -1004,20 +1057,26 @@ def _parse_audit_log_entries(
                 changes.append(rec)
 
     if stats_only:
-        return {
+        result: Dict[str, Any] = {
             "total_parsed": total_parsed,
             "matched_count": matched_count,
             "change_type_stats": change_type_counts,
             "actor_stats": actor_counts,
         }
+        if is_json:
+            result["malformed_lines"] = counters["malformed_lines"]
+        return result
 
-    return {
+    result = {
         "changes": changes,
         "total_parsed": total_parsed,
         "matched_count": matched_count,
         "change_type_stats": change_type_counts,
         "actor_stats": actor_counts,
     }
+    if is_json:
+        result["malformed_lines"] = counters["malformed_lines"]
+    return result
 
 
 def register_log_tools(mcp: "DirSrvMCP") -> None:
@@ -1109,6 +1168,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         """Parse error log entries with full detail (requires expose_sensitive_data).
 
         Works with live local servers, offline instances, and archive sources.
+        Reads the current error log only — rotated logs are not scanned.
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -1174,6 +1234,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
 
         Works with live local servers, offline instances, and archive sources.
         Handles both traditional LDIF-format and JSON-format audit logs.
+        Reads the current audit log only — rotated logs are not scanned.
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -1315,6 +1376,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
     ) -> Dict[str, Any]:
         """Analyze error log statistics (severity, components, patterns). LOCAL/ARCHIVE.
 
+        Reads the current error log only — rotated logs are not scanned.
         Returns aggregate statistics only — no individual log entries.
         Privacy-safe (works with privacy mode ON). For full log entries,
         use ``parse_error_log`` (requires expose_sensitive_data).
@@ -1384,6 +1446,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
     ) -> Dict[str, Any]:
         """Analyze audit log statistics (change types, actors). LOCAL/ARCHIVE.
 
+        Reads the current audit log only — rotated logs are not scanned.
         Returns aggregate statistics only — no individual change records.
         Privacy-safe (works with privacy mode ON). For full change records,
         use ``parse_audit_log`` (requires expose_sensitive_data).

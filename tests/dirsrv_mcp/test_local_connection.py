@@ -13,7 +13,7 @@ where the MCP code is mounted. Use scripts/ds-test-local.sh to set this up.
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

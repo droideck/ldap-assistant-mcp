@@ -1,2 +1,3 @@
-fastmcp>=2.10.1
-lib389
+# pyproject.toml is the single source of dependency truth.
+# This file exists for tooling that expects a requirements.txt.
+-e .[dev]

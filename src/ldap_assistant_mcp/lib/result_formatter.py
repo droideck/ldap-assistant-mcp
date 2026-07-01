@@ -1,9 +1,7 @@
 """Result formatting utilities for LDAP Assistant MCP."""
 
-import json
 from enum import Enum
-from typing import Any, Dict, List, Optional
-from mcp.types import CallToolResult, TextContent
+from typing import Any, Dict, Optional
 
 
 class Severity(Enum):
@@ -67,46 +65,3 @@ def format_finding(
         finding["metadata"] = metadata
 
     return finding
-
-
-def format_tool_result(
-    result_type: str,
-    data: Any,
-    is_error: bool = False,
-    error_message: Optional[str] = None
-) -> CallToolResult:
-    """
-    Format a tool result in standard MCP format.
-
-    Args:
-        result_type: Type identifier for the result (e.g., "user_list", "health_check")
-        data: The result data (will be JSON serialized)
-        is_error: Whether this is an error result
-        error_message: Error message if is_error=True
-
-    Returns:
-        CallToolResult ready to return from an MCP tool
-
-    Examples:
-        >>> result = format_tool_result("user_list", {"users": [...]})
-        >>> error_result = format_tool_result(
-        ...     "connection_error",
-        ...     {},
-        ...     is_error=True,
-        ...     error_message="Failed to connect to LDAP server"
-        ... )
-    """
-    if is_error:
-        content_text = error_message or "Unknown error"
-    else:
-        response = {"type": result_type}
-        if isinstance(data, dict):
-            response.update(data)
-        else:
-            response["data"] = data
-        content_text = json.dumps(response, indent=2)
-
-    return CallToolResult(
-        isError=is_error,
-        content=[TextContent(type="text", text=content_text)]
-    )

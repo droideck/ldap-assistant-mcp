@@ -31,18 +31,22 @@ class ArchivePaths:
 
     def __init__(
         self,
-        config_dir: str,
+        config_dir: Optional[str],
         log_dir: Optional[str] = None,
         schema_dir: Optional[str] = None,
         cert_dir: Optional[str] = None,
     ):
+        # All directories may be None — e.g. a logs-only archive has no
+        # config_dir.  Never join paths onto a None base.
         self._config_dir = config_dir
         self._log_dir = log_dir
-        self._schema_dir = schema_dir or os.path.join(config_dir, "schema")
+        self._schema_dir = schema_dir or (
+            os.path.join(config_dir, "schema") if config_dir else None
+        )
         self._cert_dir = cert_dir or config_dir
 
     @property
-    def config_dir(self) -> str:
+    def config_dir(self) -> Optional[str]:
         return self._config_dir
 
     @property
@@ -50,11 +54,11 @@ class ArchivePaths:
         return self._log_dir
 
     @property
-    def schema_dir(self) -> str:
+    def schema_dir(self) -> Optional[str]:
         return self._schema_dir
 
     @property
-    def cert_dir(self) -> str:
+    def cert_dir(self) -> Optional[str]:
         return self._cert_dir
 
     @property

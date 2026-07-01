@@ -252,18 +252,29 @@ class TestGroupToolsCredentialStripping:
 class TestLdapSearchCredentialStripping:
     @pytest.mark.asyncio
     async def test_ldap_search_strips_credentials_exposed_mode(self):
+        import ldap as _ldap
+
         server = _make_server(expose=True)
         ds = MagicMock()
-        ds.search_s.return_value = [
+        # ldap_search issues an async search (search_ext + result loop) so
+        # partial results survive SIZELIMIT_EXCEEDED.
+        ds.search_ext.return_value = 1
+        ds.result.side_effect = [
             (
-                "uid=jdoe,dc=example,dc=com",
-                {
-                    "uid": [b"jdoe"],
-                    "userPassword": [b"{PBKDF2-SHA512}searchsecrethash"],
-                    "nsds5ReplicaCredentials": [b"{AES}replsecret"],
-                    "mail": [b"jdoe@example.com"],
-                },
+                _ldap.RES_SEARCH_ENTRY,
+                [
+                    (
+                        "uid=jdoe,dc=example,dc=com",
+                        {
+                            "uid": [b"jdoe"],
+                            "userPassword": [b"{PBKDF2-SHA512}searchsecrethash"],
+                            "nsds5ReplicaCredentials": [b"{AES}replsecret"],
+                            "mail": [b"jdoe@example.com"],
+                        },
+                    ),
+                ],
             ),
+            (_ldap.RES_SEARCH_RESULT, []),
         ]
         _install_fake_connection(server, ds)
 

@@ -6,11 +6,10 @@ provider implementations (389 DS, OpenLDAP, etc.).
 """
 
 from .datetime_utils import convert_datetimes_to_strings
-from .result_formatter import format_finding, Severity, format_tool_result
+from .result_formatter import format_finding, Severity
 
 __all__ = [
     'convert_datetimes_to_strings',
     'format_finding',
-    'format_tool_result',
     'Severity'
 ]

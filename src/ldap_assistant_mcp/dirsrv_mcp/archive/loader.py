@@ -9,13 +9,27 @@ import os
 import shutil
 import tarfile
 import tempfile
-from dataclasses import dataclass, field
-from typing import List, Optional
+import threading
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _temp_dirs: List[str] = []
-_extraction_cache: dict[str, str] = {}  # resolved archive path -> extracted dir
+# (realpath, mtime_ns, size) -> extracted dir.  Keying on mtime+size means a
+# re-uploaded archive at the same path is re-extracted instead of served stale.
+_extraction_cache: dict[Tuple[str, int, int], str] = {}
+# Serialises extraction so concurrent tool calls do not extract the same
+# archive twice (and so cache reads/writes are consistent).
+_extraction_lock = threading.Lock()
+
+# Decompression-bomb guards: reject archives whose members declare more than
+# this total uncompressed size or count.  SOS reports are typically < 2 GB
+# uncompressed; these caps are far above any legitimate support archive.
+MAX_ARCHIVE_TOTAL_BYTES = 20 * 1024**3  # 20 GB
+MAX_ARCHIVE_MEMBERS = 500_000
+# Keep at least this much free disk after extraction.
+_MIN_FREE_DISK_BYTES = 1 * 1024**3  # 1 GB
 
 @dataclass
 class ArchiveLayout:
@@ -47,49 +61,114 @@ def detect_archive_layout(
         instance_name: Optional instance to select (e.g. 'slapd-supplier1')
             when archive contains multiple DS instances. If omitted and
             multiple instances exist, raises ValueError listing them.
+
+    Precedence: when archive_path is given it is scanned for the layout;
+    explicit config_path / logs_path then override the discovered
+    directories.  Without archive_path, the explicit paths stand alone.
     """
-    # Explicit paths provided
+    if archive_path:
+        # Compressed archive — extract first
+        if os.path.isfile(archive_path) and _is_tarball(archive_path):
+            archive_path = extract_archive(archive_path)
+
+        if not os.path.isdir(archive_path):
+            raise FileNotFoundError(f"Archive path is not a directory: {archive_path}")
+
+        layout = _scan_directory(archive_path, instance_name=instance_name)
+
+        # Explicit paths override what the scan discovered (e.g. logs kept
+        # outside the archive).
+        if config_path or logs_path:
+            explicit = _layout_from_explicit_paths(config_path, logs_path)
+            if explicit.config_dir:
+                layout.config_dir = explicit.config_dir
+                layout.dse_ldif_path = explicit.dse_ldif_path
+                layout.schema_dir = explicit.schema_dir
+                layout.cert_dir = explicit.cert_dir
+            if explicit.logs_dir:
+                layout.logs_dir = explicit.logs_dir
+        return layout
+
+    # Explicit paths only
     if config_path or logs_path:
         return _layout_from_explicit_paths(config_path, logs_path)
 
-    if not archive_path:
-        raise ValueError("Either archive_path or config_path must be provided")
+    raise ValueError("Either archive_path or config_path must be provided")
 
-    # Compressed archive — extract first
-    if os.path.isfile(archive_path) and _is_tarball(archive_path):
-        archive_path = extract_archive(archive_path)
+def _check_archive_size(archive_file: str) -> int:
+    """Sum member sizes, rejecting decompression bombs.
 
-    if not os.path.isdir(archive_path):
-        raise FileNotFoundError(f"Archive path is not a directory: {archive_path}")
+    Returns the declared total uncompressed size.  Raises ValueError when
+    the archive declares more than MAX_ARCHIVE_TOTAL_BYTES or more than
+    MAX_ARCHIVE_MEMBERS members.
+    """
+    total_bytes = 0
+    member_count = 0
+    with tarfile.open(archive_file, "r:*") as tar:
+        for member in tar:
+            member_count += 1
+            if member_count > MAX_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    f"Archive has more than {MAX_ARCHIVE_MEMBERS} members — "
+                    "refusing to extract (decompression-bomb guard)."
+                )
+            if member.size > 0:
+                total_bytes += member.size
+                if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise ValueError(
+                        f"Archive declares more than "
+                        f"{MAX_ARCHIVE_TOTAL_BYTES // 1024**3} GB uncompressed — "
+                        "refusing to extract (decompression-bomb guard)."
+                    )
+    return total_bytes
 
-    return _scan_directory(archive_path, instance_name=instance_name)
 
 def extract_archive(archive_file: str) -> str:
-    """Extract .tar.xz or .tar.gz to a temporary directory.
+    """Extract a tar archive (.tar, .tar.xz, .tar.gz, ...) to a temp directory.
 
-    Returns the path to the extracted directory.  Repeated calls with
-    the same archive file return the cached result instead of
-    re-extracting.  Tracked for cleanup via :func:`cleanup_temp_dirs`
-    (also registered as an ``atexit`` handler).
+    Returns the path to the extracted directory.  Repeated calls with the
+    same archive file (same path, mtime, and size) return the cached result
+    instead of re-extracting; a lock serialises concurrent calls so the
+    same archive is never extracted twice.  Tracked for cleanup via
+    :func:`cleanup_temp_dirs` (also registered as an ``atexit`` handler).
+
+    Raises ValueError for archives that exceed the decompression-bomb caps
+    or would not fit on disk.
     """
     if not os.path.isfile(archive_file):
         raise FileNotFoundError(f"Archive file not found: {archive_file}")
 
     real_path = os.path.realpath(archive_file)
-    cached = _extraction_cache.get(real_path)
-    if cached and os.path.isdir(cached):
-        logger.debug("Reusing cached extraction for %s at %s", archive_file, cached)
-        return cached
+    stat = os.stat(real_path)
+    cache_key = (real_path, stat.st_mtime_ns, stat.st_size)
 
-    tmp_dir = tempfile.mkdtemp(prefix="ldap-mcp-archive-")
-    _temp_dirs.append(tmp_dir)
-    logger.info("Extracting %s to %s", archive_file, tmp_dir)
+    with _extraction_lock:
+        cached = _extraction_cache.get(cache_key)
+        if cached and os.path.isdir(cached):
+            logger.debug("Reusing cached extraction for %s at %s", archive_file, cached)
+            return cached
 
-    with tarfile.open(archive_file, "r:*") as tar:
-        tar.extractall(tmp_dir, filter="data")
+        total_bytes = _check_archive_size(real_path)
 
-    _extraction_cache[real_path] = tmp_dir
-    return tmp_dir
+        tmp_dir = tempfile.mkdtemp(prefix="ldap-mcp-archive-")
+        try:
+            free_bytes = shutil.disk_usage(tmp_dir).free
+            if total_bytes > max(0, free_bytes - _MIN_FREE_DISK_BYTES):
+                raise ValueError(
+                    f"Archive needs ~{total_bytes // 1024**2} MB but only "
+                    f"{free_bytes // 1024**2} MB of disk is free — refusing to extract."
+                )
+
+            logger.info("Extracting %s to %s", archive_file, tmp_dir)
+            with tarfile.open(real_path, "r:*") as tar:
+                tar.extractall(tmp_dir, filter="data")
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+        _temp_dirs.append(tmp_dir)
+        _extraction_cache[cache_key] = tmp_dir
+        return tmp_dir
 
 
 def cleanup_temp_dirs() -> None:
@@ -104,8 +183,18 @@ def cleanup_temp_dirs() -> None:
 atexit.register(cleanup_temp_dirs)
 
 def _is_tarball(path: str) -> bool:
+    """Detect tar archives by content, not just extension.
+
+    ``tarfile.is_tarfile`` recognises plain ``.tar`` as well as all the
+    compressed variants regardless of how the file is named.
+    """
     lower = path.lower()
-    return any(lower.endswith(ext) for ext in (".tar.xz", ".tar.gz", ".tar.bz2", ".tgz"))
+    if any(lower.endswith(ext) for ext in (".tar", ".tar.xz", ".tar.gz", ".tar.bz2", ".tgz")):
+        return True
+    try:
+        return tarfile.is_tarfile(path)
+    except (OSError, ValueError):
+        return False
 
 def _layout_from_explicit_paths(
     config_path: Optional[str],

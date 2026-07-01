@@ -180,7 +180,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     health, severity = _assess_cache_health(ratio)
                     db_cache["health"] = health
 
-                    if severity in [Severity.MEDIUM, Severity.HIGH]:
+                    # tries > 1000 gates out idle-server false alarms (a
+                    # freshly started instance has a meaningless ratio),
+                    # matching the entry-cache path below.
+                    if severity in [Severity.MEDIUM, Severity.HIGH] and tries > 1000:
                         findings.append(
                             format_finding(
                                 title="Low Database Cache Hit Ratio",

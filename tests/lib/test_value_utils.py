@@ -1,6 +1,5 @@
 """Tests for value_utils module."""
 
-import pytest
 from ldap_assistant_mcp.lib.value_utils import safe_int, safe_float, format_bytes
 
 

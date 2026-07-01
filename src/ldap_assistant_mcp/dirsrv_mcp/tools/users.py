@@ -28,6 +28,27 @@ if TYPE_CHECKING:
 
 _RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
 
+# Hard cap on entries examined by the per-user status scans (each user costs
+# an extra LDAP round-trip).  Results carry ``scan_capped`` when hit so a
+# partial answer is never mistaken for a complete one.
+_MAX_STATUS_SCAN = 1000
+
+
+def _normalize_search_term(value: str, param: str) -> str:
+    """Validate and normalize a user-supplied search term.
+
+    Whitespace-only and wildcard-only terms would build filters like
+    ``(uid=**)`` — invalid LDAP that surfaces as an opaque masked error.
+    Reject them with a clear message and collapse repeated wildcards.
+    """
+    value = value.strip()
+    if not value.strip("*"):
+        raise ToolError(
+            f"Parameter '{param}' must contain at least one "
+            "non-wildcard, non-whitespace character."
+        )
+    return re.sub(r"\*{2,}", "*", value)
+
 
 def register_user_tools(mcp: DirSrvMCP) -> None:
     """Register user management tools with the MCP server."""
@@ -86,6 +107,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
         """
         target = server_name or mcp.default_server
         mcp.require_live(target,"search_users_by_name")
+        name = _normalize_search_term(name, "name")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             if "*" in name:
@@ -169,17 +191,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
             # In privacy mode, count active users only
             if mcp.privacy_enabled:
-                count = 0
-                for entry in users.list():
-                    try:
-                        record = _build_user_record(mcp, entry, ds, base_dn)
-                        if record["attrs"].get("computed_status", {}).get("simple_status") == "active":
-                            count += 1
-                    except Exception:
-                        continue
-                return create_count_only_response("active_users", srv, count, mcp.sanitizer)
+                count, scanned, capped = _count_users_with_status(
+                    mcp, users.list(), ds, base_dn, desired_status="active"
+                )
+                result = create_count_only_response("active_users", srv, count, mcp.sanitizer)
+                result["users_scanned"] = scanned
+                result["scan_capped"] = capped
+                return result
 
-            records = _collect_filtered_users(
+            records, scanned, capped = _collect_filtered_users(
                 mcp, users.list(), ds, base_dn, limit, desired_status="active"
             )
             return {
@@ -187,6 +207,8 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "server": srv,
                 "active_users_found": len(records),
                 "limit_applied": limit,
+                "users_scanned": scanned,
+                "scan_capped": capped,
                 "items": records,
             }
 
@@ -213,17 +235,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
             # In privacy mode, count locked users only
             if mcp.privacy_enabled:
-                count = 0
-                for entry in users.list():
-                    try:
-                        record = _build_user_record(mcp, entry, ds, base_dn)
-                        if record["attrs"].get("computed_status", {}).get("simple_status") == "locked":
-                            count += 1
-                    except Exception:
-                        continue
-                return create_count_only_response("locked_users", srv, count, mcp.sanitizer)
+                count, scanned, capped = _count_users_with_status(
+                    mcp, users.list(), ds, base_dn, desired_status="locked"
+                )
+                result = create_count_only_response("locked_users", srv, count, mcp.sanitizer)
+                result["users_scanned"] = scanned
+                result["scan_capped"] = capped
+                return result
 
-            records = _collect_filtered_users(
+            records, scanned, capped = _collect_filtered_users(
                 mcp, users.list(), ds, base_dn, limit, desired_status="locked"
             )
             return {
@@ -231,6 +251,8 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 "server": srv,
                 "locked_users_found": len(records),
                 "limit_applied": limit,
+                "users_scanned": scanned,
+                "scan_capped": capped,
                 "items": records,
             }
 
@@ -258,6 +280,7 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
         target = server_name or mcp.default_server
         mcp.require_live(target,"search_users_by_attribute")
+        value = _normalize_search_term(value, "value")
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             if not re.match(r'^[a-zA-Z][a-zA-Z0-9-]*$', attribute):
@@ -333,12 +356,24 @@ def _collect_filtered_users(
     limit: int,
     *,
     desired_status: str,
-) -> List[Dict[str, Any]]:
-    """Collect users matching a specific status."""
+) -> tuple:
+    """Collect users matching a specific status.
+
+    Computing a user's status costs an extra LDAP round-trip per entry, so
+    the scan is capped at ``_MAX_STATUS_SCAN`` entries.  Returns
+    ``(records, scanned, capped)`` — when *capped* is True the result
+    covers only the first ``scanned`` users, not the whole directory.
+    """
     records: List[Dict[str, Any]] = []
+    scanned = 0
+    capped = False
     for entry in entries:
         if len(records) >= limit:
             break
+        if scanned >= _MAX_STATUS_SCAN:
+            capped = True
+            break
+        scanned += 1
         try:
             record = _build_user_record(mcp, entry, ds, base_dn)
         except Exception as exc:
@@ -347,7 +382,36 @@ def _collect_filtered_users(
         status = record["attrs"].get("computed_status", {}).get("simple_status")
         if status == desired_status:
             records.append(record)
-    return records
+    return records, scanned, capped
+
+
+def _count_users_with_status(
+    mcp: DirSrvMCP,
+    entries: Iterable[Any],
+    ds,
+    base_dn: str,
+    *,
+    desired_status: str,
+) -> tuple:
+    """Count users matching a status, capped at ``_MAX_STATUS_SCAN`` scans.
+
+    Returns ``(count, scanned, capped)``.
+    """
+    count = 0
+    scanned = 0
+    capped = False
+    for entry in entries:
+        if scanned >= _MAX_STATUS_SCAN:
+            capped = True
+            break
+        scanned += 1
+        try:
+            record = _build_user_record(mcp, entry, ds, base_dn)
+        except Exception:
+            continue
+        if record["attrs"].get("computed_status", {}).get("simple_status") == desired_status:
+            count += 1
+    return count, scanned, capped
 
 
 def _get_user_status(mcp: DirSrvMCP, ds, user_dn: str, basedn: str) -> Dict[str, Any]:

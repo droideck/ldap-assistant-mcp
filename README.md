@@ -110,7 +110,7 @@ cd ldap-assistant-mcp
 # Create virtual environment and install dependencies
 uv venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install -e .[dev]
 ```
 
 ### Step 2: Configure Your Servers

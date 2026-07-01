@@ -2,9 +2,23 @@
 
 This guide covers how to run and write tests for LDAP Assistant MCP.
 
-## Quick Start
+## Quick Start (no containers needed)
 
-Run all tests with a single command:
+Most of the suite runs without any LDAP server. Tests that need a running
+389 DS instance carry the `live` pytest marker — deselect them:
+
+```bash
+pip install -e .[dev]
+pytest -m "not live"
+```
+
+This is the same subset CI's fast job runs, and it should always pass on a
+fresh checkout. A bare `pytest` without the containers below will fail the
+`live` tests with connection errors — that's expected, not a bug.
+
+## Full Suite (with containers)
+
+Run everything, including `live` tests, with a single command:
 
 ```bash
 ./scripts/ds-test.sh

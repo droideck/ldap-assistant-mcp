@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 from fastmcp import Client
 
-pytestmark = pytest.mark.asyncio
+# Every test in this module drives live LDAP tools against a running DS
+# instance — deselect without containers via `pytest -m "not live"`.
+pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 
 
 async def test_run_monitor_returns_monitor_data(dirsrv_server):

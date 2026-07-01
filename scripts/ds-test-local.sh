@@ -254,7 +254,7 @@ if [[ "$RUN_PYTEST" == true ]]; then
     python3 -m ensurepip --upgrade 2>/dev/null || true
     cd /mcp
     python3 -m pip install --quiet pytest pytest-asyncio
-    python3 -m pip install --quiet -r requirements.txt
+    python3 -m pip install --quiet /mcp
   " 2>/dev/null || true
   STEP=$((STEP + 1))
 

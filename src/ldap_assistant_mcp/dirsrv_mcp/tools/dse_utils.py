@@ -7,6 +7,8 @@ across config.py, indexes.py, health.py, and archive.py.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 from typing import Dict, List
 
@@ -14,17 +16,32 @@ import ldap.dn
 from lib389.dseldif import DSEldif
 
 
+def _decode_base64_value(b64_text: str) -> str:
+    """Decode a base64 LDIF value (``attr:: ...``) to text.
+
+    Returns the raw base64 string unchanged if it does not decode —
+    better a recognisable base64 blob than a crash.
+    """
+    try:
+        return base64.b64decode(b64_text, validate=True).decode(
+            "utf-8", errors="replace"
+        )
+    except (binascii.Error, ValueError):
+        return b64_text
+
+
 def _parse_ldif_value(line: str) -> str:
     """Extract the value from an LDIF attribute line.
 
-    Handles ``attr: value\\n``, ``attr:: base64\\n``, and ``attr:\\n`` (empty).
+    Handles ``attr: value\\n``, ``attr:: base64\\n`` (decoded to text),
+    and ``attr:\\n`` (empty).
     """
     colon_pos = line.index(":")
     rest = line[colon_pos + 1:].rstrip("\n")
     if rest.startswith(": "):
-        return rest[2:]
+        return _decode_base64_value(rest[2:].strip())
     if rest.startswith(":"):
-        return rest[1:].lstrip(" ")
+        return _decode_base64_value(rest[1:].strip())
     return rest.lstrip(" ")
 
 
@@ -61,6 +78,34 @@ def _find_attr(self, entry_dn, attr):
 
 
 DSEldif._find_attr = _find_attr
+
+
+# lib389 DSEldif.__init__ unwraps LDIF continuation lines with a loop that
+# only appends the buffered line once the NEXT line starts — the file's
+# final line is silently dropped.  A dse.ldif without a trailing blank line
+# therefore loses the last attribute of its last entry.  Wrap __init__ and
+# rebuild _contents with the same unwrap rules, keeping the trailing line.
+if not getattr(DSEldif.__init__, "_ldap_assistant_mcp_patched", False):
+    _orig_dseldif_init = DSEldif.__init__
+
+    def _dseldif_init(self, instance, serverid=None, path=None):
+        _orig_dseldif_init(self, instance, serverid=serverid, path=path)
+        contents = []
+        processed = ""
+        with open(self.path, "r") as fh:
+            for line in fh:
+                if not line.startswith(" "):
+                    if processed:
+                        contents.append(processed)
+                    processed = line.lower() if line.startswith("dn:") else line
+                else:
+                    processed = processed[:-1] + line[1:]
+        if processed:
+            contents.append(processed)
+        self._contents = contents
+
+    _dseldif_init._ldap_assistant_mcp_patched = True
+    DSEldif.__init__ = _dseldif_init
 
 
 def normalize_dn(dn_str: str) -> str:
@@ -133,7 +178,14 @@ def get_dse_ldif_path(ds) -> str:
     """Get path to dse.ldif from DirSrv or ArchiveDirSrv."""
     if hasattr(ds, "dse_ldif_path") and ds.dse_ldif_path:
         return ds.dse_ldif_path
-    return os.path.join(ds.ds_paths.config_dir, "dse.ldif")
+    config_dir = getattr(ds.ds_paths, "config_dir", None)
+    if not config_dir:
+        raise FileNotFoundError(
+            "No dse.ldif available: this archive provides logs only "
+            "(no config directory). Configure archive_path or config_path "
+            "pointing at the instance configuration to use config tools."
+        )
+    return os.path.join(config_dir, "dse.ldif")
 
 
 def find_child_dns(dse, parent_dn: str) -> List[str]:

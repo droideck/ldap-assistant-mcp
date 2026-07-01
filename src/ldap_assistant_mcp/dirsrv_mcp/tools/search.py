@@ -45,7 +45,9 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
 
         Returns:
             Dict with ``items`` (list of {dn, attrs}; non-UTF-8 values are
-            base64-encoded), ``total_returned``, and ``limit_applied``.
+            base64-encoded), ``total_returned``, ``limit_applied``, and
+            ``truncated`` (True when the server stopped at the limit and
+            more entries exist).
         """
         # Disabled in privacy mode - can retrieve any data
         if mcp.privacy_enabled:
@@ -82,14 +84,30 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
                             attr.strip() for attr in cleaned.split(",") if attr.strip()
                         ]
 
+                # Ask the server to stop at the cap (sizelimit) instead of
+                # pulling the whole subtree and truncating client-side.
+                # Entries are collected asynchronously so the partial result
+                # set survives SIZELIMIT_EXCEEDED (which search_ext_s would
+                # discard) — the response then carries truncated=True.
+                truncated = False
+                search_results = []
                 try:
-                    search_results = ds.search_s(
+                    msgid = ds.search_ext(
                         base_dn_value,
                         scope_map[original_scope],
                         filter_value,
                         attrlist=attrlist,
                         attrsonly=1 if attrs_only_flag else 0,
+                        sizelimit=capped_limit,
                     )
+                    while True:
+                        rtype, rdata = ds.result(msgid, all=0)
+                        if rtype == ldap.RES_SEARCH_ENTRY:
+                            search_results.extend(rdata)
+                        else:
+                            break
+                except ldap.SIZELIMIT_EXCEEDED:
+                    truncated = True
                 except ldap.NO_SUCH_OBJECT:
                     raise ToolError(f"Base DN '{base_dn_value}' does not exist") from None
                 except ldap.INVALID_SYNTAX as exc:
@@ -144,6 +162,7 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
                     "attrs_only": attrs_only_flag,
                     "total_returned": len(results),
                     "limit_applied": capped_limit,
+                    "truncated": truncated,
                     "items": results,
                 }
             except AttributeError as exc:

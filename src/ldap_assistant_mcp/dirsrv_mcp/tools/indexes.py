@@ -584,7 +584,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                                 current_indexes[attr_name.lower()] = set(
                                     t.lower() for t in index_types_list
                                 )
-                                if is_system and is_system.lower() != "true":
+                                # Absent nsSystemIndex ⇒ user index (matches
+                                # list_indexes' counting)
+                                if not is_system or is_system.lower() != "true":
                                     user_indexes.append(attr_name)
                     else:
                         be_obj = _backend_objects[be_name]
@@ -598,7 +600,9 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                                 t.lower() for t in index_types
                             )
 
-                            if is_system and is_system.lower() != "true":
+                            # Absent nsSystemIndex ⇒ user index (matches
+                            # list_indexes' counting)
+                            if not is_system or is_system.lower() != "true":
                                 user_indexes.append(attr_name)
                 except Exception as e:
                     mcp.logger.warning(

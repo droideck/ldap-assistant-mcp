@@ -12,7 +12,9 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-pytestmark = pytest.mark.asyncio
+# Every test in this module drives live LDAP tools against a running DS
+# instance — deselect without containers via `pytest -m "not live"`.
+pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 
 
 # Basic search functionality

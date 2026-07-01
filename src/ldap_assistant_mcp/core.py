@@ -1,14 +1,65 @@
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass, field, replace
+import sys
+from dataclasses import dataclass, replace
 from enum import Enum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 
-__all__ = ["LDAPAssistantMCP", "LDAPAuthMethod", "LDAPServerConfig", "MCPSettings"]
+__all__ = [
+    "LDAPAssistantMCP",
+    "LDAPAuthMethod",
+    "LDAPServerConfig",
+    "MCPSettings",
+    "__version__",
+    "configure_package_logging",
+]
+
+try:
+    __version__ = _dist_version("ldap-assistant-mcp")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0.dev0"
+
+_PACKAGE_LOGGER = "ldap_assistant_mcp"
+
+
+def _env_flag(name: str) -> bool:
+    """Return True if the environment variable is set to a truthy value."""
+    return str(os.environ.get(name, "")).lower() in {"1", "true", "yes", "on"}
+
+
+def configure_package_logging(debug: Optional[bool] = None) -> None:
+    """Attach a stderr handler to the ``ldap_assistant_mcp`` logger tree.
+
+    Without this, no handler is ever configured and middleware INFO logs
+    (and even LDAP_MCP_DEBUG output) go nowhere — Python's lastResort
+    handler only emits WARNING and above.  stderr is safe for the stdio
+    transport: only stdout carries MCP protocol data.
+
+    Idempotent: repeated calls do not add duplicate handlers, they only
+    adjust the level.  When *debug* is None, the LDAP_MCP_DEBUG
+    environment variable decides.
+    """
+    if debug is None:
+        debug = _env_flag("LDAP_MCP_DEBUG")
+
+    pkg_logger = logging.getLogger(_PACKAGE_LOGGER)
+    if not any(
+        getattr(h, "_ldap_assistant_mcp_handler", False) for h in pkg_logger.handlers
+    ):
+        handler = logging.StreamHandler(stream=sys.stderr)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler._ldap_assistant_mcp_handler = True  # type: ignore[attr-defined]
+        pkg_logger.addHandler(handler)
+    pkg_logger.setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 @dataclass
@@ -315,6 +366,9 @@ class LDAPAssistantMCP(FastMCP):
         include_env_fallback: bool = True,
         **kwargs: Any,
     ) -> None:
+        configure_package_logging()
+        # Report the package version to MCP clients (serverInfo.version).
+        kwargs.setdefault("version", __version__)
         super().__init__(
             name=name,
             instructions=instructions,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from unittest.mock import patch
 
@@ -204,7 +203,7 @@ def test_temp_dir_tracking():
 def test_extract_archive_caches_result():
     """Extracting the same tarball twice should return the cached dir."""
     from ldap_assistant_mcp.dirsrv_mcp.archive.loader import (
-        _extraction_cache, _temp_dirs, cleanup_temp_dirs, extract_archive,
+        _temp_dirs, cleanup_temp_dirs, extract_archive,
     )
     import tarfile
     import tempfile

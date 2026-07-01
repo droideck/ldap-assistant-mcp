@@ -10,7 +10,6 @@ import pytest
 from fastmcp import Client
 
 from ldap_assistant_mcp.dirsrv_mcp.connection import ConnectionManager, ServerConfig
-from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
 from ldap_assistant_mcp.core import LDAPAuthMethod, LDAPServerConfig
 
 pytestmark = pytest.mark.asyncio
@@ -228,6 +227,7 @@ def test_simple_auth_inappropriate_auth_not_caught():
 # Integration tests (require running 389 DS with anonymous access enabled)
 
 
+@pytest.mark.live
 async def test_anonymous_ldap_search_base_dn(dirsrv_anonymous_server):
     """Test that ldap_search works with anonymous bind on base DN."""
     async with Client(dirsrv_anonymous_server) as client:
@@ -247,6 +247,7 @@ async def test_anonymous_ldap_search_base_dn(dirsrv_anonymous_server):
         assert data["total_returned"] >= 1
 
 
+@pytest.mark.live
 async def test_anonymous_root_dse_access(dirsrv_anonymous_server):
     """Test that anonymous can access Root DSE.
 
@@ -274,6 +275,7 @@ async def test_anonymous_root_dse_access(dirsrv_anonymous_server):
             assert "dn" in root_dse
 
 
+@pytest.mark.live
 async def test_anonymous_user_search(dirsrv_anonymous_server, expected_test_users):
     """Test that anonymous can search for users (if ACIs allow)."""
     async with Client(dirsrv_anonymous_server) as client:
@@ -308,6 +310,7 @@ async def test_anonymous_user_search(dirsrv_anonymous_server, expected_test_user
             assert expected_user in found_uids, f"Expected user {expected_user} not found"
 
 
+@pytest.mark.live
 async def test_anonymous_subtree_search(dirsrv_anonymous_server):
     """Test anonymous subtree search from base DN."""
     async with Client(dirsrv_anonymous_server) as client:

@@ -1,7 +1,7 @@
 """DateTime conversion utilities for LDAP Assistant MCP."""
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 
 def convert_datetimes_to_strings(data: Any) -> Any:

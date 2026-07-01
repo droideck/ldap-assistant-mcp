@@ -24,6 +24,7 @@ from ldap_assistant_mcp.dirsrv_mcp.tools.dse_utils import (
     get_dse_ldif_path,
     get_rdn_value,
     is_under_dn,
+    normalize_dn,
 )
 from ldap_assistant_mcp.lib.privacy import ALWAYS_REDACT_ATTRIBUTES
 from ldap_assistant_mcp.lib.result_formatter import Severity, format_finding
@@ -212,6 +213,26 @@ def _sanitize_dse_comparison(sanitizer, sanitized: Dict[str, Any]) -> None:
         sanitized["differences"] = sanitized_diffs
 
 
+def _select_healthcheck_file(hc_files: List[str], serverid: Optional[str]) -> str:
+    """Pick the healthcheck output that belongs to *serverid*.
+
+    Multi-instance sosreports contain one ``dsctl_<instance>_healthcheck``
+    file per instance; matching on the instance name (with or without the
+    ``slapd-`` prefix) keeps the analysis on the selected instance instead
+    of whichever file happens to sort first.
+    """
+    if serverid:
+        short = serverid[len("slapd-"):] if serverid.startswith("slapd-") else serverid
+        for candidate in (f"dsctl_{short}_healthcheck", f"dsctl_{serverid}_healthcheck"):
+            for path in hc_files:
+                if os.path.basename(path) == candidate:
+                    return path
+        for path in hc_files:
+            if short and short in os.path.basename(path):
+                return path
+    return hc_files[0]
+
+
 def _build_archive_analysis(
     mcp: "DirSrvMCP", ds, server_name: str
 ) -> Dict[str, Any]:
@@ -294,9 +315,10 @@ def _build_archive_analysis(
         # Look for dsctl_*_healthcheck files
         hc_files = sorted(glob.glob(os.path.join(sos_commands_dir, "dsctl_*_healthcheck")))
         if hc_files:
+            hc_file = _select_healthcheck_file(hc_files, ds.serverid)
             from ldap_assistant_mcp.dirsrv_mcp.archive.healthcheck_parser import parse_healthcheck_output
             try:
-                with open(hc_files[0], "r", errors="ignore") as fh:
+                with open(hc_file, "r", errors="ignore") as fh:
                     content = fh.read()
                 sos_healthcheck = parse_healthcheck_output(content)
             except Exception as e:
@@ -521,6 +543,14 @@ def _has_index_ancestor(dn: str) -> bool:
     return False
 
 
+def _entry_values(entry, attr: str) -> List[str]:
+    """Return an entry's attribute values as sorted, decoded strings."""
+    return sorted(
+        v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
+        for v in entry.getValues(attr)
+    )
+
+
 def _compare_ldif_entries(
     ldif1: LDIFConn,
     ldif2: LDIFConn,
@@ -528,54 +558,64 @@ def _compare_ldif_entries(
     server2_name: str,
     section: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compare two LDIFConn objects entry-by-entry."""
-    # Get DN sets, filtered by section
-    dns1 = {e.dn for e in ldif1.dnlist if _dn_matches_section(e.dn, section)}
-    dns2 = {e.dn for e in ldif2.dnlist if _dn_matches_section(e.dn, section)}
+    """Compare two LDIFConn objects entry-by-entry.
 
-    only_in_server1 = sorted(dns1 - dns2)
-    only_in_server2 = sorted(dns2 - dns1)
-    shared_dns = sorted(dns1 & dns2)
+    DNs are matched after normalization (case, whitespace, RDN quoting) so
+    that cross-version formatting differences — e.g. mapping-tree entries
+    written as ``cn="dc=x,dc=y",...`` on one server and ``cn=dc\\3Dx,...``
+    on the other — do not produce false "only in server1/server2" results.
+    Attribute names are compared case-insensitively for the same reason.
+    """
+    # Map normalized DN -> entry, filtered by section.  Original DNs are
+    # kept for display (server1's spelling wins for shared entries).
+    entries1 = {
+        normalize_dn(e.dn): e for e in ldif1.dnlist
+        if _dn_matches_section(e.dn, section)
+    }
+    entries2 = {
+        normalize_dn(e.dn): e for e in ldif2.dnlist
+        if _dn_matches_section(e.dn, section)
+    }
+
+    only_in_server1 = sorted(entries1[k].dn for k in entries1.keys() - entries2.keys())
+    only_in_server2 = sorted(entries2[k].dn for k in entries2.keys() - entries1.keys())
+    shared_keys = sorted(entries1.keys() & entries2.keys())
 
     differences: List[Dict[str, Any]] = []
     matching_count = 0
 
-    for dn in shared_dns:
-        entry1 = ldif1.get(dn)
-        entry2 = ldif2.get(dn)
+    for key in shared_keys:
+        entry1 = entries1[key]
+        entry2 = entries2[key]
 
-        if not entry1 or not entry2:
-            continue
+        # Map lowercased attr name -> original spelling per side
+        attrs1 = {a.lower(): a for a in entry1.getAttrs()}
+        attrs2 = {a.lower(): a for a in entry2.getAttrs()}
 
-        attrs1 = set(entry1.getAttrs())
-        attrs2 = set(entry2.getAttrs())
-
-        attrs_only_in_1 = sorted(attrs1 - attrs2)
-        attrs_only_in_2 = sorted(attrs2 - attrs1)
+        attrs_only_in_1 = sorted(attrs1[a] for a in attrs1.keys() - attrs2.keys())
+        attrs_only_in_2 = sorted(attrs2[a] for a in attrs2.keys() - attrs1.keys())
         different_values: List[Dict[str, Any]] = []
 
-        for attr in sorted(attrs1 & attrs2):
-            vals1 = sorted(v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
-                               for v in entry1.getValues(attr))
-            vals2 = sorted(v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
-                               for v in entry2.getValues(attr))
+        for attr_lower in sorted(attrs1.keys() & attrs2.keys()):
+            vals1 = _entry_values(entry1, attrs1[attr_lower])
+            vals2 = _entry_values(entry2, attrs2[attr_lower])
             if vals1 != vals2:
                 # Credential hashes (nsslapd-rootpw, nsds5ReplicaCredentials,
                 # ...) always differ between servers, so they would always be
                 # emitted here.  Redact the values regardless of privacy mode —
                 # the diff still notes the difference, just without the hash.
-                if attr.lower() in ALWAYS_REDACT_ATTRIBUTES:
+                if attr_lower in ALWAYS_REDACT_ATTRIBUTES:
                     vals1 = ["<redacted>"]
                     vals2 = ["<redacted>"]
                 different_values.append({
-                    "attribute": attr,
+                    "attribute": attrs1[attr_lower],
                     "server1": vals1,
                     "server2": vals2,
                 })
 
         if attrs_only_in_1 or attrs_only_in_2 or different_values:
             differences.append({
-                "dn": dn,
+                "dn": entry1.dn,
                 "attrs_only_in_server1": attrs_only_in_1,
                 "attrs_only_in_server2": attrs_only_in_2,
                 "different_values": different_values,
@@ -592,7 +632,7 @@ def _compare_ldif_entries(
         "only_in_server2": only_in_server2,
         "differences": differences,
         "matching_count": matching_count,
-        "total_entries": len(dns1 | dns2),
+        "total_entries": len(entries1.keys() | entries2.keys()),
     }
 
 

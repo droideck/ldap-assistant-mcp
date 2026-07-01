@@ -431,6 +431,7 @@ async def test_exposed_server_has_privacy_disabled(exposed_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
 async def test_list_users_privacy_mode_returns_count_only(privacy_server):
     """Test that list_all_users returns count-only in privacy mode."""
     async with Client(privacy_server) as client:
@@ -444,6 +445,7 @@ async def test_list_users_privacy_mode_returns_count_only(privacy_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
 async def test_list_users_exposed_mode_returns_items(exposed_server):
     """Test that list_all_users returns full items when exposed."""
     async with Client(exposed_server) as client:
@@ -455,6 +457,7 @@ async def test_list_users_exposed_mode_returns_items(exposed_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
 async def test_list_groups_privacy_mode_returns_count_only(privacy_server):
     """Test that list_all_groups returns count-only in privacy mode."""
     async with Client(privacy_server) as client:
@@ -477,6 +480,7 @@ async def test_get_user_details_disabled_in_privacy_mode(privacy_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
 async def test_get_user_details_works_in_exposed_mode(exposed_server):
     """Test that get_user_details works when exposed."""
     async with Client(exposed_server) as client:
@@ -499,6 +503,7 @@ async def test_ldap_search_disabled_in_privacy_mode(privacy_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
 async def test_ldap_search_works_in_exposed_mode(exposed_server):
     """Test that ldap_search works when exposed."""
     async with Client(exposed_server) as client:

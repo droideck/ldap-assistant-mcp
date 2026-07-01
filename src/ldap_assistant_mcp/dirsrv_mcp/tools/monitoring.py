@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from fastmcp.exceptions import ToolError
 from lib389.backend import Backends
 from lib389.monitor import Monitor
 
 from mcp.types import ToolAnnotations
 
-
+from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_tool_error
 
 if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
@@ -130,5 +129,13 @@ def register_monitoring_tools(mcp: DirSrvMCP) -> None:
                 })
             except Exception as exc:
                 mcp.logger.error("Error accessing monitor on %s: %s", srv, exc)
-                raise ToolError(f"Error accessing monitor on {srv}: {exc}") from exc
+                # Raw lib389 exception text embeds serverids and DNs —
+                # format_tool_error scrubs it in privacy mode.
+                return _sanitize_monitor_result(
+                    mcp,
+                    format_tool_error(
+                        exc, mcp, "monitor",
+                        server=srv, backend=backend or suffix or "main",
+                    ),
+                )
 

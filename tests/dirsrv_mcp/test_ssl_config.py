@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-import pytest
 
 from ldap_assistant_mcp.config.loader import _server_config_from_dict, ServerListConfig
 from ldap_assistant_mcp.dirsrv_mcp.connection import ConnectionManager, ServerConfig

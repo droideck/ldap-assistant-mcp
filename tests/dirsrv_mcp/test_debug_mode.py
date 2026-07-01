@@ -15,7 +15,6 @@ import logging
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from ldap_assistant_mcp.config.loader import ServerListConfig, _settings_from_dict
 from ldap_assistant_mcp.dirsrv_mcp.connection import ConnectionManager
@@ -317,7 +316,7 @@ def test_debug_mode_sets_log_level():
 
 def test_no_debug_does_not_force_debug_level():
     """When debug=False, DirSrvMCP should NOT set the logger to DEBUG."""
-    logging.getLogger("DirSrvMCP").setLevel(logging.WARNING)
+    logging.getLogger("ldap_assistant_mcp.DirSrvMCP").setLevel(logging.WARNING)
 
     env = {
         "LDAP_MCP_EXPOSE_SENSITIVE_DATA": "true",

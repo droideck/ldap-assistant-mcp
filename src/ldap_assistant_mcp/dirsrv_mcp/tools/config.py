@@ -24,7 +24,7 @@ from mcp.types import ToolAnnotations
 from ldap_assistant_mcp.dirsrv_mcp.connection import is_offline_or_archive
 from ldap_assistant_mcp.dirsrv_mcp.tools.dse_utils import find_child_dns, get_all_entry_attrs, get_dse_ldif_path
 from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_tool_error
-from ldap_assistant_mcp.lib.privacy import create_privacy_error
+from ldap_assistant_mcp.dirsrv_mcp.tools.replication import _role_to_string
 
 if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
@@ -586,14 +586,16 @@ def register_config_tools(mcp: DirSrvMCP) -> None:
             else:
                 backends_obj = Backends(ds)
 
-                # Get replica info
+                # Get replica info.  _role_to_string keeps the vocabulary in
+                # sync with the offline path ("supplier"/"hub"/"consumer"),
+                # not the raw enum repr ("ReplicaRole.SUPPLIER").
                 replica_suffixes: Dict[str, str] = {}
                 try:
                     replicas = Replicas(ds)
                     for replica in replicas.list():
                         suffix = replica.get_suffix()
                         role = replica.get_role()
-                        replica_suffixes[suffix.lower()] = str(role)
+                        replica_suffixes[suffix.lower()] = _role_to_string(role)
                 except Exception as e:
                     mcp.logger.debug("Could not get replication info: %s", e)
 

@@ -25,8 +25,15 @@ class OpenLDAPMCP(LDAPAssistantMCP):
         instructions: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(
+            f"ldap_assistant_mcp.{self.__class__.__name__}"
+        )
         super().__init__(name=name, instructions=instructions, servers=servers or None, **kwargs)
+        self.logger.warning(
+            "The OpenLDAP provider is EXPERIMENTAL: it exposes only two tools "
+            "and bypasses the privacy sanitizer and middleware used by the "
+            "389 DS provider. Do not point it at directories with sensitive data."
+        )
         self._register_tools()
 
     def _register_tools(self) -> None:

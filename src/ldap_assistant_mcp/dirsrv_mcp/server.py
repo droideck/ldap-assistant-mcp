@@ -15,8 +15,6 @@ from ldap_assistant_mcp.config.loader import load_config
 from ldap_assistant_mcp.dirsrv_mcp.connection import (
     ConnectionManager,
     LiveServerRequired,
-    LocalServerRequired,
-    ServerConfig,
     require_live_server,
     require_local_server,
 )
@@ -36,7 +34,12 @@ from ldap_assistant_mcp.dirsrv_mcp.tools import (
     register_user_tools,
 )
 from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_error_message
-from ldap_assistant_mcp.core import LDAPAssistantMCP, LDAPServerConfig, MCPSettings
+from ldap_assistant_mcp.core import (
+    LDAPAssistantMCP,
+    LDAPServerConfig,
+    MCPSettings,
+    configure_package_logging,
+)
 from ldap_assistant_mcp.lib.privacy import PrivacySanitizer, get_sanitizer
 
 __all__ = ["DirSrvMCP"]
@@ -93,7 +96,12 @@ class DirSrvMCP(LDAPAssistantMCP):
         instructions: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        self.logger = logging.getLogger(self.__class__.__name__)
+        # Configure stderr logging before anything can log (config-load
+        # errors below must be visible); level refined once settings resolve.
+        configure_package_logging()
+        self.logger = logging.getLogger(
+            f"ldap_assistant_mcp.{self.__class__.__name__}"
+        )
         merged_servers, loaded_settings = self._collect_servers_and_settings(
             config_path=config_path, extra_servers=servers
         )
@@ -136,13 +144,12 @@ class DirSrvMCP(LDAPAssistantMCP):
         for cfg in self.server_configs.values():
             self.connection_manager.add_server(cfg)
 
-        # Wire debug mode
+        # Wire debug mode (settings may come from the config file, not env,
+        # so re-apply the package log level now that they are resolved)
+        configure_package_logging(debug=self._mcp_settings.debug)
         if self._mcp_settings.debug:
             self.connection_manager.debug = True
-            # Set DEBUG level on all src.* loggers
-            for name in list(logging.Logger.manager.loggerDict) + [self.logger.name]:
-                if name.startswith("ldap_assistant_mcp.") or name == self.logger.name:
-                    logging.getLogger(name).setLevel(logging.DEBUG)
+            self.logger.setLevel(logging.DEBUG)
 
         self.logger.info(
             "DirSrv MCP initialized with %d server(s): %s (privacy_mode=%s, debug=%s)",

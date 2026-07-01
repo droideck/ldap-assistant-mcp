@@ -12,19 +12,14 @@ Tests verify that:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from ldap_assistant_mcp.config.loader import ServerListConfig, _server_config_from_dict
 from ldap_assistant_mcp.dirsrv_mcp.archive.loader import (
-    ArchiveLayout,
     detect_archive_layout,
-    extract_archive,
 )
 from ldap_assistant_mcp.dirsrv_mcp.archive.stub import ArchiveDirSrv, ArchivePaths
 from ldap_assistant_mcp.dirsrv_mcp.connection import (
@@ -33,7 +28,6 @@ from ldap_assistant_mcp.dirsrv_mcp.connection import (
     ServerConfig,
     is_archive_server,
     is_offline_or_archive,
-    is_offline_server,
     require_live_server,
 )
 from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP

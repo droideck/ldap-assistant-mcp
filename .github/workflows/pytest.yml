@@ -14,16 +14,72 @@ env:
   DS_IMAGE: ${{ vars.DS_IMAGE || 'quay.io/389ds/dirsrv' }}
 
 jobs:
+  # Fast job: no containers needed. Lint, unit tests, package build, and a
+  # clean-venv install smoke test (catches broken wheels before release).
+  lint-build-test:
+    name: Lint / Unit Tests / Build (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - name: Clone ldap-assistant-mcp repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libldap2-dev libsasl2-dev libssl-dev
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Ruff lint
+        run: ruff check src tests
+
+      - name: Run non-live tests
+        run: pytest -m "not live" -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Twine check
+        run: twine check dist/*
+
+      - name: Clean-venv install smoke test
+        run: |
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/smoke-venv/bin/python -c "
+          import ldap_assistant_mcp
+          print('version:', ldap_assistant_mcp.__version__)
+          from ldap_assistant_mcp.main import create_server, main
+          from importlib.metadata import entry_points
+          eps = [e for e in entry_points(group='console_scripts') if e.name == 'ldap-assistant-mcp']
+          assert eps, 'console script missing'
+          eps[0].load()
+          print('console script OK')
+          "
+
   # Standard remote connection tests
   test:
     name: Pytest Tests
     runs-on: ubuntu-latest
     steps:
       - name: Clone ldap-assistant-mcp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
@@ -44,8 +100,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv
-          uv pip install -r requirements.txt
-          uv pip install pytest pytest-asyncio
+          uv pip install -e .[dev]
 
       - name: Run pytest
         env:
@@ -82,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone ldap-assistant-mcp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Create local test container with MCP code
         run: |
@@ -172,7 +227,7 @@ jobs:
             python3 -m ensurepip --upgrade 2>/dev/null || true
             cd /mcp
             python3 -m pip install --quiet pytest pytest-asyncio
-            python3 -m pip install --quiet -r requirements.txt
+            python3 -m pip install --quiet /mcp
           "
 
       - name: Run local connection tests
@@ -213,7 +268,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone ldap-assistant-mcp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Create two test containers
         run: |
@@ -320,7 +375,7 @@ jobs:
             python3 -m ensurepip --upgrade 2>/dev/null || true
             cd /mcp
             python3 -m pip install --quiet pytest pytest-asyncio
-            python3 -m pip install --quiet -r requirements.txt
+            python3 -m pip install --quiet /mcp
           "
 
       - name: Run multi-server configuration tests
@@ -356,7 +411,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone ldap-assistant-mcp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Create and seed DS instance
         run: |
@@ -458,7 +513,7 @@ jobs:
             python3 -m ensurepip --upgrade 2>/dev/null || true
             cd /mcp
             python3 -m pip install --quiet pytest pytest-asyncio
-            python3 -m pip install --quiet -r requirements.txt
+            python3 -m pip install --quiet /mcp
           "
 
       - name: Run offline mode unit tests
