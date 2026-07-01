@@ -26,9 +26,9 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    # fastmcp 3.x has already broken compatibility once (commit 7c941b3) —
-    # stay on the tested 2.x line until a 3.x migration is planned.
-    "fastmcp>=2.13,<3",
+    # FastMCP 3.x compatibility is covered by the tag metadata fallback in
+    # tests/eval/run_eval.py.
+    "fastmcp>=2.13,<4",
     "lib389>=3.1.3",
 ]
 
