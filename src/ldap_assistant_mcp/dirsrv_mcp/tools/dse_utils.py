@@ -50,7 +50,12 @@ def _parse_ldif_value(line: str) -> str:
 # case-sensitively, while LDAP attributes are case-insensitive and real
 # dse.ldif files use camelCase (e.g. nsDS5ReplicaRoot, nsDS5Flags).
 # Patch it to use proper LDIF parsing with case-insensitive attr matching.
-def _find_attr(self, entry_dn, attr):
+#
+# Signature compatibility: lib389 >= 3.3 added a ``lower`` kwarg (opt-in
+# case-insensitive matching) that ``DSEldif.get()`` always passes through.
+# Accept it for both old and new lib389, and ignore it — this replacement
+# is always case-insensitive, a superset of ``lower=True``.
+def _find_attr(self, entry_dn, attr, lower=False):
     entry_dn_i = self._contents.index("dn: {}\n".format(entry_dn.lower()))
     attr_data = {}
 

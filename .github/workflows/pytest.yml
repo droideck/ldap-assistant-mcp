@@ -110,7 +110,11 @@ jobs:
           LDAP_BIND_DN: "cn=Directory Manager"
           LDAP_BIND_PASSWORD: "TestPassword123"
         run: |
-          uv run pytest -v -s --ignore=tests/dirsrv_mcp/test_local_connection.py
+          # --no-sync: run against the venv prepared above. Without it,
+          # `uv run` re-resolves the project environment and can install
+          # DIFFERENT dependency versions than the install step (observed:
+          # lib389/python-ldap versions diverged from the sibling jobs).
+          uv run --no-sync pytest -v -s --ignore=tests/dirsrv_mcp/test_local_connection.py
 
       - name: Debug environment
         if: failure()

@@ -590,3 +590,61 @@ async def test_ldap_search_not_truncated_on_complete_result():
 
     assert data["truncated"] is False
     assert data["total_returned"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ldap_search_empty_base_dn_returns_root_dse():
+    """base_dn="" is the root DSE — a valid search, and the entry's empty DN
+    must not be dropped as malformed (regression: min_length=1 rejected it,
+    then the ``not dn`` guard skipped the returned entry)."""
+    import ldap as _ldap
+
+    server = _make_server(expose=True)
+    ds = MagicMock()
+    ds.search_ext.return_value = 7
+    ds.result.side_effect = [
+        # python-ldap returns the root DSE with an empty DN
+        (_ldap.RES_SEARCH_ENTRY, [("", {"vendorName": [b"389 Project"]})]),
+        (_ldap.RES_SEARCH_RESULT, []),
+    ]
+    _install_fake_connection(server, ds)
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "ldap_search",
+            {"base_dn": "", "scope": "BASE", "filter": "(objectClass=*)"},
+        )
+        data = result.data
+
+    assert data["total_returned"] == 1
+    assert data["items"][0]["dn"] == ""
+    assert data["items"][0]["attrs"]["vendorName"] == ["389 Project"]
+
+
+# ── lib389 >= 3.3 _find_attr signature compatibility ─────────────────
+
+def test_patched_find_attr_accepts_lower_kwarg(tmp_path):
+    """lib389 >= 3.3 DSEldif.get() calls _find_attr(..., lower=...) — the
+    patched replacement must accept the kwarg on any lib389 version
+    (regression: TypeError broke every offline/archive DSE read on 3.3.0)."""
+    from lib389.dseldif import DSEldif
+
+    dse_path = tmp_path / "dse.ldif"
+    dse_path.write_text(
+        "dn: cn=config\n"
+        "cn: config\n"
+        "nsDS5ReplicaRoot: dc=example,dc=com\n"
+        "\n"
+    )
+    ds = MagicMock()
+    ds.serverid = "x"
+    dse = DSEldif(ds, path=str(dse_path))
+
+    # Direct calls with the new-signature kwarg (both values)
+    _, attr_data = dse._find_attr("cn=config", "nsds5replicaroot", lower=True)
+    assert list(attr_data.values()) == ["dc=example,dc=com"]
+    _, attr_data = dse._find_attr("cn=config", "nsds5replicaroot", lower=False)
+    assert list(attr_data.values()) == ["dc=example,dc=com"]
+
+    # And through get(), which passes lower= on lib389 >= 3.3
+    assert dse.get("cn=config", "nsDS5ReplicaRoot", single=True) == "dc=example,dc=com"
