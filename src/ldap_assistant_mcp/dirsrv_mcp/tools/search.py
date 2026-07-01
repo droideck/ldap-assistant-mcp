@@ -26,7 +26,7 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool(annotations=_RO, tags={"search", "live"})
     def ldap_search(
-        base_dn: Annotated[str, Field(min_length=1, description="Base DN to search from, e.g. 'dc=example,dc=com'")],
+        base_dn: Annotated[str, Field(description="Base DN to search from, e.g. 'dc=example,dc=com'; empty string searches the root DSE (use scope=BASE)")],
         scope: Annotated[str, Field(description="Search scope: BASE (entry only), ONELEVEL (direct children), or SUBTREE (entire subtree)")] = "SUBTREE",
         filter: Annotated[str, Field(description="LDAP filter in RFC 4515 syntax, e.g. '(uid=jdoe)'")] = "(objectClass=*)",
         attributes: Annotated[Optional[str], Field(description="Comma-separated attribute list; '*' = all user attributes, '+' = operational attributes; omit for all")] = None,
@@ -124,7 +124,9 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
                     else:
                         dn = getattr(item, "dn", None)
                         attrs = getattr(item, "data", None)
-                    if not dn or attrs is None:
+                    # dn == "" is the root DSE — a valid entry; only skip
+                    # genuinely malformed items
+                    if dn is None or attrs is None:
                         continue
                     attrs_out: Dict[str, List[str]] = {}
                     attr_items = attrs.items() if hasattr(attrs, "items") else []
