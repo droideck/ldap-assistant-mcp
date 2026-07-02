@@ -3,8 +3,9 @@
 Publishing is **automated**: pushing a `v*` tag runs
 [release.yml](../.github/workflows/release.yml), which builds the package,
 verifies the tag matches `pyproject.toml`, publishes to PyPI via trusted
-publishing, and then publishes to the official MCP Registry via
-`mcp-publisher` (that last step self-skips while `server.json` is absent).
+publishing, publishes to the official MCP Registry via `mcp-publisher`
+(that step self-skips while `server.json` is absent), and creates a
+GitHub Release carrying the same wheel/sdist that went to PyPI.
 
 This checklist covers only what the workflow cannot do for you.
 
@@ -60,12 +61,13 @@ git push origin v0.X.Y
 ```
 
 - [ ] Watch the Actions run: build → publish-pypi → publish-mcp-registry
-      (registry step skips until `server.json` lands)
+      + github-release (registry step skips until `server.json` lands)
 
 ## Post-publish verification
 
 - [ ] PyPI page shows the new version and the README renders (badge, no
       broken relative links)
+- [ ] GitHub Release for the tag exists with the wheel and sdist attached
 - [ ] MCP Registry lists the server:
       `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=ldap-assistant-mcp'`
 - [ ] Clean-host install from the published package:

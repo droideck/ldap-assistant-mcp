@@ -1,7 +1,8 @@
 name: Release
 
 # Tag-triggered release: build → publish to PyPI (trusted publishing) →
-# publish to the official MCP Registry (GitHub OIDC).
+# publish to the official MCP Registry (GitHub OIDC) + create a GitHub
+# Release carrying the same wheel/sdist that went to PyPI.
 #
 # One-time setup required before the first release:
 #   1. PyPI: add a "trusted publisher" for this repo/workflow
@@ -101,3 +102,25 @@ jobs:
         run: |
           mcp-publisher login github-oidc
           mcp-publisher publish
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "LDAP Assistant MCP $GITHUB_REF_NAME" \
+            --generate-notes
