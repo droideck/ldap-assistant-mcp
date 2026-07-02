@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ldap-assistant-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "MCP server for 389 Directory Server health diagnostics, log analysis, and SOS-report investigation"
 readme = "README.md"
 license = "GPL-3.0-or-later"

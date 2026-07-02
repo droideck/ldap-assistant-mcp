@@ -69,21 +69,35 @@ def _sanitize_index_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str
 
 def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize a backend entry in index results."""
-    result = dict(backend)
-    if "name" in result:
-        result["name"] = "[backend]"
-    if "suffix" in result:
-        result["suffix"] = sanitizer.sanitize_suffix(result["suffix"])
-    if "vlv_indexes" in result and isinstance(result["vlv_indexes"], list):
-        result["vlv_indexes"] = [
-            {
-                **vlv,
-                "name": "[vlv]",
-                "base": sanitizer.sanitize_dn(vlv.get("base")),
-                "filter": "[filter]",
-            }
-            for vlv in result["vlv_indexes"]
-        ]
+    result = {}
+    for key, value in backend.items():
+        if key == "name":
+            result[key] = "[backend]"
+        elif key == "suffix":
+            result[key] = sanitizer.sanitize_suffix(value)
+        elif key == "vlv_indexes" and isinstance(value, list):
+            result[key] = [
+                {
+                    **vlv,
+                    "name": "[vlv]",
+                    "base": sanitizer.sanitize_dn(vlv.get("base")),
+                    "filter": "[filter]",
+                }
+                for vlv in value
+            ]
+        elif key in ("indexes", "missing_recommended", "incomplete_indexes") and isinstance(value, list):
+            # Attribute names, index types, and dsconf command templates are
+            # schema-level data, not directory content
+            result[key] = value
+        elif key == "indexes_error" and isinstance(value, str):
+            result[key] = sanitizer.sanitize_text(value)
+        elif value is None or isinstance(value, (bool, int, float)):
+            # Numbers/bools cannot carry identifiers (diagnostic counts)
+            result[key] = value
+        else:
+            # Deny-by-default: a key this allowlist doesn't know about must
+            # not pass through raw — redact it until it is explicitly vetted.
+            result[key] = "[REDACTED]"
     return result
 
 

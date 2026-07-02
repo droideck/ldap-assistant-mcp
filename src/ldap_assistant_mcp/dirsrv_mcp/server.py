@@ -16,7 +16,6 @@ from ldap_assistant_mcp.dirsrv_mcp.connection import (
     ConnectionManager,
     LiveServerRequired,
     require_live_server,
-    require_local_server,
 )
 from ldap_assistant_mcp.dirsrv_mcp.middleware import LoggingMiddleware, ResponseSizeMiddleware, TimeoutMiddleware
 from ldap_assistant_mcp.dirsrv_mcp.tools import (
@@ -158,6 +157,13 @@ class DirSrvMCP(LDAPAssistantMCP):
             not self._mcp_settings.expose_sensitive_data,
             self._mcp_settings.debug,
         )
+        if self._mcp_settings.expose_sensitive_data:
+            self.logger.warning(
+                "Privacy mode is DISABLED (expose_sensitive_data=true): tool "
+                "outputs will contain real DNs, hostnames, IP addresses, and "
+                "configuration values. Use only with trusted/local LLMs — "
+                "never with public LLMs against production directories."
+            )
 
         self._register_prompts()
         self._register_tools()
@@ -590,10 +596,6 @@ class DirSrvMCP(LDAPAssistantMCP):
     def require_live(self, server_name: str, feature: str) -> None:
         """Guard that raises LiveServerRequired for offline/archive servers."""
         require_live_server(self.connection_manager, server_name, feature)
-
-    def require_local(self, server_name: str, feature: str) -> None:
-        """Guard that raises LocalServerRequired for remote servers."""
-        require_local_server(self.connection_manager, server_name, feature)
 
     def describe_servers(self) -> List[Dict[str, Any]]:
         """Return a list of server descriptions (sanitized in privacy mode).

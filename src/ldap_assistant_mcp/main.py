@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple, Type
 
 from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
-from ldap_assistant_mcp.core import LDAPAssistantMCP, LDAPServerConfig
+from ldap_assistant_mcp.core import LDAPAssistantMCP, LDAPServerConfig, _env_flag
 from ldap_assistant_mcp.openldap_mcp.server import OpenLDAPMCP
 
 
@@ -33,6 +33,9 @@ SERVER_REGISTRY: Dict[str, ServerDefinition] = {
 
 DEFAULT_PROVIDER = "dirsrv"
 PROVIDER_ENV_VAR = "LDAP_PROVIDER"
+# The OpenLDAP provider is an experimental two-tool stub that bypasses the
+# privacy sanitizer and middleware — it must be opted into explicitly.
+EXPERIMENTAL_OPENLDAP_ENV_VAR = "LDAP_MCP_EXPERIMENTAL_OPENLDAP"
 
 
 def create_server(
@@ -78,6 +81,14 @@ def _resolve_provider(
     if not definition:
         valid = ", ".join(sorted(SERVER_REGISTRY))
         raise ValueError(f"Unknown LDAP MCP provider '{requested}'. Valid options: {valid}.")
+    if requested == "openldap" and not _env_flag(EXPERIMENTAL_OPENLDAP_ENV_VAR):
+        raise ValueError(
+            "The OpenLDAP provider is experimental: it exposes only two tools "
+            "and bypasses the privacy sanitizer and middleware used by the "
+            "389 DS provider. Set LDAP_MCP_EXPERIMENTAL_OPENLDAP=true to opt "
+            "in, or use LDAP_PROVIDER=dirsrv (389 Directory Server, the "
+            "supported provider)."
+        )
     return requested, definition
 
 

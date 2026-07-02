@@ -79,3 +79,49 @@ async def test_provider_selectable_via_registry():
     definition = SERVER_REGISTRY["openldap"]
     assert definition.cls is OpenLDAPMCP
     assert definition.supports_config_path is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.3: the OpenLDAP provider requires an explicit opt-in
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_provider_openldap_requires_opt_in(monkeypatch):
+    """LDAP_PROVIDER=openldap without the flag must error with guidance."""
+    from ldap_assistant_mcp.main import _resolve_provider
+
+    monkeypatch.delenv("LDAP_MCP_EXPERIMENTAL_OPENLDAP", raising=False)
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_provider("openldap")
+    message = str(exc_info.value)
+    assert "LDAP_MCP_EXPERIMENTAL_OPENLDAP" in message
+    assert "dirsrv" in message
+
+
+def test_resolve_provider_openldap_with_opt_in(monkeypatch):
+    from ldap_assistant_mcp.main import _resolve_provider
+
+    monkeypatch.setenv("LDAP_MCP_EXPERIMENTAL_OPENLDAP", "true")
+    requested, definition = _resolve_provider("openldap")
+    assert requested == "openldap"
+    assert definition.cls is OpenLDAPMCP
+
+
+def test_resolve_provider_env_var_also_gated(monkeypatch):
+    """The gate applies when the provider comes from LDAP_PROVIDER too."""
+    from ldap_assistant_mcp.main import _resolve_provider
+
+    monkeypatch.setenv("LDAP_PROVIDER", "openldap")
+    monkeypatch.delenv("LDAP_MCP_EXPERIMENTAL_OPENLDAP", raising=False)
+    with pytest.raises(ValueError, match="LDAP_MCP_EXPERIMENTAL_OPENLDAP"):
+        _resolve_provider(None)
+
+
+def test_resolve_provider_dirsrv_unaffected(monkeypatch):
+    from ldap_assistant_mcp.main import DirSrvMCP, _resolve_provider
+
+    monkeypatch.delenv("LDAP_MCP_EXPERIMENTAL_OPENLDAP", raising=False)
+    monkeypatch.delenv("LDAP_PROVIDER", raising=False)
+    requested, definition = _resolve_provider(None)
+    assert requested == "dirsrv"
+    assert definition.cls is DirSrvMCP

@@ -153,5 +153,45 @@
     "query": "Which servers are configured?",
     "expected_tools": ["list_servers"],
     "category": "servers"
+  },
+  {
+    "query": "What is wrong with my directory servers?",
+    "expected_tools": ["first_look"],
+    "category": "release-routing"
+  },
+  {
+    "query": "Investigate the SOS report from a customer case",
+    "expected_tools": ["analyze_archive"],
+    "category": "release-routing"
+  },
+  {
+    "query": "Replication looks broken between these servers",
+    "expected_tools": ["get_replication_status"],
+    "category": "release-routing"
+  },
+  {
+    "query": "The directory is slow - find the performance bottleneck",
+    "expected_tools": ["get_performance_summary"],
+    "category": "release-routing"
+  },
+  {
+    "query": "With privacy mode on, how many locked user accounts are there?",
+    "expected_tools": ["list_locked_users"],
+    "category": "release-routing"
+  },
+  {
+    "query": "The instance is stopped - list the users on the offline server",
+    "expected_tools": ["list_all_users"],
+    "category": "release-routing"
+  },
+  {
+    "query": "Run the monitor against the archive server from the SOS report",
+    "expected_tools": ["run_monitor"],
+    "category": "release-routing"
+  },
+  {
+    "query": "Find unindexed searches in the access log",
+    "expected_tools": ["find_unindexed_searches"],
+    "category": "release-routing"
   }
 ]

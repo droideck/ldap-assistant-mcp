@@ -197,24 +197,6 @@ def test_sanitizer_attribute_value_non_sensitive():
     assert sanitizer.sanitize_attribute_value("uidNumber", "1000") == "1000"
 
 
-def test_sanitizer_entry():
-    """Test complete entry sanitization."""
-    sanitizer = PrivacySanitizer()
-    entry = {
-        "dn": "uid=admin,ou=people,dc=example,dc=com",
-        "attrs": {
-            "uid": ["admin"],
-            "cn": ["Admin User"],
-            "objectClass": ["inetOrgPerson"],
-            "userPassword": ["secret"],
-        }
-    }
-    result = sanitizer.sanitize_entry(entry)
-    assert result["dn"].startswith("[entry-") and result["dn"].endswith("]")
-    assert result["attrs"]["userPassword"] == "[REDACTED]"
-    assert result["attrs"]["objectClass"] == ["inetOrgPerson"]
-
-
 def test_sanitizer_finding():
     """Test finding sanitization."""
     sanitizer = PrivacySanitizer()
@@ -250,20 +232,6 @@ def test_sanitizer_agreement():
     assert result["consumer_port"] == "[port]"
     assert result["suffix"].startswith("[suffix-")
     assert result["status"]["state"] == "online"
-
-
-def test_sanitizer_backend():
-    """Test backend sanitization."""
-    sanitizer = PrivacySanitizer()
-    backend = {
-        "name": "userroot",
-        "suffix": "dc=example,dc=com",
-        "entry_count": 1000,
-    }
-    result = sanitizer.sanitize_backend(backend)
-    assert result["name"] == "[backend]"
-    assert result["suffix"].startswith("[suffix-")
-    assert result["entry_count"] == 1000  # Numeric preserved
 
 
 def test_sanitizer_finding_metadata_items():

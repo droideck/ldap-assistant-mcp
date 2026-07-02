@@ -286,12 +286,21 @@ class LDAPServerConfig:
             LDAP_BASE_DN: Directory base DN
             LDAP_BIND_DN: Bind DN
             LDAP_BIND_PASSWORD: Bind password
-            LDAP_AUTH_METHOD: simple | sasl_gssapi | sasl_digest_md5 | sasl_external
+            LDAP_AUTH_METHOD: simple | anonymous (the only implemented binds;
+                LDAPI/SASL EXTERNAL is selected via LDAP_USE_LDAPI, not here)
             LDAP_PROVIDER: Optional provider hint (e.g., 389ds, openldap)
             LDAP_TLS_VERIFY: true/false - verify server certificate for remote
                 LDAPS connections (default: true)
             LDAP_IS_LOCAL: true/false - if true, enables local instance access
             LDAP_SERVERID: Instance name (e.g., 'standalone') - required if is_local=true
+            LDAP_USE_LDAPI: true/false - connect over the LDAPI unix socket
+                (requires LDAP_IS_LOCAL=true and LDAP_SERVERID)
+            LDAP_IS_OFFLINE: true/false - treat the local instance as stopped
+                (implies LDAP_IS_LOCAL=true; requires LDAP_SERVERID)
+
+        Raises:
+            ValueError: On invalid LDAP_PORT / LDAP_AUTH_METHOD values, or
+                LDAP_IS_OFFLINE=true without LDAP_SERVERID.
         """
 
         url = os.environ.get("LDAP_URL")
@@ -307,12 +316,27 @@ class LDAPServerConfig:
         else:
             hostname = hostname or "localhost"
             use_ssl = str(use_ssl_env).lower() in {"1", "true", "yes", "on"}
-            port = int(port_env) if port_env else (636 if use_ssl else 389)
+            if port_env:
+                try:
+                    port = int(port_env)
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid LDAP_PORT value {port_env!r} (must be an integer)"
+                    ) from None
+            else:
+                port = 636 if use_ssl else 389
 
         base_dn = os.environ.get("LDAP_BASE_DN", "dc=example,dc=com")
-        auth_method = LDAPAuthMethod(
-            os.environ.get("LDAP_AUTH_METHOD", LDAPAuthMethod.SIMPLE.value).lower()
-        )
+        auth_env = os.environ.get("LDAP_AUTH_METHOD", LDAPAuthMethod.SIMPLE.value).lower()
+        try:
+            auth_method = LDAPAuthMethod(auth_env)
+        except ValueError:
+            valid = ", ".join(m.value for m in LDAPAuthMethod)
+            raise ValueError(
+                f"Invalid LDAP_AUTH_METHOD value {auth_env!r}. Valid values: {valid}. "
+                "Note: only 'simple' and 'anonymous' binds are implemented; "
+                "LDAPI/SASL EXTERNAL is selected via LDAP_USE_LDAPI=true."
+            ) from None
 
         # For anonymous auth, don't use default credentials
         if auth_method == LDAPAuthMethod.ANONYMOUS:
@@ -329,6 +353,19 @@ class LDAPServerConfig:
         serverid = os.environ.get("LDAP_SERVERID")
         use_ldapi_env = os.environ.get("LDAP_USE_LDAPI", "")
         use_ldapi = str(use_ldapi_env).lower() in {"1", "true", "yes", "on"}
+
+        # Offline instance mode: mirrors the JSON-loader invariants —
+        # offline implies is_local, and the serverid is needed to locate
+        # the instance's dse.ldif and log files.
+        is_offline = _env_flag("LDAP_IS_OFFLINE")
+        if is_offline:
+            is_local = True
+            if not serverid:
+                raise ValueError(
+                    "LDAP_IS_OFFLINE=true requires LDAP_SERVERID to be set "
+                    "(the instance name without the 'slapd-' prefix, "
+                    "e.g. 'localhost')."
+                )
 
         # Fail safe: only an explicit false-y value disables TLS verification.
         tls_verify = (
@@ -350,6 +387,7 @@ class LDAPServerConfig:
             is_local=is_local,
             serverid=serverid,
             use_ldapi=use_ldapi,
+            is_offline=is_offline,
         )
 
 

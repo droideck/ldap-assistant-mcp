@@ -2,6 +2,55 @@
 
 All notable changes to LDAP Assistant MCP will be documented in this file.
 
+## [0.5.0] - 2026-07-01
+
+First beta release, targeting 389 DS support engineers triaging live instances
+and SOS reports. Read-only diagnostics suitable for evaluation and internal
+troubleshooting; tool schemas, output formats, and configuration fields may
+still change before 1.0.0.
+
+### Added
+
+#### Support-engineer workflow
+- Mode errors now teach the workflow: refusing a live-only tool on an offline/archive server (and archive-only tools on live servers, log tools on remote servers) names the tools that DO work there — `try_instead` in error dicts, alternatives listed in `LiveServerRequired` messages
+- Admin playbooks: `docs/playbooks/archive-sos.md` (summarize an SOS report before opening the case) and `docs/playbooks/install-troubleshooting.md` (python-ldap builds, WSL2, uvx, config path resolution)
+- `docs/RELEASE.md` release checklist (manual pre-tag steps; publishing itself is automated on tag)
+- 8 release-critical routing cases in the eval dataset (SOS investigation, broken replication, slow directory, privacy/offline/archive mode queries) — gate in CI
+- README restructured around the support-engineer path: uvx install from PyPI, four server modes table, "first questions to ask", tool groups, playbook links
+
+#### Packaging & Distribution
+- Proper installable package: `src/ldap_assistant_mcp/` distribution package, hatchling build, `ldap-assistant-mcp` console script, tests excluded from the wheel
+- Tag-triggered release workflow (`release.yml`): build → PyPI trusted publishing → MCP Registry publish
+- CI: fast no-container job (ruff + non-live tests + build + clean-venv wheel smoke test) on a Python 3.11/3.12/3.13 matrix; Dependabot; `live` pytest marker
+- Package version reported to MCP clients; server-level `instructions` shipped by default; stderr logging handler (`LDAP_MCP_DEBUG` for debug level)
+
+#### Privacy
+- IPv4/IPv6 address redaction in text sanitization (bare, bracketed, zone-indexed, and port-suffixed forms) with deterministic per-session `[ip-…]` tokens
+- Startup WARNING when privacy mode is disabled (`expose_sensitive_data=true`)
+- Fail-closed sanitization: unrecognized backend-result and finding-metadata keys are now redacted by default instead of passed through raw
+- Fail-closed hardening extended to RUV data (including error text), attribute values outside the sensitive sets (identifier-shaped values tokenized, nested entry structures sanitized per-attribute), and finding top-level keys; text sanitization now also covers email addresses and modern TLDs (.xyz, .dev, .ai, country codes, …)
+
+#### Configuration
+- `LDAP_IS_OFFLINE` environment variable implemented (was documented but ignored): implies `LDAP_IS_LOCAL=true`, requires `LDAP_SERVERID`
+- `tls_verify` config field + `LDAP_TLS_VERIFY` / `LDAP_CONNECT_TIMEOUT` environment variables (from 0.4.x hardening)
+
+### Changed
+
+#### Contract honesty
+- Unimplemented `auth_method` values (`sasl_gssapi`, `sasl_digest_md5`, `sasl_external`) are now rejected with a clear error instead of silently degrading to a simple bind with an empty password; LDAPI/SASL EXTERNAL is selected via `use_ldapi`
+- Invalid `LDAP_PORT` / `LDAP_AUTH_METHOD` values fail startup with clear configuration errors instead of bare tracebacks
+- A server with `is_offline=true` but missing `is_local`/`serverid` now gets a clear error instead of falling through to a live connection attempt
+- The OpenLDAP provider (experimental, bypasses the privacy sanitizer) now requires an explicit `LDAP_MCP_EXPERIMENTAL_OPENLDAP=true` opt-in; `LDAP_PROVIDER=openldap` without it errors with guidance
+
+#### Diagnostics correctness (0.4.x hardening series)
+- Fixed silently-wrong results in `find_unindexed_searches`, disk/certificate health checks, backend lint discovery, SOS healthcheck parsing, log `time_range` filtering, and offline replication detection
+- Archive robustness: decompression-bomb guard, extraction caching, DN-normalized `compare_dse_configs`, streamed JSON log parsing, bounded log memory
+
+### Fixed
+- Config-load failures for an explicitly configured `LDAP_SERVERS_CONFIG` now fail loudly instead of silently booting an env-fallback phantom server
+- Multiple privacy-mode leak paths closed (monitor connection data, credential hashes, mapping-tree suffixes, resource errors, traceback text)
+- lib389 workarounds: `DSEldif` case-sensitive attribute lookup, `DSEldif` last-line drop, `DirsrvAuditLog.parse_line` crash, `parse_timestamp` precision loss
+
 ## [0.4.0] - 2026-04-01
 
 ### Added
@@ -177,6 +226,7 @@ All notable changes to LDAP Assistant MCP will be documented in this file.
 - **config://config-all** - Returns all cn=config attributes
 - **config://config-attribute/{attribute}** - Returns a single cn=config attribute
 
+[0.5.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/droideck/ldap-assistant-mcp/compare/v0.1.0...v0.2.0

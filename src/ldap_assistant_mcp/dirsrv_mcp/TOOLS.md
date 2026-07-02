@@ -100,7 +100,7 @@ list_healthcheck_errors()
 
 ### get_replication_status(server_name?)
 
-Get comprehensive replication status for a server.
+Get replication configuration, RUV, and agreement status for one server. LIVE only. Start here when replication is broken or misbehaving on a specific server; use `get_replication_topology` for a cross-server map and `check_replication_lag` for lag analysis.
 
 ```
 get_replication_status(server_name: str = None)
@@ -121,7 +121,7 @@ get_replication_status(server_name: str = None)
 
 ### get_replication_topology()
 
-Map the complete replication topology across all configured servers.
+Map the complete replication topology across all configured servers. LIVE only. Offline/archive servers are included as nodes but cannot report live agreement status.
 
 ```
 get_replication_topology()
@@ -140,7 +140,7 @@ get_replication_topology()
 
 ### check_replication_lag(suffix?, server_name?)
 
-Analyze replication lag across agreements by comparing CSN values.
+Measure replication lag by comparing supplier and consumer CSNs. LIVE only. Use this when `first_look` or `get_replication_status` indicates stale agreements.
 
 ```
 check_replication_lag(suffix: str = None, server_name: str = None)
@@ -158,7 +158,7 @@ check_replication_lag(suffix: str = None, server_name: str = None)
 
 ### list_replication_conflicts(base_dn?, server_name?)
 
-Find all replication conflict and glue entries.
+Find replication conflict and glue entries that need resolution. LIVE only.
 
 ```
 list_replication_conflicts(base_dn: str = None, server_name: str = None)
@@ -173,7 +173,7 @@ list_replication_conflicts(base_dn: str = None, server_name: str = None)
 
 ### get_agreement_status(agreement_name?, suffix?, server_name?)
 
-Get detailed status for replication agreements.
+Get detailed status for one or all replication agreements. LIVE only.
 
 ```
 get_agreement_status(
@@ -191,7 +191,7 @@ get_agreement_status(
 
 ### get_performance_summary(server_name?)
 
-Comprehensive performance overview in a single call.
+Combined performance overview — the first tool to reach for when the server is slow or for any performance question. LIVE only. Use the individual tools below to drill into specific areas.
 
 ```
 get_performance_summary(server_name: str = None)
@@ -211,7 +211,7 @@ get_performance_summary(server_name: str = None)
 
 ### get_cache_statistics(backend?, server_name?)
 
-Analyze database and entry cache efficiency.
+Analyze database and entry cache efficiency. LIVE only.
 
 ```
 get_cache_statistics(backend: str = None, server_name: str = None)
@@ -227,7 +227,7 @@ get_cache_statistics(backend: str = None, server_name: str = None)
 
 ### get_connection_statistics(server_name?)
 
-Analyze connection patterns and resource usage.
+Analyze connection patterns and file descriptor usage. LIVE only.
 
 ```
 get_connection_statistics(server_name: str = None)
@@ -243,7 +243,7 @@ get_connection_statistics(server_name: str = None)
 
 ### get_operation_statistics(server_name?)
 
-Get operation counts and performance metrics.
+Get operation counts by type and bind method distribution. LIVE only.
 
 ```
 get_operation_statistics(server_name: str = None)
@@ -259,7 +259,7 @@ get_operation_statistics(server_name: str = None)
 
 ### get_thread_statistics(server_name?)
 
-Analyze worker thread utilization.
+Analyze worker thread utilization and contention. LIVE only.
 
 ```
 get_thread_statistics(server_name: str = None)
@@ -274,7 +274,7 @@ get_thread_statistics(server_name: str = None)
 
 ### get_resource_utilization(server_name?)
 
-Get system resource usage.
+Get memory, CPU, and disk usage for the Directory Server process. LIVE only.
 
 ```
 get_resource_utilization(server_name: str = None)
@@ -349,7 +349,7 @@ find_unindexed_searches(
 
 **Returns:** Search patterns causing unindexed searches with frequency and recommendations.
 
-**Note:** Requires local server access (is_local=True with serverid).
+**Note:** Requires local or archive server access (reads log files directly).
 
 ---
 
@@ -415,29 +415,32 @@ get_backend_configuration(backend: str = None, server_name: str = None)
 
 ## User Management
 
-### list_all_users(limit?)
+All user tools require a live server (they fail with `LiveServerRequired` on offline/archive servers). In privacy mode (default), the list/search tools return counts only, and `get_user_details` / `search_users_by_attribute` are disabled entirely.
 
-Enumerate all users in the directory.
+### list_all_users(limit?, server_name?)
+
+List all user accounts regardless of status, with computed lock/active status per user. Use `list_active_users` / `list_locked_users` to filter by status.
 
 ```
-list_all_users(limit: int = 50)
+list_all_users(limit: int = 50, server_name: str = None)
 ```
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | limit | int | No | 50 | Maximum users to return |
+| server_name | str | No | - | Target server |
 
-**Returns:** List of users with basic attributes (uid, cn, mail, status).
+**Returns:** List of users with attributes and computed lock/active status.
 
 ---
 
-### search_users_by_name(name, limit?)
+### search_users_by_name(name, limit?, server_name?)
 
-Search for users by name or email.
+Search users by name substring (or `*` wildcard) across uid, cn, givenName, sn, displayName, and mail.
 
 ```
-search_users_by_name(name: str, limit: int = 50)
+search_users_by_name(name: str, limit: int = 50, server_name: str = None)
 ```
 
 **Example prompts:**
@@ -446,44 +449,44 @@ search_users_by_name(name: str, limit: int = 50)
 
 ---
 
-### get_user_details(username)
+### get_user_details(username, server_name?)
 
-Get complete details for a specific user.
+Get full attributes plus computed lock/expiry status for one user, looked up by uid.
 
 ```
-get_user_details(username: str)
+get_user_details(username: str, server_name: str = None)
 ```
 
-**Returns:** All user attributes including account status and group memberships.
+**Returns:** All user attributes plus computed status (lock state, policy parameters, calculation time).
 
 ---
 
-### list_active_users(limit?)
+### list_active_users(limit?, server_name?)
 
-List only active (unlocked) users.
-
-```
-list_active_users(limit: int = 50)
-```
-
----
-
-### list_locked_users(limit?)
-
-List only locked users with lock reason.
+List only users whose computed account status is active (not locked or inactivity-expired).
 
 ```
-list_locked_users(limit: int = 50)
+list_active_users(limit: int = 50, server_name: str = None)
 ```
 
 ---
 
-### search_users_by_attribute(attr, value, limit?)
+### list_locked_users(limit?, server_name?)
 
-Search for users by any LDAP attribute.
+List users whose accounts are locked, whether directly or indirectly (account policy / inactivity). Lock reason is included per user.
 
 ```
-search_users_by_attribute(attr: str, value: str, limit: int = 50)
+list_locked_users(limit: int = 50, server_name: str = None)
+```
+
+---
+
+### search_users_by_attribute(attribute, value, limit?, server_name?)
+
+Search users by any single attribute=value match (e.g. departmentNumber, title, mail domain).
+
+```
+search_users_by_attribute(attribute: str, value: str, limit: int = 50, server_name: str = None)
 ```
 
 **Example prompts:**
@@ -494,12 +497,12 @@ search_users_by_attribute(attr: str, value: str, limit: int = 50)
 
 ## Group Management
 
-### list_all_groups(limit?)
+### list_all_groups(limit?, server_name?)
 
-Enumerate all groups with member counts.
+List directory groups with their full attributes, including membership (member/uniqueMember). LIVE only. In privacy mode (default), returns a count only.
 
 ```
-list_all_groups(limit: int = 50)
+list_all_groups(limit: int = 50, server_name: str = None)
 ```
 
 ---
@@ -688,17 +691,17 @@ analyze_audit_log(
 
 ### analyze_archive(server_name?)
 
-Inventory and summarize available data in an archive or offline server.
+Inventory available data in an offline instance or archive source, such as an SOS report or config extract. The first step when working with a new archive or offline instance. OFFLINE and ARCHIVE only.
 
 ```
 analyze_archive(server_name: str = None)
 ```
 
 **Returns:**
-- Available data sources (config, logs, schema, certificates)
-- Instance name and archive type
+- Source type and instance name
+- DS version and configuration summary (ports, backends, suffixes, plugins, replication)
+- Available data inventory (config, logs, schema, certificates)
 - SOS healthcheck output if available
-- Replication configuration summary
 
 **Example prompts:**
 - "What's available in this SOS report?"
@@ -747,28 +750,34 @@ compare_dse_configs(
 
 ## Advanced Search
 
-### ldap_search(base_dn, scope?, filter?, attributes?, limit?)
+### ldap_search(base_dn, scope?, filter?, attributes?, attrs_only?, limit?, server_name?)
 
-Full LDAP search with complete control over parameters.
+Run an arbitrary LDAP search (any base DN, scope, and filter) when no specialized tool fits. Prefer the purpose-built tools (user/group/config/replication) first; this is the escape hatch for advanced queries. LIVE only. Disabled in privacy mode (default) — set `LDAP_MCP_EXPOSE_SENSITIVE_DATA=true` to enable.
 
 ```
 ldap_search(
     base_dn: str,
-    scope: str = "subtree",
+    scope: str = "SUBTREE",
     filter: str = "(objectClass=*)",
-    attributes: list = None,
-    limit: int = 100
+    attributes: str = None,
+    attrs_only: bool = False,
+    limit: int = 100,
+    server_name: str = None
 )
 ```
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| base_dn | str | Yes | - | Base DN to search from |
-| scope | str | No | "subtree" | Search scope: base, onelevel, subtree |
-| filter | str | No | "(objectClass=*)" | LDAP filter |
-| attributes | list | No | None (all) | Attributes to return |
-| limit | int | No | 100 | Maximum entries to return |
+| base_dn | str | Yes | - | Base DN to search from; empty string searches the root DSE (use scope=BASE) |
+| scope | str | No | "SUBTREE" | Search scope: BASE, ONELEVEL, or SUBTREE |
+| filter | str | No | "(objectClass=*)" | LDAP filter in RFC 4515 syntax |
+| attributes | str | No | None (all) | Comma-separated attribute list; `*` = all user attributes, `+` = operational attributes |
+| attrs_only | bool | No | False | Return attribute names only, without values |
+| limit | int | No | 100 | Maximum entries to return (hard cap 1000) |
+| server_name | str | No | - | Target server |
+
+**Returns:** Entries as `{dn, attrs}` (non-UTF-8 values are base64-encoded), plus `total_returned`, `limit_applied`, and `truncated` (true when the server stopped at the limit and more entries exist).
 
 ---
 

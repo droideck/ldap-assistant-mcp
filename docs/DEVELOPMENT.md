@@ -162,7 +162,7 @@ export LDAP_BIND_PASSWORD="Secret.123"
 fastmcp run --skip-env
 ```
 
-Set `LDAP_PROVIDER=dirsrv|openldap` to switch backends (defaults to `dirsrv`). Provide `LDAP_SERVERS_CONFIG=/path/servers.json` for multi-server 389 DS setups.
+Set `LDAP_PROVIDER=dirsrv|openldap` to switch backends (defaults to `dirsrv`). The experimental OpenLDAP provider additionally requires `LDAP_MCP_EXPERIMENTAL_OPENLDAP=true` — it exposes two tools and bypasses the privacy sanitizer and middleware. Provide `LDAP_SERVERS_CONFIG=/path/servers.json` for multi-server 389 DS setups.
 
 **Note:** For now, only STDIO transport is supported for security reasons; do not use HTTP overrides in `fastmcp run`.
 

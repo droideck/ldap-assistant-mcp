@@ -1131,6 +1131,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                     "Log parsing requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
+                "try_instead": ["get_connection_statistics", "get_operation_statistics", "run_monitor"],
             })
 
         ds = None
@@ -1196,6 +1197,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                     "Log parsing requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
+                "try_instead": ["first_look", "run_healthcheck"],
             })
 
         ds = None
@@ -1340,6 +1342,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                     "Log analysis requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
+                "try_instead": ["get_connection_statistics", "get_operation_statistics", "run_monitor"],
             })
 
         ds = None
@@ -1410,6 +1413,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                     "Log analysis requires local or archive server access. "
                     f"Server '{target}' is a remote connection."
                 ),
+                "try_instead": ["first_look", "run_healthcheck"],
             })
 
         ds = None

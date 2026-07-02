@@ -7,7 +7,6 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from ldap_assistant_mcp.dirsrv_mcp.connection import ConnectionManager, get_connection_manager
 from ldap_assistant_mcp.core import LDAPAuthMethod, LDAPServerConfig, MCPSettings
 
 logger = logging.getLogger(__name__)
@@ -185,49 +184,6 @@ def _load_from_file(file_path: str) -> ServerListConfig:
     logger.info(f"Loaded configuration for {len(config.servers)} servers")
 
     return config
-
-def initialize_connection_manager(
-    config: ServerListConfig,
-    manager: Optional[ConnectionManager] = None
-) -> ConnectionManager:
-    """
-    Initialize a connection manager with servers from config.
-
-    Args:
-        config: ServerListConfig with server definitions
-        manager: Optional existing ConnectionManager (creates new if None)
-
-    Returns:
-        ConnectionManager initialized with all servers from config
-    """
-    if manager is None:
-        manager = get_connection_manager()
-
-    for server_config in config.servers:
-        manager.add_server(server_config)
-        logger.info("Registered server: %s", server_config.name)
-
-    return manager
-
-def save_config(config: ServerListConfig, file_path: str) -> None:
-    """
-    Save configuration to JSON file.
-
-    Args:
-        config: ServerListConfig to save
-        file_path: Path to write JSON file
-
-    Note:
-        Passwords are saved in plain text. Ensure file permissions are restrictive.
-    """
-    logger.warning("Saving configuration to %s (passwords in plain text)", file_path)
-
-    with open(file_path, 'w') as f:
-        json.dump(config.to_dict(), f, indent=2)
-
-    # Set restrictive permissions (owner read/write only)
-    os.chmod(file_path, 0o600)
-    logger.info("Configuration saved to %s with mode 0600", file_path)
 
 def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = None) -> LDAPServerConfig:
     """Convert a dictionary entry into an LDAPServerConfig.

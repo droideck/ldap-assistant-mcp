@@ -963,7 +963,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
     @mcp.tool(annotations=_RO, tags={"performance", "live"})
     def get_performance_summary(server_name: Optional[str] = None) -> Dict[str, Any]:
-        """Combined performance overview — the first tool for performance questions. LIVE only.
+        """Combined performance overview — the first tool when the server is slow or for any performance question. LIVE only.
 
         Aggregates cache, connection, operation, thread, and resource metrics
         into a single response with prioritized findings. Use the individual

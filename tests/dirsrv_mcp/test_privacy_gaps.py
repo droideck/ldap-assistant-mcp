@@ -801,3 +801,356 @@ class TestErrorMessageSanitization:
             sanitized = fn(mcp, result)
             assert "server.example.com" not in sanitized["error"], \
                 f"{name} sanitizer did not sanitize error field"
+
+
+# ── Fail-closed sanitizers (pre-0.5.0 audit) ─────────────────────────
+
+class TestFailClosedReplicationSanitizers:
+    """Unknown keys must come back redacted, never raw."""
+
+    def setup_method(self):
+        self.sanitizer = PrivacySanitizer()
+
+    def test_agreement_unknown_key_redacted(self):
+        result = self.sanitizer.sanitize_agreement(
+            {"name": "agmt1", "future_key": "cn=dm,dc=example,dc=com"}
+        )
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_agreement_last_update_status_sanitized(self):
+        result = self.sanitizer.sanitize_agreement(
+            {
+                "name": "agmt1",
+                "last_update_status": (
+                    "Error (-1) Problem connecting to replica - "
+                    "LDAP error: Can't contact LDAP server "
+                    "(ldaps://replica2.example.com:636)"
+                ),
+            }
+        )
+        assert "example.com" not in result["last_update_status"]
+        assert "Error (-1)" in result["last_update_status"]
+
+    def test_agreement_known_diagnostic_keys_kept(self):
+        result = self.sanitizer.sanitize_agreement(
+            {
+                "transport": "LDAP",
+                "bind_method": "SIMPLE",
+                "enabled": "on",
+                "state": "green",
+                "lag_status": "in_sync",
+                "last_update_start": "20260701120000Z",
+                "changes_sent": "1:5/0 ",
+            }
+        )
+        assert result["transport"] == "LDAP"
+        assert result["bind_method"] == "SIMPLE"
+        assert result["enabled"] == "on"
+        assert result["state"] == "green"
+        assert result["lag_status"] == "in_sync"
+        assert result["last_update_start"] == "20260701120000Z"
+        assert result["changes_sent"] == "1:5/0 "
+
+    def test_replica_unknown_key_redacted(self):
+        result = self.sanitizer.sanitize_replica(
+            {"suffix": "dc=example,dc=com", "future_key": "host1.example.com"}
+        )
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_replica_agreements_error_sanitized(self):
+        result = self.sanitizer.sanitize_replica(
+            {
+                "suffix": "dc=example,dc=com",
+                "agreements_error": "Bind failed on ldaps://host1.example.com:636",
+            }
+        )
+        assert "example.com" not in result["agreements_error"]
+
+    def test_replica_diagnostic_keys_kept(self):
+        result = self.sanitizer.sanitize_replica(
+            {"role": "supplier", "replica_id": "1", "tombstone_count": 42}
+        )
+        assert result["role"] == "supplier"
+        assert result["replica_id"] == "1"
+        assert result["tombstone_count"] == 42
+
+    def test_status_unknown_key_redacted(self):
+        result = self.sanitizer._sanitize_status(
+            {"state": "green", "replica": "host1.example.com:636"}
+        )
+        assert result["state"] == "green"
+        assert result["replica"] == "[REDACTED]"
+
+    def test_server_info_unknown_key_redacted(self):
+        result = self.sanitizer.sanitize_server_info(
+            {"name": "ds-test-1", "future_key": "ldap://host1.example.com"}
+        )
+        assert result["name"] == "ds-test-1"
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_ruv_error_key_sanitized(self):
+        # _parse_ruv_for_display error branch puts raw exception text
+        # (which may embed DNs/hostnames/LDAP URLs) under "error"
+        result = self.sanitizer._sanitize_ruv(
+            {
+                "error": "Can't contact LDAP server (ldaps://replica2.example.com:636)",
+                "replicas": [],
+                "replica_count": 0,
+            }
+        )
+        assert "example.com" not in result["error"]
+        assert result["replicas"] == "[ruv-data]"
+        assert result["replica_count"] == 0
+
+    def test_ruv_unknown_key_redacted(self):
+        result = self.sanitizer._sanitize_ruv({"future_key": "cn=replica,cn=config"})
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_ruv_known_keys_tokenized(self):
+        result = self.sanitizer._sanitize_ruv(
+            {
+                "replicas": [{"url": "ldap://host1.example.com:389"}],
+                "data_generation": "gen-abc123",
+            }
+        )
+        assert result["replicas"] == "[ruv-data]"
+        assert result["data_generation"] == "[generation-id]"
+
+    def test_ruv_error_reachable_via_sanitize_replica(self):
+        result = self.sanitizer.sanitize_replica(
+            {
+                "suffix": "dc=example,dc=com",
+                "ruv": {
+                    "error": "failed for cn=dm,dc=example,dc=com on host1.example.com",
+                    "replicas": [],
+                    "replica_count": 0,
+                },
+            }
+        )
+        assert "example.com" not in str(result["ruv"])
+
+
+class TestFailClosedAttributeValueFallback:
+    """sanitize_attribute_value must not pass identifier-shaped values raw
+    for attributes missing from the sensitive sets (fail-closed)."""
+
+    def setup_method(self):
+        self.sanitizer = PrivacySanitizer()
+
+    def test_newly_listed_config_attrs_sanitized(self):
+        assert self.sanitizer.sanitize_attribute_value(
+            "nsslapd-securelistenhost", "host1.example.com"
+        ).startswith("[host-")
+        assert self.sanitizer.sanitize_attribute_value(
+            "nsslapd-rootdn", "cn=Directory Manager"
+        ).startswith("[entry-")
+        assert self.sanitizer.sanitize_attribute_value(
+            "nsslapd-referral", "ldap://other.example.com:389"
+        ) == "[ldap-url]"
+
+    def test_unlisted_attr_hostname_value_tokenized(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-host-attr", "host1.example.com"
+        )
+        assert result.startswith("[host-")
+
+    def test_unlisted_attr_dn_value_tokenized(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-dn-attr", "cn=dm,dc=example,dc=com"
+        )
+        assert result.startswith("[entry-")
+
+    def test_unlisted_attr_path_value_redacted(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-log-attr", "/var/log/dirsrv/slapd-x/access"
+        )
+        assert result == "[path]"
+
+    def test_unlisted_attr_url_value_redacted(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-url-attr", "ldaps://host1.example.com:636"
+        )
+        assert result == "[ldap-url]"
+
+    def test_unlisted_attr_embedded_identifiers_scrubbed(self):
+        # aci-like free text with an embedded DN must be pattern-scrubbed
+        result = self.sanitizer.sanitize_attribute_value(
+            "aci",
+            '(targetattr="*") userdn="ldap:///uid=admin,dc=example,dc=com"',
+        )
+        assert "dc=example,dc=com" not in result
+
+    def test_unlisted_attr_dict_value_recursed(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-attr", {"nested": "cn=dm,dc=example,dc=com"}
+        )
+        assert isinstance(result, dict)
+        assert result["nested"].startswith("[entry-")
+
+    def test_unlisted_attr_unvettable_value_redacted(self):
+        assert self.sanitizer.sanitize_attribute_value(
+            "future-attr", b"\x00binary"
+        ) == "[REDACTED]"
+        assert self.sanitizer.sanitize_attribute_value(
+            "future-attr", ("host1.example.com",)
+        ) == "[REDACTED]"
+
+    def test_benign_values_stay_readable(self):
+        assert self.sanitizer.sanitize_attribute_value("objectClass", "top") == "top"
+        assert self.sanitizer.sanitize_attribute_value("nsslapd-port", "389") == "389"
+        assert self.sanitizer.sanitize_attribute_value("nsslapd-security", "on") == "on"
+        assert self.sanitizer.sanitize_attribute_value("nsslapd-threadnumber", 24) == 24
+        assert self.sanitizer.sanitize_attribute_value("enabled", True) is True
+        assert self.sanitizer.sanitize_attribute_value("future-attr", None) is None
+
+    def test_list_values_sanitized_per_item(self):
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-attr", ["host1.example.com", "on", "389"]
+        )
+        assert result[0].startswith("[host-")
+        assert result[1] == "on"
+        assert result[2] == "389"
+
+    def test_nested_dict_recursed_not_wiped(self):
+        # lib389 get_all_attrs_json returns a {"type","dn","attrs":{...}}
+        # envelope — attrs must be sanitized per-attribute, not redacted
+        result = self.sanitizer.sanitize_dict(
+            {
+                "type": "entry",
+                "dn": "cn=config",
+                "attrs": {
+                    "nsslapd-port": ["389"],
+                    "nsslapd-security": ["on"],
+                    "nsslapd-localhost": ["host1.example.com"],
+                },
+            }
+        )
+        assert result["type"] == "entry"
+        assert result["dn"].startswith("[entry-")
+        assert isinstance(result["attrs"], dict)
+        assert result["attrs"]["nsslapd-port"] == ["389"]
+        assert result["attrs"]["nsslapd-security"] == ["on"]
+        assert result["attrs"]["nsslapd-localhost"][0].startswith("[host-")
+
+    def test_version_like_values_stay_readable(self):
+        # Dotted version strings and OIDs must not be hostname-tokenized
+        assert self.sanitizer.sanitize_attribute_value(
+            "nsslapd-pluginversion", "3.1.1"
+        ) == "3.1.1"
+        assert self.sanitizer.sanitize_attribute_value(
+            "sslversionmin", "TLS1.2"
+        ) == "TLS1.2"
+        assert self.sanitizer.sanitize_attribute_value(
+            "nsslapd-pluginid", "2.16.840.1.113730.3.4.9"
+        ) == "2.16.840.1.113730.3.4.9"
+
+    def test_bare_ip_value_still_redacted(self):
+        # IPs have no alphabetic TLD but must still come back tokenized
+        result = self.sanitizer.sanitize_attribute_value(
+            "future-attr", "192.168.1.5"
+        )
+        assert "192.168.1.5" not in result
+
+
+class TestSanitizeTextCoverage:
+    """sanitize_text must catch modern TLDs and email addresses."""
+
+    def setup_method(self):
+        self.sanitizer = PrivacySanitizer()
+
+    def test_modern_tld_hostnames_redacted(self):
+        for host in ("server01.acmewidgets.xyz", "api.corp.dev", "ds.example.ai"):
+            result = self.sanitizer.sanitize_text(f"cannot reach {host} right now")
+            assert host not in result, host
+            assert "[hostname]" in result
+
+    def test_email_addresses_redacted(self):
+        result = self.sanitizer.sanitize_text("notify jsmith@example.com on failure")
+        assert "jsmith" not in result
+        assert result == "notify [email] on failure"
+
+
+class TestFailClosedFindingTopLevel:
+    """sanitize_finding must vet top-level keys, not copy them through."""
+
+    def setup_method(self):
+        self.sanitizer = PrivacySanitizer()
+
+    def test_unknown_string_key_scrubbed(self):
+        result = self.sanitizer.sanitize_finding(
+            {"title": "t", "future_key": "down on ldaps://host1.example.com:636"}
+        )
+        assert "example.com" not in result["future_key"]
+
+    def test_unknown_structured_key_redacted(self):
+        result = self.sanitizer.sanitize_finding(
+            {"title": "t", "future_key": {"dn": "cn=dm,dc=example,dc=com"}}
+        )
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_standard_finding_keys_preserved(self):
+        result = self.sanitizer.sanitize_finding(
+            {
+                "title": "Replication Agreement Down",
+                "severity": "critical",
+                "impact": "Data is not replicating",
+                "details": "Agreement is down",
+                "remediation": "Check connectivity",
+                "server": "ds-test-1",
+                "metadata": {"suffix": "dc=example,dc=com", "count": 3},
+            }
+        )
+        assert result["severity"] == "critical"
+        assert result["server"] == "ds-test-1"
+        assert result["title"] == "Replication Agreement Down"
+        assert result["metadata"]["count"] == 3
+        assert "example" not in result["metadata"]["suffix"]
+
+
+class TestFailClosedIndexBackendSanitizer:
+    """indexes.py _sanitize_backend must not pass unknown keys through raw."""
+
+    def test_indexes_error_sanitized(self):
+        from ldap_assistant_mcp.dirsrv_mcp.tools.indexes import _sanitize_backend
+
+        result = _sanitize_backend(
+            PrivacySanitizer(),
+            {
+                "name": "userroot",
+                "suffix": "dc=example,dc=com",
+                "indexes_error": (
+                    "No such file: /etc/dirsrv/slapd-x/dse.ldif "
+                    "on host1.example.com"
+                ),
+            },
+        )
+        assert "example.com" not in result["indexes_error"]
+        assert "/etc/dirsrv" not in result["indexes_error"]
+
+    def test_unknown_key_redacted(self):
+        from ldap_assistant_mcp.dirsrv_mcp.tools.indexes import _sanitize_backend
+
+        result = _sanitize_backend(
+            PrivacySanitizer(),
+            {"name": "userroot", "future_key": "cn=dm,dc=example,dc=com"},
+        )
+        assert result["future_key"] == "[REDACTED]"
+
+    def test_known_analysis_keys_kept(self):
+        from ldap_assistant_mcp.dirsrv_mcp.tools.indexes import _sanitize_backend
+
+        backend = {
+            "name": "userroot",
+            "suffix": "dc=example,dc=com",
+            "current_index_count": 12,
+            "user_index_count": 3,
+            "indexes": [{"attribute": "uid", "types": ["eq"]}],
+            "missing_recommended": [{"attribute": "mail", "recommended_types": ["eq"]}],
+            "incomplete_indexes": [{"attribute": "cn", "missing_types": ["sub"]}],
+        }
+        result = _sanitize_backend(PrivacySanitizer(), backend)
+        assert result["current_index_count"] == 12
+        assert result["user_index_count"] == 3
+        assert result["indexes"] == backend["indexes"]
+        assert result["missing_recommended"] == backend["missing_recommended"]
+        assert result["incomplete_indexes"] == backend["incomplete_indexes"]

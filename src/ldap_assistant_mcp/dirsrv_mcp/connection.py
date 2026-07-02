@@ -19,8 +19,6 @@ __all__ = [
     "get_connection_manager",
     "get_connection",
     "is_local_server",
-    "require_local_server",
-    "LocalServerRequired",
     "is_offline_server",
     "is_archive_server",
     "is_offline_or_archive",
@@ -30,19 +28,6 @@ __all__ = [
     "ConnectionFailed",
     "DEFAULT_CONNECT_TIMEOUT",
 ]
-
-
-class LocalServerRequired(ToolError):
-    """Raised when a local server is required but a remote connection is used."""
-
-    def __init__(self, feature: str, server_name: str):
-        self.feature = feature
-        self.server_name = server_name
-        super().__init__(
-            f"'{feature}' requires a local server configuration. "
-            f"Server '{server_name}' is configured as remote. "
-            f"To enable local features, configure the server with is_local=True and serverid=<instance>."
-        )
 
 
 class UnknownServer(ToolError, KeyError):
@@ -284,6 +269,33 @@ class ConnectionManager:
         if config.is_archive:
             return self._connect_archive(config)
 
+        # Offline mode is only meaningful for a local instance with a
+        # serverid; without one there are no paths to analyze, and falling
+        # through would attempt a live bind to a server that is documented
+        # as stopped.
+        if config.is_offline and not (config.is_local and config.serverid):
+            raise ToolError(
+                f"Server '{server_name}' has is_offline=true but is missing "
+                "is_local=true and/or serverid. Offline mode requires both — "
+                "the serverid is the instance name (e.g. 'standalone')."
+            )
+
+        # Only 'simple' and 'anonymous' binds are implemented.  The sasl_*
+        # auth methods would otherwise silently degrade to a simple bind
+        # with an empty password.  LDAPI/SASL EXTERNAL is selected via
+        # use_ldapi=true, not auth_method; offline servers never bind.
+        if (
+            config.auth_method not in ("simple", "anonymous")
+            and not config.use_ldapi
+            and not config.is_offline
+        ):
+            raise ToolError(
+                f"Server '{server_name}' is configured with auth_method="
+                f"'{config.auth_method}', which is not implemented. Supported "
+                "values: 'simple', 'anonymous'. For LDAPI with SASL EXTERNAL "
+                "set use_ldapi=true (auth_method is then ignored)."
+            )
+
         if (
             config.auth_method == "simple"
             and not config.is_offline
@@ -509,33 +521,71 @@ def is_local_server(manager: ConnectionManager, server_name: str) -> bool:
         return False
 
 
-def require_local_server(
-    manager: ConnectionManager,
-    server_name: str,
-    feature: str,
-) -> None:
-    """Raise LocalServerRequired if the server is not local.
-
-    Use this at the start of tools that require local server access.
-
-    Args:
-        manager: The connection manager
-        server_name: Name of the server to check
-        feature: Description of the feature requiring local access
-
-    Raises:
-        LocalServerRequired: If the server is not configured as local
-    """
-    if not is_local_server(manager, server_name):
-        raise LocalServerRequired(feature, server_name)
+# Alternatives that DO work on offline/archive servers, keyed by the
+# live-only tool that was refused.  Surfaced in LiveServerRequired messages
+# (and the ``try_instead`` key of formatted tool errors) so an LLM client can
+# continue the diagnosis on the same server instead of dead-ending.  Only
+# list tools that genuinely work without an LDAP connection.
+_REPLICATION_ALTERNATIVES = [
+    "get_backend_configuration",
+    "analyze_error_log",
+    "compare_dse_configs",
+    "analyze_archive",
+]
+_ENTRY_QUERY_ALTERNATIVES = [
+    "analyze_access_log",
+    "analyze_audit_log",
+    "parse_access_log",
+]
+_PERFORMANCE_ALTERNATIVES = [
+    "analyze_access_log",
+    "find_unindexed_searches",
+    "analyze_error_log",
+]
+DEFAULT_OFFLINE_ALTERNATIVES = [
+    "first_look",
+    "get_server_configuration",
+    "validate_configuration",
+    "analyze_error_log",
+]
+OFFLINE_ALTERNATIVES: Dict[str, List[str]] = {
+    "get_replication_status": _REPLICATION_ALTERNATIVES,
+    "check_replication_lag": _REPLICATION_ALTERNATIVES,
+    "list_replication_conflicts": _REPLICATION_ALTERNATIVES,
+    "get_agreement_status": _REPLICATION_ALTERNATIVES,
+    "list_all_users": _ENTRY_QUERY_ALTERNATIVES,
+    "search_users_by_name": _ENTRY_QUERY_ALTERNATIVES,
+    "search_users_by_attribute": _ENTRY_QUERY_ALTERNATIVES,
+    "get_user_details": _ENTRY_QUERY_ALTERNATIVES,
+    "list_active_users": _ENTRY_QUERY_ALTERNATIVES,
+    "list_locked_users": _ENTRY_QUERY_ALTERNATIVES,
+    "list_all_groups": _ENTRY_QUERY_ALTERNATIVES,
+    "ldap_search": _ENTRY_QUERY_ALTERNATIVES,
+    "get_cache_statistics": _PERFORMANCE_ALTERNATIVES,
+    "get_connection_statistics": _PERFORMANCE_ALTERNATIVES,
+    "get_operation_statistics": _PERFORMANCE_ALTERNATIVES,
+    "get_thread_statistics": _PERFORMANCE_ALTERNATIVES,
+    "get_resource_utilization": _PERFORMANCE_ALTERNATIVES,
+    "get_performance_summary": _PERFORMANCE_ALTERNATIVES,
+    "run_monitor": ["first_look", "validate_configuration", "analyze_error_log"],
+}
 
 
 class LiveServerRequired(ToolError):
     """Raised when a live (running) server is required but an offline/archive connection is used."""
 
-    def __init__(self, feature: str, server_name: str, mode: str = "offline"):
+    def __init__(
+        self,
+        feature: str,
+        server_name: str,
+        mode: str = "offline",
+        try_instead: Optional[List[str]] = None,
+    ):
         self.feature = feature
         self.server_name = server_name
+        if try_instead is None:
+            try_instead = OFFLINE_ALTERNATIVES.get(feature, DEFAULT_OFFLINE_ALTERNATIVES)
+        self.try_instead = list(try_instead)
         if mode == "archive":
             detail = (
                 f"Server '{server_name}' is an archive source (is_archive=True). "
@@ -548,9 +598,16 @@ class LiveServerRequired(ToolError):
                 f"Offline mode only supports configuration analysis via dse.ldif, "
                 f"log file parsing, and filesystem checks."
             )
-        super().__init__(
+        message = (
             f"'{feature}' requires a running server with a live LDAP connection. {detail}"
         )
+        if self.try_instead:
+            message += (
+                " Try these tools instead on this server: "
+                + ", ".join(self.try_instead)
+                + "."
+            )
+        super().__init__(message)
 
 
 def is_offline_server(manager: ConnectionManager, server_name: str) -> bool:

@@ -12,7 +12,7 @@ The OpenLDAP provider is an early experimental stub and does not yet include the
 
 ## Implemented Tools
 
-The following tools are available today (registered in `src/openldap_mcp/server.py`):
+The following tools are available today (registered in `src/ldap_assistant_mcp/openldap_mcp/server.py`):
 
 - `describe_connection()` - Shows the stored connection settings for a server without contacting it
 - `whoami()` - Binds to the server and returns the authenticated identity (simple and SASL EXTERNAL auth only)
@@ -38,7 +38,7 @@ The following tools are planned for the OpenLDAP provider:
 
 ## Configuration
 
-To use the OpenLDAP provider, you must set the environment variable `LDAP_PROVIDER=openldap` — the default provider is `dirsrv` (see `src/main.py`). Then set `provider_type` to `openldap` in your `servers.json`:
+To use the OpenLDAP provider, you must set the environment variable `LDAP_PROVIDER=openldap` — the default provider is `dirsrv` (see `src/ldap_assistant_mcp/main.py`). Then set `provider_type` to `openldap` in your `servers.json`:
 
 ```json
 {

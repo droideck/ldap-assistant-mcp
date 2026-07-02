@@ -41,7 +41,10 @@ def format_tool_error(
     privacy mode is active, the error message is scrubbed for embedded
     paths, DNs, hostnames, and server names.  When debug mode is enabled
     on *mcp*, a ``"traceback"`` key is added with the full stack trace
-    (scrubbed line-by-line when privacy mode is also active).
+    (scrubbed line-by-line when privacy mode is also active).  Exceptions
+    carrying a ``try_instead`` attribute (mode errors such as
+    ``LiveServerRequired``) contribute a ``"try_instead"`` key listing
+    alternative tools that work in the server's mode.
 
     Extra keyword arguments are merged into the returned dict (e.g.
     ``server1=..., server2=...``).
@@ -56,6 +59,13 @@ def format_tool_error(
     if privacy:
         error_msg = mcp.sanitizer.sanitize_text(error_msg)
     result["error"] = error_msg
+
+    # Mode errors (e.g. LiveServerRequired) carry alternative tool names so
+    # LLM clients can continue on the same server.  Tool names are part of
+    # the public schema, so they bypass the privacy scrub.
+    try_instead = getattr(exc, "try_instead", None)
+    if try_instead:
+        result["try_instead"] = list(try_instead)
 
     if getattr(mcp, "debug_enabled", False):
         tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)

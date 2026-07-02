@@ -170,7 +170,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
     def get_replication_status(server_name: Optional[str] = None) -> Dict[str, Any]:
         """Get replication configuration, RUV, and agreement status for one server. LIVE only.
 
-        Start here when investigating a specific server's replication.
+        Start here when replication is broken or misbehaving on a specific server.
         For a cross-server topology map, use ``get_replication_topology``.
         For lag analysis, use ``check_replication_lag``.
 

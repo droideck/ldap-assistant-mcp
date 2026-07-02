@@ -101,8 +101,13 @@ def _sanitize_backend(sanitizer, backend: Dict[str, Any]) -> Dict[str, Any]:
                 "enabled": value.get("enabled"),
                 "role": value.get("role"),
             }
-        else:
+        elif value is None or isinstance(value, (bool, int, float)):
+            # Numbers/bools cannot carry identifiers (diagnostic counts)
             result[key] = value
+        else:
+            # Deny-by-default: a key this allowlist doesn't know about must
+            # not pass through raw — redact it until it is explicitly vetted.
+            result[key] = "[REDACTED]"
     return result
 
 

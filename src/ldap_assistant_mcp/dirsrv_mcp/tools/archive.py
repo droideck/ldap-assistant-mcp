@@ -643,7 +643,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
     def analyze_archive(
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Inventory available data in an offline or archive source.
+        """Inventory available data in an offline instance or archive source, such as an SOS report or config extract.
 
         Reads dse.ldif to extract server version, ports, backends, suffixes,
         plugins, and replication configuration.  Checks for available log files,
@@ -672,6 +672,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                     "analyze_archive requires an offline or archive server. "
                     f"Server '{target}' is a live connection."
                 ),
+                "try_instead": ["first_look", "run_healthcheck", "get_server_configuration"],
             })
 
         ds = None
@@ -723,6 +724,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                     "validate_configuration requires an offline or archive server. "
                     f"Server '{target}' is a live connection."
                 ),
+                "try_instead": ["run_healthcheck", "get_server_configuration", "list_plugins"],
             })
 
         ds = None
@@ -789,6 +791,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                     "compare_dse_configs requires offline or archive servers. "
                     f"Server '{server1}' is a live connection."
                 ),
+                "try_instead": ["compare_server_configurations"],
             })
         if not is_offline_or_archive(mcp.connection_manager, server2):
             return _sanitize_archive_result(mcp, {
@@ -798,6 +801,7 @@ def register_archive_tools(mcp: "DirSrvMCP") -> None:
                     "compare_dse_configs requires offline or archive servers. "
                     f"Server '{server2}' is a live connection."
                 ),
+                "try_instead": ["compare_server_configurations"],
             })
 
         ds1 = None
