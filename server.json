@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.droideck/ldap-assistant-mcp",
+  "title": "LDAP Assistant MCP",
+  "description": "MCP server for 389 Directory Server health diagnostics, log analysis, and SOS-report investigation",
+  "version": "0.5.0",
+  "websiteUrl": "https://github.com/droideck/ldap-assistant-mcp",
+  "repository": {
+    "url": "https://github.com/droideck/ldap-assistant-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "ldap-assistant-mcp",
+      "version": "0.5.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "LDAP_SERVERS_CONFIG",
+          "description": "Absolute path to the servers.json file describing the LDAP servers, offline instances, or SOS-report archives to analyze",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}
