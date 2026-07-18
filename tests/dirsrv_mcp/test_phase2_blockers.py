@@ -1,6 +1,6 @@
-"""Phase 2 release-blocker tests (IMPROVEMENT-PLAN Phase 2).
+"""Phase 2 release-blocker tests.
 
-2.1 Config contract honesty:
+Config contract honesty:
 - LDAP_IS_OFFLINE parsed by LDAPServerConfig.from_env (implies is_local,
   requires LDAP_SERVERID) — previously documented but silently ignored
 - Clear config errors for invalid LDAP_PORT / LDAP_AUTH_METHOD values
@@ -9,7 +9,7 @@
 - connect() rejects is_offline configs missing is_local/serverid instead of
   falling through to a live bind
 
-2.2 Privacy blockers:
+Privacy blockers:
 - IPv4/IPv6 redaction in sanitize_text (bare, ports, CIDR, compressed,
   bracketed, zone-indexed) with deterministic per-session tokens
 - Deny-by-default for unrecognized backend-result and finding-metadata keys

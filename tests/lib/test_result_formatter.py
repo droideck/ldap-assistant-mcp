@@ -1,4 +1,4 @@
-"""Unit tests for lib/result_formatter.py (IMPROVEMENT-PLAN 1.5.5)."""
+"""Unit tests for lib/result_formatter.py."""
 
 from __future__ import annotations
 

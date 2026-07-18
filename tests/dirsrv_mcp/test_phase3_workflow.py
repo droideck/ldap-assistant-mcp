@@ -1,4 +1,4 @@
-"""Phase 3 workflow tests (IMPROVEMENT-PLAN 3.5): mode errors that teach.
+"""Phase 3 workflow tests: mode errors that teach.
 
 Mode/permission errors should not dead-end an LLM client — they name
 alternative tools that DO work in the target server's mode:

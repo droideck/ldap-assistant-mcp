@@ -1,4 +1,4 @@
-"""Tests for archive mode (Phase 1: core infrastructure).
+"""Tests for archive mode (core infrastructure).
 
 Tests verify that:
 1. ArchiveLayout detection works for SOS reports and manual extracts

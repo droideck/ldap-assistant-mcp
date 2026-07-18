@@ -1,4 +1,4 @@
-"""Phase 0.7 connection-path robustness tests.
+"""Phase 0 connection-path robustness tests.
 
 Covers:
 - UnknownServer / ConnectionFailed ToolError subclasses (mask_error_details safe)

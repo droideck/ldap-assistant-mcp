@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task_id": "TXXX",
+  "final_state": "in_progress",
+  "base_head": null,
+  "final_head": null,
+  "admitted_head": null,
+  "admission_contract_sha256": null,
+  "baseline_sha256": null,
+  "reviewed_identity": null,
+  "review_bundle_path": "docs/implementation/evidence/TXXX-review-bundle.json",
+  "acceptance": {
+    "AC-01": {
+      "status": "pending",
+      "proof": []
+    }
+  },
+  "gates": {
+    "G0": {
+      "status": "pending",
+      "evidence": []
+    },
+    "G1": {
+      "status": "pending",
+      "evidence": []
+    },
+    "G7": {
+      "status": "pending",
+      "evidence": []
+    }
+  },
+  "limitations": [],
+  "unverified_protected_paths": [],
+  "rollback_verification": null
+}

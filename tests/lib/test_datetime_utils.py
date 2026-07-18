@@ -1,4 +1,4 @@
-"""Unit tests for lib/datetime_utils.py (IMPROVEMENT-PLAN 1.5.5)."""
+"""Unit tests for lib/datetime_utils.py."""
 
 from __future__ import annotations
 

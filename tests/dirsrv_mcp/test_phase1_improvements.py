@@ -1,14 +1,14 @@
-"""Regression tests for Phase 1 improvements (IMPROVEMENT-PLAN 1.1/1.3/1.4).
+"""Regression tests for Phase 1 improvements.
 
 Covers:
-- 1.1: package version reported to MCP clients; stderr logging handler
+- Package version reported to MCP clients; stderr logging handler
   configured on the ``ldap_assistant_mcp`` logger tree.
-- 1.3: archive loader decompression-bomb guards, extraction cache keyed by
+- Archive loader decompression-bomb guards, extraction cache keyed by
   (path, mtime, size), plain ``.tar`` support, archive_path+logs_path
   precedence, ArchivePaths None-safety, compare_dse_configs DN/attr
   normalization, healthcheck file selection, JSON log malformed-line
   counting, and the bounded slow-operations heap.
-- 1.4: shared replica-role vocabulary, user-index counting parity,
+- Shared replica-role vocabulary, user-index counting parity,
   empty search-term rejection, run_monitor error formatting, and base64
   LDIF value decoding.
 

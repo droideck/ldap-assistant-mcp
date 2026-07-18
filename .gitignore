@@ -17,5 +17,7 @@ tests-local-servers.json
 /build
 /dist
 
-# Local Claude Code state
-.claude/
+# Local Claude Code state (settings etc.) — but track the skills
+# adapter that symlinks the universal .agents/skills/ location
+.claude/*
+!.claude/skills/
