@@ -1,4 +1,4 @@
-"""Tests for Phase 0 privacy-mode leak fixes (IMPROVEMENT-PLAN 0.6).
+"""Tests for Phase 0 privacy-mode leak fixes.
 
 Covers:
 - Credential attributes (ALWAYS_REDACT_ATTRIBUTES) stripped unconditionally

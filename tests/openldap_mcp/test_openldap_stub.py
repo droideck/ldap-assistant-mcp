@@ -1,4 +1,4 @@
-"""Smoke tests for the experimental OpenLDAP provider (IMPROVEMENT-PLAN 1.5.6).
+"""Smoke tests for the experimental OpenLDAP provider.
 
 The OpenLDAP provider is a two-tool stub that bypasses the privacy
 sanitizer and middleware used by the 389 DS provider.  These tests pin
@@ -82,7 +82,7 @@ async def test_provider_selectable_via_registry():
 
 
 # ---------------------------------------------------------------------------
-# Phase 2.3: the OpenLDAP provider requires an explicit opt-in
+# The OpenLDAP provider requires an explicit opt-in
 # ---------------------------------------------------------------------------
 
 

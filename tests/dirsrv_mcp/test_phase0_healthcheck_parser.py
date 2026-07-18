@@ -1,4 +1,4 @@
-"""Phase 0 tests for the SOS healthcheck parser (plan 0.2 row 6).
+"""Phase 0 tests for the SOS healthcheck parser.
 
 The parser previously matched a single-line ``CODE : SEVERITY : desc``
 format that ``dsctl <inst> healthcheck`` never emits, so real findings

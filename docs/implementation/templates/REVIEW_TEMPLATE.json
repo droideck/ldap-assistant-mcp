@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "task_id": "TXXX",
+  "reviewed_at_utc": null,
+  "reviewed_identity": null,
+  "verdict": "changes_required",
+  "reviewer_provenance": {
+    "role": "risk-reviewer",
+    "independent_task_id": null,
+    "effective_runtime": "pending",
+    "bundle_sha256_recomputed": null,
+    "admitted_head_observed_pre_edit": null,
+    "admission_contract_sha256_observed_pre_edit": null,
+    "baseline_sha256_observed_pre_edit": null,
+    "attestation": ""
+  },
+  "acceptance": {
+    "AC-01": {
+      "status": "not_reviewed",
+      "evidence_checked": [],
+      "reason": ""
+    }
+  },
+  "findings": [],
+  "unresolved_critical_high": 0,
+  "tests_inspected": [],
+  "tests_rerun": [],
+  "blind_spots": [],
+  "material_changes_after_review": false
+}

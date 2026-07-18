@@ -1,6 +1,6 @@
 """Phase 0 regression tests for silently-wrong health diagnostics.
 
-Covers IMPROVEMENT-PLAN.md section 0.2 rows 3-5:
+Covers:
 
 1. dsDisk parsing must read the real lib389 attribute keys (``use%`` and
    ``available``) instead of the nonexistent ``percent``/``avail`` keys that

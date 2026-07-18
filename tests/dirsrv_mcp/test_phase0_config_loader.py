@@ -1,6 +1,6 @@
 """Phase 0 regression tests: config-load failures and resource error handling.
 
-Covers IMPROVEMENT-PLAN.md items 0.4 and two rows of 0.6:
+Covers:
 
 - Explicitly requested config files (config_path argument or
   LDAP_SERVERS_CONFIG env var) that fail to load must raise a clear error

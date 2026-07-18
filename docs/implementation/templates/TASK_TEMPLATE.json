@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "task_id": "TXXX",
+  "title": "Replace with one bounded invariant",
+  "status": "planned",
+  "state_reason": "Replace with the reason for the current durable state.",
+  "admitted_head": "REPLACE-WITH-40-CHARACTER-RECONCILED-HEAD",
+  "admission_contract_sha256": "REPLACE-WITH-EXTERNALLY-RETAINED-CANONICAL-CONTRACT-SHA256",
+  "baseline_sha256": null,
+  "completion_bundle_sha256": null,
+  "workstream": "WS-REPLACE",
+  "release_intent": "Replace with compatibility and release intent; no release action unless separately authorized",
+  "audit_references": [
+    "REPLACE-AUDIT-ID"
+  ],
+  "dependencies": [],
+  "invariant": "Replace with one testable sentence that must hold across every admitted occurrence.",
+  "customer_support_value": "Replace with the concrete customer and support-engineer outcome.",
+  "known_occurrences": [
+    "path/to/current_source.py:symbol or line — revalidated current behavior"
+  ],
+  "allowed_paths": [
+    "path/to/product_or_test_file.py",
+    "docs/implementation/tasks/TXXX.json",
+    "docs/implementation/exec-plans/TXXX.md",
+    "docs/implementation/evidence/TXXX-baseline.json",
+    "docs/implementation/evidence/TXXX-review-bundle.json",
+    "docs/implementation/evidence/TXXX.json",
+    "docs/implementation/reviews/TXXX.json",
+    "docs/implementation/ROADMAP.json"
+  ],
+  "non_goals": [
+    "Name each adjacent roadmap invariant, migration, dependency, refactor, and delivery action excluded from this task."
+  ],
+  "compatibility_constraints": [
+    "Name public shapes, versions, migrations, data/config behavior, and dependencies that must remain stable."
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-01",
+      "requirement": "Replace with an externally observable requirement.",
+      "fail_before_cases": [
+        "replace_stable_failure_case_id"
+      ],
+      "required_proof": [
+        "Fail-before proof that reaches the defect boundary.",
+        "Pass-after regression plus positive/negative controls.",
+        "Compatibility or safety evidence appropriate to the risk."
+      ]
+    }
+  ],
+  "required_gates": [
+    "G0",
+    "G1",
+    "G2",
+    "G3",
+    "G7"
+  ],
+  "integration_policy": {
+    "g4_required": false,
+    "rationale": "State why G4 is or is not a completion gate.",
+    "optional_proof": "Name optional proof that cannot replace mandatory failure-path evidence.",
+    "prohibited_by_default": [
+      "Ignored real server configuration",
+      "Production-looking endpoints",
+      "Resources without proven ownership"
+    ]
+  },
+  "delivery_permissions": {
+    "commit": false,
+    "branch": false,
+    "push": false,
+    "pull_request": false,
+    "publish": false,
+    "deploy": false,
+    "release": false
+  },
+  "exec_plan_path": "docs/implementation/exec-plans/TXXX.md",
+  "baseline_path": "docs/implementation/evidence/TXXX-baseline.json",
+  "review_bundle_path": "docs/implementation/evidence/TXXX-review-bundle.json",
+  "evidence_path": "docs/implementation/evidence/TXXX.json",
+  "review_path": "docs/implementation/reviews/TXXX.json",
+  "rollback": {
+    "triggers": [
+      "Replace with observable rollback triggers."
+    ],
+    "method": "Reverse only task-owned changes with a precise patch, preserve unrelated work, and rerun the original proof.",
+    "data_config_impact": "State migration, data, configuration, dependency, cache, and artifact implications."
+  }
+}

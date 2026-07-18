@@ -1,4 +1,4 @@
-"""Runtime behavior tests for the middleware stack (IMPROVEMENT-PLAN 1.5.3).
+"""Runtime behavior tests for the middleware stack.
 
 The arithmetic (per-tool overrides, caps) is covered in test_middleware.py;
 these tests exercise the middleware at runtime through a real client:

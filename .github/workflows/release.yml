@@ -9,7 +9,7 @@ name: Release
 #      (project ldap-assistant-mcp → Publishing → GitHub → this repo,
 #      workflow release.yml, environment pypi).
 #   2. GitHub: create an environment named "pypi" (Settings → Environments).
-# The MCP Registry step runs only once server.json exists (Phase 2).
+# The MCP Registry step runs only when server.json is present at the tagged commit.
 
 on:
   push:
@@ -87,7 +87,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "server.json not found — skipping MCP Registry publish (lands with Phase 2)."
+            echo "server.json not found — skipping MCP Registry publish (add server.json to enable it)."
           fi
 
       - name: Install mcp-publisher
