@@ -207,7 +207,7 @@ jobs:
       - name: Generate local test config inside container
         run: |
           # Create config file in /tmp (since /mcp is read-only)
-          docker exec ds-local-ci bash -c 'cat > /tmp/tests-local-servers.json << EOF
+          docker exec ds-local-ci bash -c 'umask 077; cat > /tmp/tests-local-servers.json << EOF
           {
             "servers": [
               {
@@ -215,7 +215,7 @@ jobs:
                 "ldap_url": "ldap://localhost:3389",
                 "base_dn": "dc=test,dc=com",
                 "bind_dn": "cn=Directory Manager",
-                "bind_password": "TestPassword123",
+                "bind_password_env": "LDAP_BIND_PASSWORD",
                 "provider_type": "389ds",
                 "is_local": true,
                 "serverid": "localhost"

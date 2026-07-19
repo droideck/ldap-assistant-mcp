@@ -13,7 +13,7 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 
-from ldap_assistant_mcp.lib.privacy import ALWAYS_REDACT_ATTRIBUTES, create_privacy_error
+from ldap_assistant_mcp.lib.privacy import create_privacy_error, is_secret_attribute
 
 if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
@@ -132,8 +132,12 @@ def register_search_tools(mcp: DirSrvMCP) -> None:
                     attr_items = attrs.items() if hasattr(attrs, "items") else []
                     for attr_name, attr_values in attr_items:
                         # Credential hashes are never diagnostically useful —
-                        # strip them unconditionally, in both privacy modes.
-                        if str(attr_name).lower() in ALWAYS_REDACT_ATTRIBUTES:
+                        # strip them unconditionally, in both privacy modes
+                        # and regardless of LDAP_MCP_EXPOSE_SENSITIVE_DATA.
+                        # is_secret_attribute normalizes attribute options
+                        # (userPassword;binary) and family-matches unknown
+                        # credential-like names (fail closed).
+                        if is_secret_attribute(attr_name):
                             continue
                         values_iter = (
                             attr_values

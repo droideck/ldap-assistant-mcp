@@ -6,12 +6,18 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
+from urllib.parse import urlparse
 
 import ldap
 from fastmcp.exceptions import ToolError
 from lib389 import DirSrv
 
-from ldap_assistant_mcp.core import LDAPServerConfig
+from ldap_assistant_mcp.core import (
+    LDAPServerConfig,
+    _env_flag,
+    _is_loopback_host,
+    env_strict_bool,
+)
 
 __all__ = [
     "ServerConfig",
@@ -129,6 +135,10 @@ class ServerConfig:
     # True → ldap.OPT_X_TLS_HARD).  Set False only for trusted lab setups with
     # self-signed certificates (uses ldap.OPT_X_TLS_NEVER).
     tls_verify: bool = True
+    # Allow a simple bind with a password over unencrypted ldap:// to a
+    # NON-loopback host (default False — such connections are refused
+    # because the password would cross the network in cleartext).
+    allow_insecure_plaintext: bool = False
     # Local instance support
     is_local: bool = False
     serverid: Optional[str] = None
@@ -152,10 +162,11 @@ class ServerConfig:
         environment-based configuration.
         """
 
-        # Fail safe: only an explicit false-y value disables TLS verification.
-        tls_verify = (
-            os.environ.get("LDAP_TLS_VERIFY", "").strip().lower()
-            not in {"0", "false", "no", "off"}
+        # Strict parsing: unset/empty keeps the safe default (verification
+        # ON); a typo like "flase" raises instead of changing the setting.
+        tls_verify = env_strict_bool("LDAP_TLS_VERIFY", True)
+        allow_insecure_plaintext = env_strict_bool(
+            "LDAP_ALLOW_INSECURE_PLAINTEXT", False
         )
 
         return cls(
@@ -166,6 +177,7 @@ class ServerConfig:
             bind_password=os.environ.get("LDAP_BIND_PASSWORD"),
             provider_type="389ds",
             tls_verify=tls_verify,
+            allow_insecure_plaintext=allow_insecure_plaintext,
         )
 
 
@@ -204,6 +216,7 @@ class ConnectionManager:
                 provider_type="389ds",
                 auth_method=auth_method,
                 tls_verify=config.tls_verify,
+                allow_insecure_plaintext=config.allow_insecure_plaintext,
                 is_local=config.is_local,
                 serverid=config.serverid,
                 use_ldapi=config.use_ldapi,
@@ -225,8 +238,11 @@ class ConnectionManager:
             ldapi_info = ", ldapi=True" if server_config.use_ldapi else ""
             offline_info = ", offline=True" if server_config.is_offline else ""
             extra_info = f", local=True, serverid={server_config.serverid}{ldapi_info}{offline_info}"
-        logger.info(
-            "Added DirSrv server '%s' (%s, auth=%s%s)",
+        # Endpoint details stay out of INFO logs (stderr is an
+        # egress channel too) — alias at INFO, specifics at DEBUG.
+        logger.info("Added DirSrv server '%s'", server_config.name)
+        logger.debug(
+            "Server '%s' details: %s, auth=%s%s",
             server_config.name,
             server_config.ldap_url,
             server_config.auth_method,
@@ -307,6 +323,36 @@ class ConnectionManager:
                 "Set LDAP_BIND_PASSWORD or use a config file with bind_password."
             )
 
+        # A simple bind sends the bind password in cleartext.
+        # Over plain ldap:// to a non-loopback host it would cross the
+        # network unencrypted, so refuse unless explicitly allowed.
+        # Loopback targets (localhost, 127.0.0.0/8, ::1) stay permitted, as
+        # do local instances (is_local=true + serverid): those bind to the
+        # same machine, often via its own FQDN, so no network is crossed —
+        # mirroring the is_local exemption of the LDAPS reqcert guard below.
+        if (
+            config.auth_method == "simple"
+            and config.bind_password
+            and not config.use_ldapi
+            and not config.is_offline
+            and not (config.is_local and config.serverid)
+            and config.ldap_url.lower().startswith("ldap://")
+        ):
+            target_host = urlparse(config.ldap_url).hostname
+            if not _is_loopback_host(target_host) and not (
+                config.allow_insecure_plaintext
+                or _env_flag("LDAP_ALLOW_INSECURE_PLAINTEXT")
+            ):
+                raise ConnectionFailed(
+                    f"Refusing to connect to server '{server_name}': a simple "
+                    "bind over unencrypted ldap:// to a non-loopback host "
+                    "would send the bind password across the network in "
+                    "cleartext. Try: ldaps:// (TLS), ldapi:// (local Unix "
+                    "socket via use_ldapi=true), or set "
+                    "allow_insecure_plaintext=true in the server config (or "
+                    "LDAP_ALLOW_INSECURE_PLAINTEXT=true) for isolated lab use."
+                )
+
         local_info = ""
         if config.is_local:
             ldapi_info = ", ldapi=True" if config.use_ldapi else ""
@@ -314,14 +360,12 @@ class ConnectionManager:
             local_info = f", local=True, serverid={config.serverid}{ldapi_info}{offline_info}"
 
         if config.is_offline:
-            logger.info(
-                "Allocating offline DirSrv for %s (serverid=%s)",
-                server_name,
-                config.serverid,
-            )
+            logger.info("Allocating offline DirSrv for %s", server_name)
+            logger.debug("Offline serverid for %s: %s", server_name, config.serverid)
         else:
-            logger.info(
-                "Connecting to %s at %s (auth=%s%s)",
+            logger.info("Connecting to %s", server_name)
+            logger.debug(
+                "Connection details for %s: %s (auth=%s%s)",
                 server_name,
                 config.ldap_url,
                 config.auth_method,
@@ -461,8 +505,9 @@ class ConnectionManager:
             logs_path=config.logs_path,
             instance_name=config.instance_name,
         )
-        logger.info(
-            "Archive mode for '%s': type=%s, instance=%s, config=%s, logs=%s",
+        logger.info("Archive mode for '%s'", config.name)
+        logger.debug(
+            "Archive layout for '%s': type=%s, instance=%s, config=%s, logs=%s",
             config.name,
             layout.archive_type,
             layout.instance_name,
