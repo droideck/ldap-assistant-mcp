@@ -1204,10 +1204,14 @@ class TestRedosDetection:
         assert err is not None
 
     def test_consecutive_quantifiers(self):
-        """a** and a++ should be rejected."""
-        for pat in ("a**", "a++", "a*+"):
+        """a** is invalid regex; a++ / a*+ are POSSESSIVE quantifiers
+        (Python 3.11+) which by definition cannot backtrack — the
+        structural validator correctly accepts them."""
+        compiled, err = self._validate("a**")
+        assert err is not None, "a** (multiple repeat) should be rejected"
+        for pat in ("a++", "a*+"):
             compiled, err = self._validate(pat)
-            assert err is not None, f"Pattern {pat!r} should be rejected"
+            assert compiled is not None, f"Possessive {pat!r} is safe: {err}"
 
     def test_repeated_dotstar(self):
         """.*.*.*  three or more .* sequences."""

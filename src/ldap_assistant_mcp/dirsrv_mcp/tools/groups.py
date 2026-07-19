@@ -13,6 +13,7 @@ from mcp.types import ToolAnnotations
 
 
 from ldap_assistant_mcp.lib.datetime_utils import convert_datetimes_to_strings
+from ldap_assistant_mcp.lib.pagination import decode_cursor, paginate
 from ldap_assistant_mcp.lib.privacy import create_count_only_response, strip_credential_attributes
 
 if TYPE_CHECKING:
@@ -27,9 +28,13 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
     @mcp.tool(annotations=_RO, tags={"groups", "live"})
     def list_all_groups(
         limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50,
+        cursor: Annotated[Optional[str], Field(description="Opaque pagination cursor from a previous page's next_cursor")] = None,
         server_name: Annotated[Optional[str], Field(description="Target server name (default: the default server)")] = None,
     ) -> Dict[str, Any]:
         """List directory groups with their full attributes, including membership (member/uniqueMember).
+
+        Results are paginated: when ``has_more`` is true, pass ``next_cursor``
+        back as ``cursor`` to fetch the next page.
 
         Requires a LIVE server (fails with LiveServerRequired on offline/archive servers).
         In privacy mode (default), returns a count only; set
@@ -37,10 +42,11 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
 
         Returns:
             Dict with ``items`` (group entries with DN and attrs),
-            ``total_returned``, and ``limit_applied``.
+            ``total_returned``, ``limit_applied``, ``has_more``, ``next_cursor``.
         """
         target = server_name or mcp.default_server
         mcp.require_live(target,"list_all_groups")
+        offset = decode_cursor(cursor)
         with mcp._connection(target) as (srv, ds):
             base_dn = mcp._get_base_dn(srv)
             groups = Groups(ds, base_dn)
@@ -50,11 +56,9 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
                 count = sum(1 for _ in groups.list())
                 return create_count_only_response("group_list", srv, count, mcp.sanitizer)
 
+            page, has_more, next_cursor = paginate(groups.list(), offset, limit)
             results = []
-            count = 0
-            for group in groups.list():
-                if count >= limit:
-                    break
+            for group in page:
                 try:
                     group_data = json.loads(group.get_all_attrs_json())
                     if "attrs" in group_data:
@@ -64,7 +68,6 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
                             convert_datetimes_to_strings(group_data["attrs"])
                         )
                     results.append(group_data)
-                    count += 1
                 except Exception as exc:
                     mcp.logger.error("Error processing group: %s", exc)
                     continue
@@ -74,5 +77,7 @@ def register_group_tools(mcp: DirSrvMCP) -> None:
                 "server": srv,
                 "total_returned": len(results),
                 "limit_applied": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
                 "items": results,
             }

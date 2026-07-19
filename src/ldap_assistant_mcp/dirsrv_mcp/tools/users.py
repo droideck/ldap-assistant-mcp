@@ -17,7 +17,9 @@ from mcp.types import ToolAnnotations
 
 
 from ldap_assistant_mcp.lib.datetime_utils import convert_datetimes_to_strings
+from ldap_assistant_mcp.lib.pagination import decode_cursor, paginate
 from ldap_assistant_mcp.lib.privacy import (
+    bucket_count,
     create_count_only_response,
     create_privacy_error,
     strip_credential_attributes,
@@ -56,11 +58,14 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
     @mcp.tool(annotations=_RO, tags={"users", "live"})
     def list_all_users(
         limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 50,
+        cursor: Annotated[Optional[str], Field(description="Opaque pagination cursor from a previous page's next_cursor")] = None,
         server_name: Annotated[Optional[str], Field(description="Target server name (default: the default server)")] = None,
     ) -> Dict[str, Any]:
         """List all user accounts regardless of status, with computed lock/active status per user.
 
         Use ``list_active_users`` / ``list_locked_users`` to filter by status instead.
+        Results are paginated: when ``has_more`` is true, pass ``next_cursor``
+        back as ``cursor`` to fetch the next page.
 
         Requires a LIVE server (fails with LiveServerRequired on offline/archive servers).
         In privacy mode (default), returns a count only; set
@@ -68,10 +73,11 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
 
         Returns:
             Dict with ``items`` (user records with attrs + computed_status),
-            ``total_returned``, and ``limit_applied``.
+            ``total_returned``, ``limit_applied``, ``has_more``, ``next_cursor``.
         """
         target = server_name or mcp.default_server
         mcp.require_live(target,"list_all_users")
+        offset = decode_cursor(cursor)
         with mcp._connection(target) as (name, ds):
             base_dn = mcp._get_base_dn(name)
             users = nsUserAccounts(ds, base_dn)
@@ -81,12 +87,15 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 count = sum(1 for _ in users.list())
                 return create_count_only_response("user_list", name, count, mcp.sanitizer)
 
-            results = _collect_entries(mcp, users.list(), ds, base_dn, limit)
+            page, has_more, next_cursor = paginate(users.list(), offset, limit)
+            results = _collect_entries(mcp, page, ds, base_dn, limit, include_all=True)
             return {
                 "type": "user_list",
                 "server": name,
                 "total_returned": len(results),
                 "limit_applied": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
                 "items": results,
             }
 
@@ -126,10 +135,18 @@ def register_user_tools(mcp: DirSrvMCP) -> None:
                 )
             users = nsUserAccounts(ds, base_dn)
 
-            # In privacy mode, return count only
+            # In privacy mode, return a coarse count bucket only: exact
+            # counts for attacker-controlled substring/wildcard filters are
+            # a count oracle that can extract values character by character.
             if mcp.privacy_enabled:
                 count = sum(1 for _ in users.filter(search_filter))
-                return create_count_only_response("user_search", srv, count, mcp.sanitizer)
+                response = create_count_only_response("user_search", srv, count, mcp.sanitizer)
+                bucket = bucket_count(count)
+                response["count"] = bucket
+                response["message"] = (
+                    f"Found {bucket} entries. Enable expose_sensitive_data for details."
+                )
+                return response
 
             results = _collect_entries(mcp, users.filter(search_filter), ds, base_dn, limit)
             return {

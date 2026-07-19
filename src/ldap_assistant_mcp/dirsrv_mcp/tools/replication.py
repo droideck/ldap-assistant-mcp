@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+import ldap
 
 from lib389._constants import ReplicaRole
 from lib389.conflicts import ConflictEntries, GlueEntries
@@ -23,6 +26,15 @@ if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
 
 _RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+
+# lib389's Agreement.get_agmt_status() opens a NEW connection to the consumer
+# and, when no explicit credentials are given, reuses the SUPPLIER's bind
+# DN/password (lib389 agreement.py: get_consumer_maxcsn).  In heterogeneous
+# topologies the consumer may not accept those credentials; that failure means
+# the consumer-side status is UNKNOWN, not that replication is broken.
+CONSUMER_STATUS_UNKNOWN_REASON = (
+    "unknown - consumer connection could not be established with supplier credentials"
+)
 
 def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize replication result for privacy mode."""
@@ -56,11 +68,38 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
         for suffix, data in sanitized["suffixes"].items():
             anon_suffix = sanitizer.sanitize_suffix(suffix)
             new_data = {}
-            for key, servers in data.items():
-                # Server names are never sanitized
-                new_data[key] = servers
+            for key, value in data.items():
+                if key == "edges" and isinstance(value, list):
+                    # Edge endpoints carry raw consumer host:port and
+                    # agreement names; server config labels stay as-is.
+                    new_data[key] = [
+                        {
+                            **e,
+                            "target_host": sanitizer.sanitize_hostname(e.get("target_host")),
+                            "target_port": "[port]",
+                            "agreement": "[agreement]" if e.get("agreement") else e.get("agreement"),
+                        }
+                        if isinstance(e, dict)
+                        else e
+                        for e in value
+                    ]
+                else:
+                    # Server-name lists and enum flags are never sanitized
+                    new_data[key] = value
             new_suffixes[anon_suffix] = new_data
         sanitized["suffixes"] = new_suffixes
+
+    if "agreement_errors" in sanitized and isinstance(sanitized["agreement_errors"], list):
+        sanitized["agreement_errors"] = [
+            {
+                **e,
+                "suffix": sanitizer.sanitize_suffix(e["suffix"]) if e.get("suffix") else e.get("suffix"),
+                "error": sanitizer.sanitize_text(e.get("error", "")),
+            }
+            if isinstance(e, dict)
+            else e
+            for e in sanitized["agreement_errors"]
+        ]
 
     if "suffix_filter" in sanitized and sanitized["suffix_filter"]:
         sanitized["suffix_filter"] = sanitizer.sanitize_suffix(sanitized["suffix_filter"])
@@ -68,6 +107,30 @@ def _sanitize_replication_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
     if "suffixes_checked" in sanitized and isinstance(sanitized["suffixes_checked"], list):
         sanitized["suffixes_checked"] = [
             sanitizer.sanitize_suffix(s) for s in sanitized["suffixes_checked"]
+        ]
+
+    if "search_errors" in sanitized and isinstance(sanitized["search_errors"], list):
+        sanitized["search_errors"] = [
+            {
+                **e,
+                "suffix": sanitizer.sanitize_suffix(e.get("suffix")),
+                "error": sanitizer.sanitize_text(e.get("error", "")),
+            }
+            if isinstance(e, dict)
+            else e
+            for e in sanitized["search_errors"]
+        ]
+
+    if "discovery_errors" in sanitized and isinstance(sanitized["discovery_errors"], list):
+        sanitized["discovery_errors"] = [
+            {
+                **e,
+                "replica": sanitizer.sanitize_dn(e.get("replica")) if e.get("replica") else e.get("replica"),
+                "error": sanitizer.sanitize_text(e.get("error", "")),
+            }
+            if isinstance(e, dict)
+            else e
+            for e in sanitized["discovery_errors"]
         ]
 
     # servers_checked / servers_failed: server names are never sanitized.
@@ -147,9 +210,19 @@ def _get_agreement_details(agmt, mcp: DirSrvMCP) -> Dict[str, Any]:
         }
 
         try:
+            # NOTE: opens a connection to the consumer with the supplier's
+            # credentials (lib389 default) — see CONSUMER_STATUS_UNKNOWN_REASON.
             status_json = agmt.get_agmt_status(return_json=True)
             status = json.loads(status_json)
             agmt_data["status"] = status
+        except ldap.INVALID_CREDENTIALS as e:
+            agmt_data["status"] = {
+                "state": "unknown",
+                "msg": "Unknown",
+                "reason": CONSUMER_STATUS_UNKNOWN_REASON,
+                "error": format_error_message(e),
+                "consumer_reachable": False,
+            }
         except Exception as e:
             agmt_data["status"] = {"error": format_error_message(e), "state": "unknown"}
 
@@ -410,6 +483,9 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         servers_checked = []
         servers_failed = []
+        # Agreement/replica collection failures: without this evidence the
+        # edge-level topology analysis for the affected suffixes is UNKNOWN.
+        agreement_errors: List[Dict[str, Any]] = []
 
         for server_name in server_names:
             # Skip offline/archive servers - they can't provide live replication status
@@ -487,9 +563,19 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                 topology["agreements"].append(agreement_info)
                         except Exception as e:
                             mcp.logger.warning("Error getting agreements from %s: %s", server_name, e)
+                            agreement_errors.append({
+                                "server": server_name,
+                                "suffix": suffix,
+                                "error": format_error_message(e),
+                            })
 
                     except Exception as e:
                         mcp.logger.warning("Error processing replica on %s: %s", server_name, e)
+                        agreement_errors.append({
+                            "server": server_name,
+                            "suffix": None,
+                            "error": format_error_message(e),
+                        })
 
                 topology["servers"].append(server_info)
 
@@ -512,7 +598,70 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     except Exception:
                         pass
 
+        # Resolve agreement targets (host:port) to configured server names so
+        # the analysis can reason about actual edges, not just role counts.
+        endpoint_to_server: Dict[tuple, str] = {}
+        for name in server_names:
+            try:
+                cfg = mcp.connection_manager.get_config(name)
+                parsed = urlparse(cfg.ldap_url)
+                host = (parsed.hostname or "").lower()
+                port = parsed.port or (636 if parsed.scheme == "ldaps" else 389)
+            except Exception:
+                continue
+            if host:
+                endpoint_to_server[(host, str(port))] = name
+
+        incomplete_servers = {e["server"] for e in agreement_errors}
+
         for suffix, roles in topology["suffixes"].items():
+            members: List[str] = []
+            for role_key in ("suppliers", "hubs", "consumers"):
+                for member in roles.get(role_key, []):
+                    if member not in members:
+                        members.append(member)
+
+            # Directed edges for this suffix from the collected agreements
+            edges: List[Dict[str, Any]] = []
+            for agmt in topology["agreements"]:
+                if (agmt.get("suffix") or "").lower() != suffix.lower():
+                    continue
+                target_key = (
+                    (agmt.get("target_host") or "").lower(),
+                    str(agmt.get("target_port") or ""),
+                )
+                edges.append({
+                    "source": agmt.get("source"),
+                    "target_host": agmt.get("target_host"),
+                    "target_port": agmt.get("target_port"),
+                    "target_server": endpoint_to_server.get(target_key),
+                    "agreement": agmt.get("name"),
+                    "enabled": agmt.get("enabled", "on"),
+                })
+
+            enabled_edges = [e for e in edges if (e.get("enabled") or "on").lower() != "off"]
+            unresolved = [e for e in enabled_edges if e["target_server"] is None]
+            outgoing = {m: [e for e in enabled_edges if e["source"] == m] for m in members}
+            incoming = {m: [e for e in enabled_edges if e["target_server"] == m] for m in members}
+
+            if incomplete_servers & set(members):
+                analysis_status = "unknown"
+            elif unresolved:
+                # Some agreement targets do not match any configured server;
+                # inbound-edge conclusions would be guesses.
+                analysis_status = "partial"
+            else:
+                analysis_status = "complete"
+
+            roles["edges"] = edges
+            roles["servers_without_outgoing_agreements"] = [
+                m for m in members if m not in roles.get("consumers", []) and not outgoing[m]
+            ]
+            roles["servers_without_incoming_agreements"] = [
+                m for m in members if not incoming[m]
+            ]
+            roles["analysis_status"] = analysis_status
+
             # Check for single supplier (no redundancy)
             if len(roles["suppliers"]) == 1 and (roles["hubs"] or roles["consumers"]):
                 topology["findings"].append(
@@ -539,6 +688,80 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
+            if analysis_status == "unknown":
+                affected = sorted(incomplete_servers & set(members))
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Topology Analysis Incomplete for {suffix}",
+                        severity=Severity.MEDIUM,
+                        impact="Agreement data could not be collected from every member - connectivity conclusions for this suffix are unknown",
+                        details=f"Agreement collection failed on: {', '.join(affected)}",
+                        remediation="Check the recorded agreement_errors, fix access to the affected servers, and re-run the topology analysis",
+                        metadata={"suffix": suffix, "servers": affected},
+                    )
+                )
+            elif analysis_status == "partial":
+                topology["findings"].append(
+                    format_finding(
+                        title=f"Unresolved Agreement Targets for {suffix}",
+                        severity=Severity.INFO,
+                        impact="Some agreements target hosts that match no configured server - inbound connectivity cannot be fully verified",
+                        details=f"{len(unresolved)} agreement(s) for {suffix} target hosts outside the configured server list",
+                        remediation="Add the missing servers to the MCP configuration to complete the topology analysis",
+                        metadata={"suffix": suffix, "unresolved_count": len(unresolved)},
+                    )
+                )
+            elif analysis_status == "complete":
+                # Edge-based connectivity findings (only when agreement
+                # evidence is complete enough to support the claim).
+                if len(members) > 1:
+                    for member in members:
+                        if outgoing[member] or incoming[member]:
+                            continue
+                        topology["findings"].append(
+                            format_finding(
+                                title=f"Isolated Replica: {member} for {suffix}",
+                                severity=Severity.HIGH,
+                                impact="This replica has no enabled replication agreements to or from any configured server - it does not exchange data",
+                                details=f"Server {member} holds a replica of {suffix} but no enabled agreement connects it to the rest of the topology",
+                                remediation="Create (or re-enable) replication agreements connecting this server, or remove the stale replica configuration",
+                                metadata={"suffix": suffix, "server": member},
+                            )
+                        )
+
+                if len(roles["suppliers"]) >= 2:
+                    supplier_set = set(roles["suppliers"])
+                    for supplier in roles["suppliers"]:
+                        inbound_from_suppliers = [
+                            e for e in incoming[supplier]
+                            if e["source"] in supplier_set and e["source"] != supplier
+                        ]
+                        if not inbound_from_suppliers:
+                            topology["findings"].append(
+                                format_finding(
+                                    title=f"Supplier Without Inbound Supplier Agreement: {supplier} for {suffix}",
+                                    severity=Severity.MEDIUM,
+                                    impact="Multiple suppliers exist but this one receives no updates from any other supplier - write redundancy is illusory and data can diverge",
+                                    details=f"No enabled agreement from another supplier targets {supplier} for {suffix}",
+                                    remediation="Add replication agreements between suppliers so every supplier receives updates from at least one peer",
+                                    metadata={"suffix": suffix, "supplier": supplier},
+                                )
+                            )
+
+        for err in agreement_errors:
+            topology["findings"].append(
+                format_finding(
+                    title=f"Incomplete Agreement Data: {err['server']}",
+                    severity=Severity.MEDIUM,
+                    impact="Replication agreements could not be enumerated - the topology map is incomplete",
+                    details=err["error"] if err.get("suffix") is None
+                    else f"Agreement enumeration failed for suffix {err['suffix']}: {err['error']}",
+                    remediation="Check server connectivity and permissions, then re-run the topology analysis",
+                    server=err["server"],
+                    metadata={"suffix": err.get("suffix")},
+                )
+            )
+
         total_replicas = sum(len(s.get("replicas", [])) for s in topology["servers"])
         if topology["findings"]:
             summary = f"ISSUES DETECTED: Topology has {len(topology['findings'])} potential issues"
@@ -548,6 +771,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         topology["summary"] = summary
         topology["servers_checked"] = servers_checked
         topology["servers_failed"] = servers_failed
+        topology["agreement_errors"] = agreement_errors
 
         return _sanitize_replication_result(mcp, topology)
 
@@ -561,13 +785,19 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         Use this when ``first_look`` or ``get_replication_status`` indicates
         stale agreements. Returns per-agreement lag severity and timestamps.
 
+        Note: reading the consumer CSN opens a connection to each consumer
+        using this server's (the supplier's) bind credentials. If a consumer
+        does not accept them, its status is reported as unknown.
+
         Args:
             suffix: Specific suffix to check. If not specified, checks all.
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Per-agreement lag status with CSN comparisons, severity
-            assessment, and recommendations.
+            Per-agreement lag status (in_sync, syncing, lagging, error,
+            unknown) with CSN comparisons, severity assessment, and
+            recommendations. Agreements still catching up are counted
+            separately from synchronized ones.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -596,6 +826,8 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             in_sync_count = 0
             lagging_count = 0
             error_count = 0
+            catching_up_count = 0
+            unknown_count = 0
 
             for replica in replicas_list:
                 try:
@@ -621,6 +853,8 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                         }
 
                         try:
+                            # NOTE: opens a connection to the consumer with
+                            # the supplier's credentials (lib389 default).
                             status_json = agmt.get_agmt_status(return_json=True)
                             status = json.loads(status_json)
 
@@ -634,8 +868,11 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                 lag_entry["lag_status"] = "in_sync"
                                 in_sync_count += 1
                             elif "Replication still in progress" in status.get("reason", ""):
+                                # Catching up is NOT synchronized: count it
+                                # separately so the summary cannot claim
+                                # "all in sync" during a catch-up.
                                 lag_entry["lag_status"] = "syncing"
-                                in_sync_count += 1
+                                catching_up_count += 1
                             elif status.get("state") == "red":
                                 lag_entry["lag_status"] = "error"
                                 error_count += 1
@@ -670,6 +907,16 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                                         )
                                     )
 
+                        except ldap.INVALID_CREDENTIALS as e:
+                            # The consumer rejected the supplier's credentials
+                            # (lib389 reuses them for the consumer connection).
+                            # Consumer status is unknown - this is not, by
+                            # itself, a replication error.
+                            lag_entry["status"] = "unknown"
+                            lag_entry["lag_status"] = "unknown"
+                            lag_entry["reason"] = CONSUMER_STATUS_UNKNOWN_REASON
+                            lag_entry["error"] = format_error_message(e)
+                            unknown_count += 1
                         except Exception as e:
                             lag_entry["status"] = "error"
                             lag_entry["error"] = format_error_message(e)
@@ -681,11 +928,22 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 except Exception as e:
                     mcp.logger.warning("Error checking lag for replica: %s", e)
 
-            total = in_sync_count + lagging_count + error_count
+            total = in_sync_count + catching_up_count + lagging_count + error_count + unknown_count
             if error_count > 0:
                 summary = f"CRITICAL: {error_count} agreement(s) in error state"
             elif lagging_count > 0:
                 summary = f"WARNING: {lagging_count} of {total} agreement(s) showing lag"
+            elif unknown_count > 0:
+                summary = (
+                    f"UNKNOWN: {unknown_count} of {total} agreement(s) have unknown "
+                    "consumer status (consumer connection could not be established "
+                    "with supplier credentials)"
+                )
+            elif catching_up_count > 0:
+                summary = (
+                    f"IN PROGRESS: {in_sync_count} synchronized, "
+                    f"{catching_up_count} catching up"
+                )
             elif total > 0:
                 summary = f"HEALTHY: All {in_sync_count} agreement(s) in sync"
             else:
@@ -697,8 +955,10 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "suffix_filter": suffix,
                 "summary": summary,
                 "in_sync_count": in_sync_count,
+                "catching_up_count": catching_up_count,
                 "lagging_count": lagging_count,
                 "error_count": error_count,
+                "unknown_count": unknown_count,
                 "lag_data": lag_data,
                 "findings": findings,
             })
@@ -746,8 +1006,11 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
         try:
             ds = mcp.connection_manager.connect(target)
 
-            # Determine which suffixes to check
+            # Determine which suffixes to check. Discovery failures are
+            # preserved: a suffix that vanished from discovery must not
+            # silently vanish from the conflict conclusion.
             suffixes_to_check = []
+            discovery_errors: List[Dict[str, str]] = []
             if base_dn:
                 suffixes_to_check.append(base_dn)
             else:
@@ -756,14 +1019,32 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 for replica in replicas_obj.list():
                     try:
                         suffixes_to_check.append(replica.get_suffix())
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        mcp.logger.warning("Error reading replica suffix: %s", e)
+                        discovery_errors.append({
+                            "replica": str(getattr(replica, "dn", "unknown")),
+                            "error": format_error_message(e),
+                        })
 
             if not suffixes_to_check:
+                if discovery_errors:
+                    return _sanitize_replication_result(mcp, {
+                        "type": "replication_conflicts",
+                        "server": target,
+                        "summary": (
+                            f"INCOMPLETE: suffix discovery failed for "
+                            f"{len(discovery_errors)} replica(s) - conflict status unknown"
+                        ),
+                        "evidence_status": "partial",
+                        "discovery_errors": discovery_errors,
+                        "conflicts": [],
+                        "glue_entries": [],
+                    })
                 return _sanitize_replication_result(mcp, {
                     "type": "replication_conflicts",
                     "server": target,
                     "summary": "No replicated suffixes found",
+                    "evidence_status": "complete",
                     "conflicts": [],
                     "glue_entries": [],
                 })
@@ -771,6 +1052,7 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
             all_conflicts = []
             all_glue = []
             findings = []
+            search_errors: List[Dict[str, str]] = []
 
             for suffix in suffixes_to_check:
                 # Find conflict entries
@@ -798,6 +1080,11 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
                 except Exception as e:
                     mcp.logger.warning("Error searching conflicts in %s: %s", suffix, e)
+                    search_errors.append({
+                        "suffix": suffix,
+                        "search": "conflicts",
+                        "error": format_error_message(e),
+                    })
 
                 # Find glue entries
                 try:
@@ -815,6 +1102,11 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
                 except Exception as e:
                     mcp.logger.warning("Error searching glue entries in %s: %s", suffix, e)
+                    search_errors.append({
+                        "suffix": suffix,
+                        "search": "glue",
+                        "error": format_error_message(e),
+                    })
 
             # Generate findings
             total_issues = len(all_conflicts) + len(all_glue)
@@ -867,7 +1159,26 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            if total_issues == 0:
+            # A "no conflicts" all-clear requires every conflict AND glue
+            # search to have completed on every discovered suffix.
+            incomplete = bool(search_errors or discovery_errors)
+            if incomplete:
+                incomplete_suffixes = sorted({e["suffix"] for e in search_errors})
+                parts = []
+                if search_errors:
+                    parts.append(
+                        f"{len(search_errors)} search(es) failed in "
+                        f"{len(incomplete_suffixes)} suffix(es)"
+                    )
+                if discovery_errors:
+                    parts.append(f"suffix discovery failed for {len(discovery_errors)} replica(s)")
+                summary = "INCOMPLETE: " + ", ".join(parts) + " - conflict status unknown"
+                if total_issues:
+                    summary += (
+                        f"; {len(all_conflicts)} conflicts and {len(all_glue)} "
+                        "glue entries found in completed searches"
+                    )
+            elif total_issues == 0:
                 summary = f"HEALTHY: No conflicts found in {len(suffixes_to_check)} suffix(es)"
             else:
                 summary = f"ISSUES FOUND: {len(all_conflicts)} conflicts, {len(all_glue)} glue entries"
@@ -879,6 +1190,9 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
                 "suffixes_checked": suffixes_to_check,
                 "conflict_count": len(all_conflicts),
                 "glue_count": len(all_glue),
+                "evidence_status": "partial" if incomplete else "complete",
+                "search_errors": search_errors,
+                "discovery_errors": discovery_errors,
                 "conflicts": all_conflicts,
                 "glue_entries": all_glue,
                 "findings": findings,
@@ -907,6 +1221,8 @@ def register_replication_tools(mcp: DirSrvMCP) -> None:
 
         Use this to inspect schedule, flow control, and error details for
         a specific agreement. For a broader view, use ``get_replication_status``.
+        Consumer-side sync status requires each consumer to accept this
+        server's bind credentials; otherwise it is reported as unknown.
 
         Args:
             agreement_name: Specific agreement name. If not specified,

@@ -298,9 +298,12 @@ def test_healthcheck_file_selection_prefers_matching_instance():
     assert _select_healthcheck_file(files, "slapd-supplier1") == files[1]
     assert _select_healthcheck_file(files, "supplier1") == files[1]
     assert _select_healthcheck_file(files, "slapd-consumer1") == files[0]
-    # Unknown instance / no serverid falls back to the first file
-    assert _select_healthcheck_file(files, "slapd-elsewhere") == files[0]
-    assert _select_healthcheck_file(files, None) == files[0]
+    # An unknown instance must NOT fall back to another instance's
+    # file, and multiple files without an identity are ambiguous.
+    assert _select_healthcheck_file(files, "slapd-elsewhere") is None
+    assert _select_healthcheck_file(files, None) is None
+    # A single unattributed file is unambiguous
+    assert _select_healthcheck_file(files[:1], None) == files[0]
 
 
 # ── 1.3 JSON log robustness ──────────────────────────────────────────
