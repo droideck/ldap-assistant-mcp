@@ -17,6 +17,7 @@ from lib389.dseldif import DSEldif
 from mcp.types import ToolAnnotations
 
 from ldap_assistant_mcp.dirsrv_mcp.connection import is_offline_or_archive
+from ldap_assistant_mcp.dirsrv_mcp.tools.config import _replica_role_from_type_flags
 from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_error_message, format_tool_error
 from ldap_assistant_mcp.dirsrv_mcp.tools.dse_utils import (
     dn_equals,
@@ -62,6 +63,13 @@ def _sanitize_archive_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[s
         sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
+    if "checks_failed" in sanitized and isinstance(sanitized["checks_failed"], list):
+        sanitized["checks_failed"] = [
+            {**c, "error": sanitizer.sanitize_text(c["error"])}
+            if isinstance(c, dict) and isinstance(c.get("error"), str)
+            else c
+            for c in sanitized["checks_failed"]
+        ]
 
     # Type-specific sanitization
     result_type = sanitized.get("type", "")
@@ -105,6 +113,15 @@ def _sanitize_analysis(sanitizer, sanitized: Dict[str, Any]) -> None:
                 ad[k] = "[path]"
         sanitized["available_data"] = ad
 
+    # Log coverage: timestamps are safe; sanitize any error text
+    if "log_coverage" in sanitized and isinstance(sanitized["log_coverage"], dict):
+        cov = {}
+        for kind, span in sanitized["log_coverage"].items():
+            if isinstance(span, dict) and isinstance(span.get("error"), str):
+                span = {**span, "error": sanitizer.sanitize_text(span["error"])}
+            cov[kind] = span
+        sanitized["log_coverage"] = cov
+
     # SOS healthcheck output
     if "sos_healthcheck" in sanitized and isinstance(sanitized["sos_healthcheck"], dict):
         hc = sanitized["sos_healthcheck"]
@@ -121,10 +138,16 @@ def _sanitize_analysis(sanitizer, sanitized: Dict[str, Any]) -> None:
                 }
                 for f in hc["findings"]
             ]
-        # Preserve safe scalar keys (counts, booleans)
-        for k in ("total_findings", "error"):
+        # Preserve safe scalar keys; error/reason text is sanitized so
+        # nested healthcheck errors cannot bypass the privacy scrub.
+        for k in ("total_findings", "available"):
             if k in hc:
                 safe_hc[k] = hc[k]
+        for k in ("error", "reason"):
+            if isinstance(hc.get(k), str):
+                safe_hc[k] = sanitizer.sanitize_text(hc[k])
+        if "source_file" in hc:
+            safe_hc["source_file"] = "[path]"
         sanitized["sos_healthcheck"] = safe_hc
 
 
@@ -213,13 +236,14 @@ def _sanitize_dse_comparison(sanitizer, sanitized: Dict[str, Any]) -> None:
         sanitized["differences"] = sanitized_diffs
 
 
-def _select_healthcheck_file(hc_files: List[str], serverid: Optional[str]) -> str:
+def _select_healthcheck_file(hc_files: List[str], serverid: Optional[str]) -> Optional[str]:
     """Pick the healthcheck output that belongs to *serverid*.
 
     Multi-instance sosreports contain one ``dsctl_<instance>_healthcheck``
-    file per instance; matching on the instance name (with or without the
-    ``slapd-`` prefix) keeps the analysis on the selected instance instead
-    of whichever file happens to sort first.
+    file per instance. Returns None when no file provably belongs to the
+    selected instance — attaching ANOTHER instance's healthcheck would be
+    wrong-instance evidence, which is worse than reporting the file as
+    unavailable.
     """
     if serverid:
         short = serverid[len("slapd-"):] if serverid.startswith("slapd-") else serverid
@@ -230,7 +254,9 @@ def _select_healthcheck_file(hc_files: List[str], serverid: Optional[str]) -> st
         for path in hc_files:
             if short and short in os.path.basename(path):
                 return path
-    return hc_files[0]
+        return None
+    # No instance identity: only an unambiguous single file is attributable.
+    return hc_files[0] if len(hc_files) == 1 else None
 
 
 def _build_archive_analysis(
@@ -277,12 +303,15 @@ def _build_archive_analysis(
             continue
         repl_root = dse.get(replica_dn, "nsds5replicaroot", single=True)
         repl_type = dse.get(replica_dn, "nsds5replicatype", single=True)
+        repl_flags = dse.get(replica_dn, "nsds5flags", single=True)
         repl_id = dse.get(replica_dn, "nsds5replicaid", single=True)
-        role_map = {"3": "supplier", "2": "hub", "1": "consumer"}
         if repl_root:
             repl_suffixes.append({
                 "suffix": repl_root,
-                "role": role_map.get(repl_type, "unknown"),
+                # Role requires BOTH nsDS5ReplicaType and nsDS5Flags:
+                # type=3 is a supplier, type=2 is a hub only when flags=1
+                # (writes changelog) and a consumer when flags=0.
+                "role": _replica_role_from_type_flags(repl_type, repl_flags),
                 "replica_id": repl_id,
             })
 
@@ -291,6 +320,7 @@ def _build_archive_analysis(
     }
 
     paths = ds.ds_paths
+    log_coverage: Dict[str, Any] = {}
     if paths.log_dir and os.path.isdir(paths.log_dir):
         available_data["logs_dir"] = True
         if paths.access_log:
@@ -299,6 +329,26 @@ def _build_archive_analysis(
             available_data["error_log"] = os.path.isfile(paths.error_log)
         if hasattr(paths, "audit_log") and paths.audit_log:
             available_data["audit_log"] = os.path.isfile(paths.audit_log)
+
+        # Time span of each present log so "last 24h"-style questions can be
+        # anchored to the dataset instead of the wall clock.
+        from ldap_assistant_mcp.dirsrv_mcp.tools.logs import _detect_json_log, _log_time_span
+        for kind, log_path in (
+            ("access", paths.access_log),
+            ("error", paths.error_log),
+            ("audit", getattr(paths, "audit_log", None)),
+        ):
+            if log_path and os.path.isfile(log_path):
+                try:
+                    first, last = _log_time_span(log_path, _detect_json_log(log_path), kind)
+                except Exception as e:
+                    log_coverage[kind] = {"error": format_error_message(e)}
+                    continue
+                log_coverage[kind] = {
+                    "first_timestamp": first.isoformat() if first else None,
+                    "last_timestamp": last.isoformat() if last else None,
+                    "includes_rotated": False,
+                }
     else:
         available_data["logs_dir"] = False
 
@@ -316,13 +366,24 @@ def _build_archive_analysis(
         hc_files = sorted(glob.glob(os.path.join(sos_commands_dir, "dsctl_*_healthcheck")))
         if hc_files:
             hc_file = _select_healthcheck_file(hc_files, ds.serverid)
-            from ldap_assistant_mcp.dirsrv_mcp.archive.healthcheck_parser import parse_healthcheck_output
-            try:
-                with open(hc_file, "r", errors="ignore") as fh:
-                    content = fh.read()
-                sos_healthcheck = parse_healthcheck_output(content)
-            except Exception as e:
-                sos_healthcheck = {"error": format_error_message(e)}
+            if hc_file is None:
+                sos_healthcheck = {
+                    "available": False,
+                    "reason": (
+                        f"{len(hc_files)} healthcheck file(s) present but none "
+                        "matches the selected instance - refusing to attach "
+                        "another instance's evidence"
+                    ),
+                }
+            else:
+                from ldap_assistant_mcp.dirsrv_mcp.archive.healthcheck_parser import parse_healthcheck_output
+                try:
+                    with open(hc_file, "r", errors="ignore") as fh:
+                        content = fh.read()
+                    sos_healthcheck = parse_healthcheck_output(content)
+                    sos_healthcheck["source_file"] = os.path.basename(hc_file)
+                except Exception as e:
+                    sos_healthcheck = {"error": format_error_message(e)}
 
     config = mcp.connection_manager.get_config(server_name)
     if config.is_archive:
@@ -350,6 +411,9 @@ def _build_archive_analysis(
         "available_data": available_data,
     }
 
+    if log_coverage:
+        result["log_coverage"] = log_coverage
+
     if sos_healthcheck is not None:
         result["sos_healthcheck"] = sos_healthcheck
 
@@ -370,15 +434,22 @@ def _run_config_validation(
 
     findings: List[Dict[str, Any]] = []
     checks_run: List[str] = []
+    checks_failed: List[Dict[str, str]] = []
 
-    checks_run.append("dseldif:nsstate")
+    # nsstate lint is counted as run only after it completes; a failed lint
+    # is incomplete evidence, not a passed check.
     try:
         for result in dse._lint_nsstate() or []:
             if isinstance(result, dict):
                 from ldap_assistant_mcp.dirsrv_mcp.tools.health import _convert_lib389_result_to_finding
                 findings.append(_convert_lib389_result_to_finding(result, server_name))
+        checks_run.append("dseldif:nsstate")
     except Exception as e:
         mcp.logger.debug("DSEldif nsstate lint failed: %s", e)
+        checks_failed.append({
+            "check": "dseldif:nsstate",
+            "error": format_error_message(e),
+        })
 
     checks_run.append("config:password_scheme")
     pw_scheme = dse.get("cn=config", "nsslapd-rootpwstoragescheme", single=True)
@@ -472,6 +543,13 @@ def _run_config_validation(
         summary = f"CRITICAL: {severity_counts['critical']} critical issue(s) found"
     elif severity_counts["high"] > 0:
         summary = f"WARNING: {severity_counts['high']} high-priority issue(s) found"
+    elif checks_failed:
+        summary = (
+            f"INCOMPLETE: {len(checks_failed)} of "
+            f"{len(checks_run) + len(checks_failed)} check(s) failed to complete"
+        )
+        if total_issues:
+            summary += f"; {total_issues} finding(s) in completed checks"
     elif total_issues > 0:
         summary = f"OK: {total_issues} finding(s), no critical or high severity"
     else:
@@ -487,8 +565,10 @@ def _run_config_validation(
         "low_count": severity_counts["low"],
         "info_count": severity_counts["info"],
         "total_issues": total_issues,
+        "evidence_status": "partial" if checks_failed else "complete",
         "findings": findings,
         "checks_run": checks_run,
+        "checks_failed": checks_failed,
     }
 
 

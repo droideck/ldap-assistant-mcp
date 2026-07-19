@@ -112,7 +112,7 @@ async def test_analyze_index_configuration_includes_status(dirsrv_server: DirSrv
         data = result.data
 
     assert "status" in data
-    assert data["status"] in ["healthy", "fair", "warning"]
+    assert data["status"] in ["healthy", "fair", "warning", "unknown"]
     assert "summary" in data
 
 

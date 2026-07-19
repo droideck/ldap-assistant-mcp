@@ -14,12 +14,15 @@ archive sources (SOS reports).
 
 from __future__ import annotations
 
+import base64
 import glob as globmod
 import gzip
 import heapq
 import json
 import os
 import re
+import zlib
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional
 
@@ -153,15 +156,22 @@ def _detect_json_log(log_path: str) -> bool:
 
     Traditional DS logs start with ``[DD/Mon/YYYY:...]`` which must not be
     mistaken for a JSON array.  We only treat a leading ``{`` as JSON.
+
+    Gzip-compressed rotations are inspected through gzip (sniffed by magic
+    bytes, not filename) — reading raw gz bytes would misdetect a JSON
+    rotation as traditional and route it to the wrong parser.
     """
     try:
-        with open(log_path, "r", errors="ignore") as fh:
+        with open(log_path, "rb") as fh:
+            magic = fh.read(2)
+        opener = gzip.open if magic == b"\x1f\x8b" else open
+        with opener(log_path, "rt", errors="ignore") as fh:
             for line in fh:
                 stripped = line.strip()
                 if not stripped:
                     continue
                 return stripped.startswith("{")
-    except (OSError, IOError):
+    except (OSError, IOError, EOFError, zlib.error):
         pass
     return False
 
@@ -281,13 +291,25 @@ def _parse_user_bound(value: str, *, is_end: bool) -> datetime:
     return dt
 
 
-def _parse_time_range(time_range: Optional[str]):
+_RELATIVE_RANGE_RE = re.compile(r"last\s+(\d+)\s*([hmd])[a-z]*", re.IGNORECASE)
+
+
+def _is_relative_range(time_range: Optional[str]) -> bool:
+    """True when *time_range* is a relative "last N" expression."""
+    return bool(time_range) and bool(_RELATIVE_RANGE_RE.fullmatch(time_range.strip()))
+
+
+def _parse_time_range(time_range: Optional[str], anchor: Optional[datetime] = None):
     """Parse a time_range string into (start, end) datetimes.
 
     Supports formats like:
       - ``"2024-01-01"`` (start only)
       - ``"2024-01-01 to 2024-01-02"`` (end inclusive of the whole day)
       - ``"last 1h"`` / ``"last 24h"`` / ``"last 30m"``
+
+    Relative ranges are anchored to *anchor* when given (e.g. the newest
+    timestamp in an archived dataset) and to the current wall clock
+    otherwise.
 
     Returns ``(start_dt, end_dt)`` — naive UTC datetimes (either may be
     None).  Raises ToolError for values that cannot be parsed instead of
@@ -301,11 +323,11 @@ def _parse_time_range(time_range: Optional[str]):
         return None, None
 
     # Handle "last Xh" / "last Xm" / "last Xd" (unit may be spelled out)
-    m = re.fullmatch(r"last\s+(\d+)\s*([hmd])[a-z]*", time_range, re.IGNORECASE)
+    m = _RELATIVE_RANGE_RE.fullmatch(time_range)
     if m:
         amount = int(m.group(1))
         unit = m.group(2).lower()
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = anchor or datetime.now(timezone.utc).replace(tzinfo=None)
         delta = {
             "h": timedelta(hours=amount),
             "m": timedelta(minutes=amount),
@@ -325,6 +347,32 @@ def _parse_time_range(time_range: Optional[str]):
     return _parse_user_bound(time_range, is_end=False), None
 
 
+def _timestamp_in_range_known(
+    ts: Optional[str],
+    start: Optional[datetime],
+    end: Optional[datetime],
+) -> tuple:
+    """Range-check a log timestamp, reporting whether it was parseable.
+
+    Returns ``(in_range, known)``. Entries whose timestamp is missing or
+    unparseable are kept (fail open, ``in_range=True``) so time filtering
+    never silently hides log data — but ``known=False`` lets callers count
+    them so the mix is reported instead of silent.
+    """
+    if start is None and end is None:
+        return True, True
+    if not ts:
+        return True, False
+    dt = _parse_log_timestamp(ts)
+    if dt is None:
+        return True, False
+    if start and dt < start:
+        return False, True
+    if end and dt > end:
+        return False, True
+    return True, True
+
+
 def _timestamp_in_range(
     ts: Optional[str],
     start: Optional[datetime],
@@ -336,18 +384,98 @@ def _timestamp_in_range(
     Entries whose timestamp is missing or unparseable are kept (fail
     open) so that time filtering never silently hides log data.
     """
-    if start is None and end is None:
-        return True
-    if not ts:
-        return True
-    dt = _parse_log_timestamp(ts)
-    if dt is None:
-        return True
-    if start and dt < start:
-        return False
-    if end and dt > end:
-        return False
-    return True
+    return _timestamp_in_range_known(ts, start, end)[0]
+
+
+def _log_time_span(log_path: str, is_json: bool, kind: str = "access",
+                   include_archived: bool = False) -> tuple:
+    """Scan a log file for its first and last parseable timestamps.
+
+    Returns ``(first_dt, last_dt)`` as naive UTC datetimes (either may be
+    None when no timestamp could be parsed). Used to anchor relative time
+    ranges to the dataset end for archived evidence and to report log
+    coverage.
+    """
+    first = None
+    last = None
+
+    def _consider(ts: Optional[str]) -> None:
+        nonlocal first, last
+        if not ts:
+            return
+        dt = _parse_log_timestamp(ts)
+        if dt is None:
+            return
+        if first is None or dt < first:
+            first = dt
+        if last is None or dt > last:
+            last = dt
+
+    try:
+        if is_json:
+            counters = {"malformed_lines": 0}
+            for jentry in _read_json_log_entries(log_path, counters, include_archived):
+                _consider(
+                    jentry.get("local_time")
+                    or jentry.get("gm_time")
+                    or jentry.get("date")
+                )
+        elif kind == "audit":
+            for line in _read_log_lines(log_path, include_archived):
+                m = _AUDIT_TIME_RE.match(line.rstrip("\n"))
+                if m:
+                    _consider(m.group(1))
+        else:
+            for line in _read_log_lines(log_path, include_archived):
+                if line.startswith("["):
+                    closing = line.find("]")
+                    if closing > 0:
+                        _consider(line[1:closing])
+    except OSError:
+        return None, None
+
+    return first, last
+
+
+def _resolve_time_window(
+    time_range: Optional[str],
+    log_path: str,
+    is_json: bool,
+    kind: str,
+    anchor_to_dataset_end: bool,
+    include_archived: bool = False,
+) -> tuple:
+    """Resolve a time_range into (start, end, effective_window dict).
+
+    For archived evidence (*anchor_to_dataset_end*), relative ranges like
+    "last 24h" are anchored to the newest timestamp in the dataset instead
+    of the current wall clock — an old SOS report would otherwise always
+    match nothing.
+    """
+    if not time_range or not time_range.strip():
+        return None, None, None
+
+    anchor = None
+    anchor_label = "absolute"
+    if _is_relative_range(time_range):
+        if anchor_to_dataset_end:
+            _, dataset_end = _log_time_span(log_path, is_json, kind, include_archived)
+            if dataset_end is not None:
+                anchor = dataset_end
+                anchor_label = "dataset_end"
+            else:
+                anchor_label = "dataset_end_unavailable"
+        else:
+            anchor_label = "wall_clock"
+
+    start_ts, end_ts = _parse_time_range(time_range, anchor=anchor)
+    effective_window = {
+        "requested": time_range,
+        "start": start_ts.isoformat() if start_ts else None,
+        "end": end_ts.isoformat() if end_ts else None,
+        "anchor": anchor_label,
+    }
+    return start_ts, end_ts, effective_window
 
 
 def _dn_matches_filter(entry_dn: str, filter_dn: str) -> bool:
@@ -359,46 +487,143 @@ def _dn_matches_filter(entry_dn: str, filter_dn: str) -> bool:
     return dn_equals(entry_dn, filter_dn) or is_under_dn(entry_dn, filter_dn)
 
 
+# A repeat with a bounded max at or below this cannot blow up meaningfully
+# (e.g. {0,50}); + / * / {2,} count as unbounded.
+_SAFE_REPEAT_MAX = 64
+
+
+def _branch_literal_words(branch_arg) -> Optional[List[str]]:
+    """Extract the alternatives of a branch node as literal strings.
+
+    Returns None when any alternative is not a plain non-empty literal
+    sequence (categories, classes, nested groups, ...).
+    """
+    words: List[str] = []
+    for alt in branch_arg[1]:
+        chars: List[str] = []
+        for op, arg in alt:
+            # Exact op match: NOT_LITERAL's name contains "literal" but a
+            # negated class is NOT a literal — treating it as one would let
+            # ambiguous alternations like ([^a]|b)+ bypass the check.
+            if str(op).lower() != "literal" or not isinstance(arg, int):
+                return None
+            chars.append(chr(arg))
+        if not chars:
+            return None  # empty alternative matches "" — always ambiguous
+        words.append("".join(chars))
+    return words
+
+
+def _is_prefix_code(words: List[str]) -> bool:
+    """True when no word is a prefix of another (unique decodability).
+
+    A repeated alternation over a prefix code decomposes any input in at
+    most one way, so it cannot backtrack exponentially. ``{a, aa}`` fails
+    (``aa`` = ``a``+``a``); ``{ADD, MOD, DEL}`` passes.
+
+    Comparison is case-insensitive because the pattern is compiled with
+    re.IGNORECASE — ``(A|aa)+`` is exactly as ambiguous as ``(a|aa)+``.
+    """
+    folded = [w.lower() for w in words]
+    for i, w1 in enumerate(folded):
+        for j, w2 in enumerate(folded):
+            if i != j and w2.startswith(w1):
+                return False
+    return True
+
+
+def _subpattern_can_backtrack(node_list) -> bool:
+    """True when a parsed subpattern can match the same text in multiple
+    ways — the classic exponential-backtracking shape once repeated:
+    ``(a|aa)+``, ``(a+)+``, ``(\\d|\\d\\d)*``.
+
+    Alternation over plain literals that form a prefix code (no
+    alternative is a prefix of another) is unambiguous and allowed:
+    ``(ADD|MOD|DEL)+`` is safe.
+    """
+    for op, arg in node_list:
+        name = str(op).lower()
+        if "branch" in name:
+            words = _branch_literal_words(arg)
+            if words is None or not _is_prefix_code(words):
+                return True
+        elif "repeat" in name or "possessive" in name:
+            return True
+        elif "subpattern" in name:
+            # arg = (group, add_flags, del_flags, subpattern)
+            inner = arg[3] if isinstance(arg, tuple) and len(arg) >= 4 else None
+            if inner is not None and _subpattern_can_backtrack(list(inner)):
+                return True
+    return False
+
+
+def _has_catastrophic_repeat(node_list) -> bool:
+    """Walk a parsed regex tree looking for unbounded repeats whose body
+    can itself backtrack (nested repeats or alternation under a repeat)."""
+    for op, arg in node_list:
+        name = str(op).lower()
+        if "repeat" in name or "possessive" in name:
+            # arg = (min, max, subpattern)
+            _min, _max, body = arg
+            unbounded = not isinstance(_max, int) or _max > _SAFE_REPEAT_MAX
+            body_list = list(body)
+            if unbounded and _subpattern_can_backtrack(body_list):
+                return True
+            if _has_catastrophic_repeat(body_list):
+                return True
+        elif "subpattern" in name:
+            inner = arg[3] if isinstance(arg, tuple) and len(arg) >= 4 else None
+            if inner is not None and _has_catastrophic_repeat(list(inner)):
+                return True
+        elif "branch" in name:
+            # arg = (None, [subpattern, subpattern, ...])
+            for alt in arg[1]:
+                if _has_catastrophic_repeat(list(alt)):
+                    return True
+    return False
+
+
 def _validate_regex(pattern: Optional[str]) -> tuple:
     """Validate and compile a user-supplied regex pattern.
 
     Returns ``(compiled_re | None, error_dict | None)``.
     If the pattern is None or empty, returns ``(None, None)``.
 
-    Rejects patterns exceeding 500 chars and known ReDoS-prone
-    constructs:
-    - Quantified groups followed by a quantifier: ``(a+)+``, ``(x*)*``
-    - Overlapping alternation inside a quantified group: ``(a|a)*``, ``(a|a?)+``
-    - Repeated ``.*`` sequences: ``.*.*.*``
-    - Consecutive quantifiers: ``a++``, ``a**``, ``a*+``
-    - Quantified character-class groups: ``(\\d+)+``, ``([a-z]+)*``
-    - Deeply nested groups with quantifiers: ``((a+))+``
+    Rejects patterns exceeding 500 chars and ReDoS-prone constructs by
+    STRUCTURAL analysis of the parsed regex tree (not text heuristics):
+    any unbounded repeat whose body contains alternation or another
+    repeat can backtrack exponentially under Python's ``re`` engine —
+    ``(a+)+``, ``(a|aa)+``, ``(\\d|\\d\\d)*``, and ``((a+))+`` are all
+    caught, including forms the old text heuristics missed.
+    Polynomial ``.*.*.*`` stacking is additionally capped.
     """
     if not pattern:
         return None, None
     if len(pattern) > 500:
         return None, {"error": "Pattern too long (max 500 chars)"}
 
-    # 1. Quantifier on a group that itself contains a quantifier: (X+)+ (X*){2,} etc.
-    #    Covers character classes like (\d+)+ and ([a-z]+)*
-    if re.search(r'\([^)]*[+*][^)]*\)\s*[+*?{]', pattern):
-        return None, {"error": "Pattern contains potentially unsafe nested quantifiers"}
-    # 2. Overlapping alternation in a quantified group: (a|a)+, (a|a?)+ etc.
-    m = re.search(r'\(([^)]*\|[^)]*)\)\s*[+*?{]', pattern)
-    if m:
-        arms = [a.strip() for a in m.group(1).split("|")]
-        if len(arms) != len(set(arms)):
-            return None, {"error": "Pattern contains potentially unsafe overlapping alternation"}
-        # Strip quantifiers and compare base content: (a+|a*) → ["a","a"]
-        base_chars = [re.sub(r'[+*?{}\[\]\\]', '', a) for a in arms]
-        if len(base_chars) != len(set(base_chars)):
-            return None, {"error": "Pattern contains potentially unsafe overlapping alternation"}
-    # 3. Consecutive quantifiers: a**, a++, a*+, a+? followed by another quantifier
-    if re.search(r'[+*?]\s*[+*]', pattern):
-        return None, {"error": "Pattern contains potentially unsafe consecutive quantifiers"}
-    # 4. Repeated .* sequences (polynomial blowup)
+    # Repeated .* sequences (polynomial blowup)
     if re.search(r'(\.\*.*){3,}', pattern):
         return None, {"error": "Pattern contains too many .* sequences"}
+
+    try:
+        import re._parser as sre_parser
+        parsed = sre_parser.parse(pattern, re.IGNORECASE)
+    except re.error as exc:
+        return None, {"error": f"Invalid regex pattern: {exc}"}
+    except Exception:
+        # Parser internals changed or exotic input: fail closed
+        return None, {"error": "Pattern could not be analyzed for safety"}
+
+    if _has_catastrophic_repeat(list(parsed)):
+        return None, {
+            "error": (
+                "Pattern contains potentially unsafe nested quantifiers or "
+                "quantified alternation (exponential backtracking risk). "
+                "Rewrite without repeating a group that can match the same "
+                "text in multiple ways."
+            )
+        }
 
     try:
         return re.compile(pattern, re.IGNORECASE), None
@@ -442,27 +667,145 @@ def _matches_audit_filters(
 _SLOW_OPS_TOP_N = 20
 
 
-def _read_log_lines(log_path: str, include_archived: bool = False):
-    """Yield lines from a log file, optionally including rotated/compressed logs.
+# Per-file decompression budget: a corrupt or hostile .gz must not expand
+# without bound just because its compressed size passed the archive checks.
+_MAX_DECOMPRESSED_BYTES_PER_FILE = 512 * 1024 * 1024
+# A single (pretty-printed) JSON record larger than this is malformed.
+_MAX_JSON_RECORD_BYTES = 1024 * 1024
 
-    A generator so multi-GB logs are streamed instead of loaded whole.
-    Rotated files (``access.20240128-110131`` style) are read in sorted
-    (chronological) order, current file last.
+
+def _log_family_paths(log_path: Optional[str], include_archived: bool = False) -> List[str]:
+    """List the existing files of a log family, oldest rotation first,
+    current file last.
+
+    A family whose current base file is missing (rotated-only evidence in
+    an old archive) is still inventoried when *include_archived* is set.
     """
-    if include_archived:
-        paths = sorted(globmod.glob(f"{log_path}.*-*")) + [log_path]
-    else:
-        paths = [log_path]
-    for path in paths:
+    paths: List[str] = []
+    if include_archived and log_path:
+        paths.extend(p for p in sorted(globmod.glob(f"{log_path}.*-*")) if os.path.isfile(p))
+    if log_path and os.path.isfile(log_path):
+        paths.append(log_path)
+    return paths
+
+
+def _bump(counters: Optional[Dict[str, int]], key: str) -> None:
+    if counters is not None:
+        counters[key] = counters.get(key, 0) + 1
+
+
+def _read_lines_single(path: str, counters: Optional[Dict[str, int]] = None):
+    """Stream lines from one (possibly gzipped) log file.
+
+    Corrupt or unreadable files are recorded in *counters* and skipped so
+    one bad rotation cannot abort the whole family. Gzipped files stop at
+    the per-file decompression budget instead of expanding unbounded.
+    """
+    is_gz = path.endswith(".gz")
+    try:
+        fh = gzip.open(path, "rt", errors="replace") if is_gz else open(path, "r", errors="replace")
+    except OSError:
+        _bump(counters, "unreadable_files")
+        return
+    with fh:
+        read_bytes = 0
         try:
-            if path.endswith(".gz"):
-                fh = gzip.open(path, "rt", errors="replace")
-            else:
-                fh = open(path, "r", errors="replace")
-        except OSError:
+            for line in fh:
+                if is_gz:
+                    read_bytes += len(line)
+                    if read_bytes > _MAX_DECOMPRESSED_BYTES_PER_FILE:
+                        _bump(counters, "decompression_truncated")
+                        return
+                yield line
+        except (OSError, EOFError, zlib.error):
+            # Truncated/corrupt gzip mid-stream: keep what was read
+            _bump(counters, "unreadable_files")
+            return
+
+
+def _read_log_lines(log_path: str, include_archived: bool = False,
+                    counters: Optional[Dict[str, int]] = None):
+    """Yield lines from a log family, optionally including rotated/compressed
+    logs. A generator so multi-GB logs are streamed instead of loaded whole.
+    """
+    for path in _log_family_paths(log_path, include_archived):
+        yield from _read_lines_single(path, counters)
+
+
+def _brace_delta(line: str) -> int:
+    """Net JSON brace depth change of *line*, ignoring braces in strings."""
+    depth = 0
+    in_string = False
+    escape = False
+    for ch in line:
+        if escape:
+            escape = False
             continue
-        with fh:
-            yield from fh
+        if ch == "\\":
+            escape = in_string
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+    return depth
+
+
+def _read_json_lines_single(path: str, counters: Dict[str, int]):
+    """Yield parsed entries from one JSON DS log file.
+
+    Handles both NDJSON (one record per line) and pretty-printed JSON
+    (multi-line records starting with a bare ``{``). Malformed records are
+    counted in ``counters["malformed_lines"]`` and skipped.
+    """
+    pretty: Optional[bool] = None
+    buf: List[str] = []
+    depth = 0
+    for line in _read_lines_single(path, counters):
+        stripped = line.strip()
+        if pretty is None:
+            if not stripped:
+                continue
+            pretty = stripped == "{"
+        if not pretty:
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except ValueError:
+                _bump(counters, "malformed_lines")
+                continue
+            if isinstance(entry, dict):
+                yield entry
+            else:
+                _bump(counters, "malformed_lines")
+        else:
+            if not buf and not stripped:
+                continue
+            buf.append(line)
+            depth += _brace_delta(line)
+            if depth <= 0:
+                text = "".join(buf)
+                buf = []
+                depth = 0
+                try:
+                    entry = json.loads(text)
+                except ValueError:
+                    _bump(counters, "malformed_lines")
+                    continue
+                if isinstance(entry, dict):
+                    yield entry
+                else:
+                    _bump(counters, "malformed_lines")
+            elif sum(len(chunk) for chunk in buf) > _MAX_JSON_RECORD_BYTES:
+                _bump(counters, "malformed_lines")
+                buf = []
+                depth = 0
+    if buf:
+        _bump(counters, "malformed_lines")
 
 
 def _read_json_log_entries(
@@ -470,25 +813,33 @@ def _read_json_log_entries(
     counters: Dict[str, int],
     include_archived: bool = False,
 ):
-    """Yield parsed entries from a JSON-lines DS log, streaming line-by-line.
+    """Yield parsed entries from a JSON DS log family.
 
-    Replaces lib389 ``parse_log()``, which loads the whole file into memory
-    and aborts on the first malformed line.  Malformed/blank lines are
-    counted in ``counters["malformed_lines"]`` and skipped.
+    Format is detected PER FILE: a traditional-format rotation mixed into a
+    JSON family is skipped and counted in ``counters["non_json_files"]``
+    instead of having every line misparsed as malformed JSON.
     """
-    for line in _read_log_lines(log_path, include_archived):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            entry = json.loads(stripped)
-        except ValueError:
-            counters["malformed_lines"] = counters.get("malformed_lines", 0) + 1
-            continue
-        if isinstance(entry, dict):
-            yield entry
+    for path in _log_family_paths(log_path, include_archived):
+        if _detect_json_log(path):
+            yield from _read_json_lines_single(path, counters)
         else:
-            counters["malformed_lines"] = counters.get("malformed_lines", 0) + 1
+            _bump(counters, "non_json_files")
+
+
+# Reader-level incident counters worth surfacing to the caller when nonzero.
+_READ_COUNTER_KEYS = (
+    "header_records",
+    "unreadable_files",
+    "decompression_truncated",
+    "non_json_files",
+)
+
+
+def _attach_read_counters(result: Dict[str, Any], counters: Dict[str, int]) -> None:
+    """Copy nonzero reader-level counters into a tool result (additive keys)."""
+    for key in _READ_COUNTER_KEYS:
+        if counters.get(key):
+            result[key] = counters[key]
 
 
 class _TopNHeap:
@@ -605,46 +956,96 @@ def _parse_access_log_entries(
     include_archived: bool,
     limit: int,
     stats_only: bool = False,
+    anchor_to_dataset_end: bool = False,
 ) -> Dict[str, Any]:
     """Parse access log and return structured results.
 
     When *stats_only* is True, individual entries and slow-op details are
-    omitted — only aggregate statistics are returned.
+    omitted — only aggregate statistics are returned. When
+    *anchor_to_dataset_end* is True (archive evidence), relative time
+    ranges anchor to the newest log timestamp instead of the wall clock.
     """
     log_path = ds.ds_paths.access_log
-    if not log_path or not os.path.isfile(log_path):
+    family = _log_family_paths(log_path, include_archived)
+    if not family:
         return {"error": f"Access log not found at {log_path}"}
 
-    start_ts, end_ts = _parse_time_range(time_range)
     pattern_re, regex_err = _validate_regex(pattern)
     if regex_err:
         return regex_err
     op_upper = operation.upper() if operation else None
 
-    entries: List[Dict[str, Any]] = []
+    # Bounded to the NEWEST matches: with rotations included, keeping the
+    # first `limit` matches would return the oldest records and silently
+    # hide recent incident evidence.
+    entries = deque(maxlen=max(1, limit))
     op_stats: Dict[str, int] = {}
     failed_ops: Dict[int, int] = {}
     slow_ops = _TopNHeap(_SLOW_OPS_TOP_N)
     counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
+    unknown_ts_count = 0
     # Stats-only accumulators for slow-op summary
     slow_count = 0
     slow_max = 0.0
     slow_sum = 0.0
     unindexed_count = 0
 
-    is_json = _detect_json_log(log_path)
+    is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
+    start_ts, end_ts, effective_window = _resolve_time_window(
+        time_range, log_path, is_json, "access", anchor_to_dataset_end, include_archived
+    )
 
-    if is_json:
-        for jentry in _read_json_log_entries(log_path, counters, include_archived):
-            total_parsed += 1
-            # 389 DS JSON access logs use "operation" (e.g. SEARCH, RESULT)
-            action = jentry.get(
-                "operation", jentry.get("op_type", jentry.get("action", ""))
-            )
+    # Format is decided per file so mixed-format rotations each get the
+    # right parser instead of inheriting the current file's format.
+    for path in family:
+        file_is_json = _detect_json_log(path)
+        if file_is_json:
+            records = (("json", e) for e in _read_json_lines_single(path, counters))
+        else:
+            records = (("line", ln) for ln in _read_lines_single(path, counters))
+
+        for kind, rec in records:
+            if kind == "json":
+                jentry = rec
+                total_parsed += 1
+                # 389 DS JSON access logs use "operation" (e.g. SEARCH, RESULT)
+                action = jentry.get(
+                    "operation", jentry.get("op_type", jentry.get("action", ""))
+                )
+                err = jentry.get("err", jentry.get("result"))
+                # Header/metadata records have neither an operation nor a
+                # result code — excluded from operation statistics.
+                if not action and err is None:
+                    _bump(counters, "header_records")
+                    total_parsed -= 1
+                    continue
+                ts = jentry.get("local_time", jentry.get("date", ""))
+                etime = jentry.get("etime")
+                pattern_target = json.dumps(jentry)
+                entry_obj = jentry
+                is_unindexed = _json_entry_has_unindexed_note(jentry)
+                slow_item = {**jentry, "etime": None}  # etime set below
+            else:
+                line = rec
+                if not line.strip():
+                    continue
+                total_parsed += 1
+                parsed = _parse_access_line(line)
+                if not parsed:
+                    continue
+                action = parsed.get("action", "")
+                err = parsed.get("err")
+                ts = parsed.get("timestamp", "")
+                etime = parsed.get("etime")
+                pattern_target = line
+                entry_obj = {**parsed, "raw": line.rstrip()}
+                notes = parsed.get("notes", "")
+                is_unindexed = bool(notes and ("U" in notes or "A" in notes))
+                slow_item = {**parsed, "raw": line.rstrip(), "etime": None}
+
             if op_upper and action.upper() != op_upper:
                 continue
-            err = jentry.get("err", jentry.get("result"))
             if result_code is not None:
                 if err is None:
                     continue
@@ -653,11 +1054,12 @@ def _parse_access_log_entries(
                         continue
                 except (ValueError, TypeError):
                     continue
-            ts = jentry.get("local_time", jentry.get("date", ""))
-            if not _timestamp_in_range(ts, start_ts, end_ts):
+            in_range, ts_known = _timestamp_in_range_known(ts, start_ts, end_ts)
+            if (start_ts or end_ts) and not ts_known:
+                unknown_ts_count += 1
+            if not in_range:
                 continue
-            raw_str = json.dumps(jentry)
-            if pattern_re and not pattern_re.search(raw_str):
+            if pattern_re and not pattern_re.search(pattern_target):
                 continue
 
             op_stats[action] = op_stats.get(action, 0) + 1
@@ -668,8 +1070,6 @@ def _parse_access_log_entries(
                         failed_ops[err_int] = failed_ops.get(err_int, 0) + 1
                 except (ValueError, TypeError):
                     pass
-
-            etime = jentry.get("etime")
             if etime is not None:
                 try:
                     etime_f = float(etime)
@@ -679,75 +1079,15 @@ def _parse_access_log_entries(
                         if etime_f > slow_max:
                             slow_max = etime_f
                         if not stats_only:
-                            # normalized float etime last so it wins over the
-                            # raw string value in jentry
-                            slow_ops.push(etime_f, {**jentry, "etime": etime_f})
+                            slow_ops.push(etime_f, {**slow_item, "etime": etime_f})
                 except (ValueError, TypeError):
                     pass
 
-            if _json_entry_has_unindexed_note(jentry):
+            if is_unindexed:
                 unindexed_count += 1
 
-            if not stats_only and len(entries) < limit:
-                entries.append(jentry)
-    else:
-        for line in _read_log_lines(log_path, include_archived):
-            if not line.strip():
-                continue
-            total_parsed += 1
-            parsed = _parse_access_line(line)
-            if not parsed:
-                continue
-            action = parsed.get("action", "")
-            if op_upper and action.upper() != op_upper:
-                continue
-            err = parsed.get("err")
-            if result_code is not None:
-                if err is None:
-                    continue
-                try:
-                    if int(err) != result_code:
-                        continue
-                except (ValueError, TypeError):
-                    continue
-            ts = parsed.get("timestamp", "")
-            if not _timestamp_in_range(ts, start_ts, end_ts):
-                continue
-            if pattern_re and not pattern_re.search(line):
-                continue
-
-            op_stats[action] = op_stats.get(action, 0) + 1
-            if err is not None:
-                try:
-                    err_int = int(err)
-                    if err_int != 0:
-                        failed_ops[err_int] = failed_ops.get(err_int, 0) + 1
-                except (ValueError, TypeError):
-                    pass
-
-            etime = parsed.get("etime")
-            if etime is not None:
-                try:
-                    etime_f = float(etime)
-                    if etime_f > 1.0:
-                        slow_count += 1
-                        slow_sum += etime_f
-                        if etime_f > slow_max:
-                            slow_max = etime_f
-                        if not stats_only:
-                            slow_ops.push(
-                                etime_f,
-                                {**parsed, "raw": line.rstrip(), "etime": etime_f},
-                            )
-                except (ValueError, TypeError):
-                    pass
-
-            notes = parsed.get("notes", "")
-            if notes and ("U" in notes or "A" in notes):
-                unindexed_count += 1
-
-            if not stats_only and len(entries) < limit:
-                entries.append({**parsed, "raw": line.rstrip()})
+            if not stats_only:
+                entries.append(entry_obj)
 
     if stats_only:
         result: Dict[str, Any] = {
@@ -764,10 +1104,14 @@ def _parse_access_log_entries(
         }
         if is_json:
             result["malformed_lines"] = counters["malformed_lines"]
+        if effective_window is not None:
+            result["effective_window"] = effective_window
+            result["unknown_timestamp_count"] = unknown_ts_count
+        _attach_read_counters(result, counters)
         return result
 
     result = {
-        "entries": entries,
+        "entries": list(entries),
         "total_parsed": total_parsed,
         "matched_count": sum(op_stats.values()),
         "operation_stats": op_stats,
@@ -776,6 +1120,10 @@ def _parse_access_log_entries(
     }
     if is_json:
         result["malformed_lines"] = counters["malformed_lines"]
+    if effective_window is not None:
+        result["effective_window"] = effective_window
+        result["unknown_timestamp_count"] = unknown_ts_count
+    _attach_read_counters(result, counters)
     return result
 
 
@@ -792,98 +1140,119 @@ def _parse_error_log_entries(
     pattern: Optional[str],
     limit: int,
     stats_only: bool = False,
+    anchor_to_dataset_end: bool = False,
+    include_archived: bool = False,
 ) -> Dict[str, Any]:
     """Parse error log and return structured results.
 
     When *stats_only* is True, individual entries are omitted — only
     aggregate statistics (severity_counts, component_counts,
     common_patterns) are returned.
+
+    ``severity_counts`` contains only records that matched every active
+    filter; ``source_severity_counts`` counts all parsed records so the
+    two can never be silently conflated.
     """
     log_path = ds.ds_paths.error_log
-    if not log_path or not os.path.isfile(log_path):
+    family = _log_family_paths(log_path, include_archived)
+    if not family:
         return {"error": f"Error log not found at {log_path}"}
 
-    start_ts, end_ts = _parse_time_range(time_range)
     pattern_re, regex_err = _validate_regex(pattern)
     if regex_err:
         return regex_err
     sev_upper = severity.upper() if severity else None
 
-    entries: List[Dict[str, Any]] = []
+    # Newest matches win when the family exceeds the limit
+    entries = deque(maxlen=max(1, limit))
     severity_counts: Dict[str, int] = {}
+    source_severity_counts: Dict[str, int] = {}
     component_counts: Dict[str, int] = {}
     counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
     matched_count = 0
+    unknown_ts_count = 0
     pattern_counts: Dict[str, int] = {}
 
-    is_json = _detect_json_log(log_path)
+    is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
+    start_ts, end_ts, effective_window = _resolve_time_window(
+        time_range, log_path, is_json, "error", anchor_to_dataset_end, include_archived
+    )
 
-    if is_json:
-        for jentry in _read_json_log_entries(log_path, counters):
-            total_parsed += 1
-            entry_sev = jentry.get("severity", "INFO").upper()
-            severity_counts[entry_sev] = severity_counts.get(entry_sev, 0) + 1
-            if sev_upper and entry_sev != sev_upper:
-                continue
-            entry_comp = jentry.get("subsystem", "")
-            if component and component.lower() not in entry_comp.lower():
-                continue
-            ts = jentry.get("local_time", "")
-            if not _timestamp_in_range(ts, start_ts, end_ts):
-                continue
-            raw_str = json.dumps(jentry)
-            if pattern_re and not pattern_re.search(raw_str):
-                continue
+    for path in family:
+        file_is_json = _detect_json_log(path)
+        if file_is_json:
+            records = (("json", e) for e in _read_json_lines_single(path, counters))
+        else:
+            records = (("line", ln) for ln in _read_lines_single(path, counters))
 
-            matched_count += 1
-            if entry_comp:
-                component_counts[entry_comp] = component_counts.get(entry_comp, 0) + 1
+        for kind, rec in records:
+            if kind == "json":
+                jentry = rec
+                # Header/metadata records carry neither a severity nor a
+                # message — keep them out of the severity statistics.
+                if "severity" not in jentry and not (
+                    jentry.get("msg") or jentry.get("message")
+                ):
+                    _bump(counters, "header_records")
+                    continue
+                total_parsed += 1
+                entry_sev = jentry.get("severity", "INFO").upper()
+                source_severity_counts[entry_sev] = source_severity_counts.get(entry_sev, 0) + 1
+                if sev_upper and entry_sev != sev_upper:
+                    continue
+                entry_comp = jentry.get("subsystem", "")
+                if component and component.lower() not in entry_comp.lower():
+                    continue
+                ts = jentry.get("local_time", "")
+                pattern_target = json.dumps(jentry)
+                msg = jentry.get("msg", jentry.get("message", ""))
+                entry_obj = jentry
+            else:
+                line = rec
+                if not line.strip():
+                    continue
+                total_parsed += 1
+                parsed = _parse_error_line(line) or {}
 
-            msg = jentry.get("msg", jentry.get("message", ""))
-            _track_pattern(pattern_counts, msg)
+                entry_sev = parsed.get("severity", "").upper()
+                if not entry_sev:
+                    sev_match = _ERROR_SEVERITY_RE.search(line)
+                    entry_sev = sev_match.group(1) if sev_match else "INFO"
+                source_severity_counts[entry_sev] = source_severity_counts.get(entry_sev, 0) + 1
 
-            if not stats_only and len(entries) < limit:
-                entries.append(jentry)
-    else:
-        for line in _read_log_lines(log_path):
-            if not line.strip():
-                continue
-            total_parsed += 1
-            parsed = _parse_error_line(line) or {}
-
-            entry_sev = parsed.get("severity", "").upper()
-            if not entry_sev:
-                sev_match = _ERROR_SEVERITY_RE.search(line)
-                entry_sev = sev_match.group(1) if sev_match else "INFO"
-            severity_counts[entry_sev] = severity_counts.get(entry_sev, 0) + 1
-
-            if sev_upper and entry_sev != sev_upper:
-                continue
-
-            entry_comp = parsed.get("component", "")
-            if component:
-                if not entry_comp or component.lower() not in entry_comp.lower():
+                if sev_upper and entry_sev != sev_upper:
                     continue
 
-            ts = parsed.get("timestamp", "")
-            if not _timestamp_in_range(ts, start_ts, end_ts):
+                entry_comp = parsed.get("component", "")
+                if component:
+                    if not entry_comp or component.lower() not in entry_comp.lower():
+                        continue
+
+                ts = parsed.get("timestamp", "")
+                pattern_target = line
+                msg = parsed.get("message", line)
+                parsed["severity"] = entry_sev
+                parsed["raw"] = line.rstrip()
+                entry_obj = parsed
+
+            in_range, ts_known = _timestamp_in_range_known(ts, start_ts, end_ts)
+            if (start_ts or end_ts) and not ts_known:
+                unknown_ts_count += 1
+            if not in_range:
                 continue
-            if pattern_re and not pattern_re.search(line):
+            if pattern_re and not pattern_re.search(pattern_target):
                 continue
 
             matched_count += 1
+            severity_counts[entry_sev] = severity_counts.get(entry_sev, 0) + 1
             if entry_comp:
                 component_counts[entry_comp] = component_counts.get(entry_comp, 0) + 1
 
-            msg = parsed.get("message", line)
             _track_pattern(pattern_counts, msg)
 
             if not stats_only:
-                parsed["severity"] = entry_sev
-                parsed["raw"] = line.rstrip()
-                if len(entries) < limit:
-                    entries.append(parsed)
+                entries.append(entry_obj)
 
     if stats_only:
         common_patterns = [
@@ -894,11 +1263,16 @@ def _parse_error_log_entries(
             "total_parsed": total_parsed,
             "matched_count": matched_count,
             "severity_counts": severity_counts,
+            "source_severity_counts": source_severity_counts,
             "component_counts": component_counts,
             "common_patterns": common_patterns,
         }
         if is_json:
             result["malformed_lines"] = counters["malformed_lines"]
+        if effective_window is not None:
+            result["effective_window"] = effective_window
+            result["unknown_timestamp_count"] = unknown_ts_count
+        _attach_read_counters(result, counters)
         return result
 
     common_patterns = [
@@ -907,15 +1281,20 @@ def _parse_error_log_entries(
     ]
 
     result = {
-        "entries": entries,
+        "entries": list(entries),
         "total_parsed": total_parsed,
         "matched_count": matched_count,
         "severity_counts": severity_counts,
+        "source_severity_counts": source_severity_counts,
         "component_counts": component_counts,
         "common_patterns": common_patterns,
     }
     if is_json:
         result["malformed_lines"] = counters["malformed_lines"]
+    if effective_window is not None:
+        result["effective_window"] = effective_window
+        result["unknown_timestamp_count"] = unknown_ts_count
+    _attach_read_counters(result, counters)
     return result
 
 
@@ -931,36 +1310,67 @@ _AUDIT_TIME_RE = re.compile(r"^time:\s+(\d+)$")
 _AUDIT_DN_RE = re.compile(r"^dn:\s+(.+)$")
 
 
-def _parse_audit_log_traditional(lines) -> List[Dict[str, Any]]:
-    """Parse traditional LDIF-style audit log into change records.
+def _unfold_ldif_lines(lines):
+    """Yield logical LDIF lines with folded continuation lines joined.
 
-    *lines* may be any iterable of strings (list or generator).
+    A physical line starting with a single space continues the previous
+    logical line (RFC 2849 folding) — without unfolding, a folded ``dn:``
+    never matches the DN pattern and silently escapes DN filters.
     """
-    records: List[Dict[str, Any]] = []
+    pending: Optional[str] = None
+    for line in lines:
+        line = line.rstrip("\n")
+        if line.startswith(" ") and pending is not None:
+            pending += line[1:]
+            continue
+        if pending is not None:
+            yield pending
+        pending = line
+    if pending is not None:
+        yield pending
+
+
+def _iter_audit_records(lines, collect_raw: bool = True):
+    """Stream change records from a traditional LDIF-style audit log.
+
+    A generator: only the current record is held in memory (the previous
+    implementation accumulated the entire log, raw text included, before
+    any filter or limit was applied). Folded lines are unfolded and
+    base64 DNs (``dn:: ...``) are decoded so DN filters can match them.
+    """
     current: Optional[Dict[str, Any]] = None
     current_lines: List[str] = []
 
-    for line in lines:
-        line = line.rstrip("\n")
-
+    for line in _unfold_ldif_lines(lines):
         time_m = _AUDIT_TIME_RE.match(line)
         if time_m:
             if current is not None:
-                current["raw"] = "\n".join(current_lines)
-                records.append(current)
+                if collect_raw:
+                    current["raw"] = "\n".join(current_lines)
+                yield current
             current = {"time": time_m.group(1)}
-            current_lines = [line]
+            current_lines = [line] if collect_raw else []
             continue
 
         if current is None:
             continue
 
-        current_lines.append(line)
+        if collect_raw:
+            current_lines.append(line)
 
-        dn_m = _AUDIT_DN_RE.match(line)
-        if dn_m and "dn" not in current:
-            current["dn"] = dn_m.group(1)
-            continue
+        if "dn" not in current:
+            dn_m = _AUDIT_DN_RE.match(line)
+            if dn_m:
+                current["dn"] = dn_m.group(1)
+                continue
+            if line.startswith("dn:: "):
+                try:
+                    current["dn"] = base64.b64decode(
+                        line[len("dn:: "):].strip()
+                    ).decode("utf-8", "replace")
+                except (ValueError, TypeError):
+                    current["dn"] = ""
+                continue
 
         if line.startswith("changetype: "):
             current["changetype"] = line[len("changetype: "):]
@@ -970,10 +1380,17 @@ def _parse_audit_log_traditional(lines) -> List[Dict[str, Any]]:
             current.setdefault("bind_dn", line[len("creatorsname: "):])
 
     if current is not None:
-        current["raw"] = "\n".join(current_lines)
-        records.append(current)
+        if collect_raw:
+            current["raw"] = "\n".join(current_lines)
+        yield current
 
-    return records
+
+def _parse_audit_log_traditional(lines) -> List[Dict[str, Any]]:
+    """Parse traditional LDIF-style audit log into change records.
+
+    Compatibility wrapper around the streaming :func:`_iter_audit_records`.
+    """
+    return list(_iter_audit_records(lines))
 
 
 def _parse_audit_log_entries(
@@ -984,76 +1401,90 @@ def _parse_audit_log_entries(
     time_range: Optional[str],
     limit: int,
     stats_only: bool = False,
+    anchor_to_dataset_end: bool = False,
+    include_archived: bool = False,
 ) -> Dict[str, Any]:
     """Parse audit log and return structured results.
 
     When *stats_only* is True, individual change records are omitted —
     only aggregate statistics are returned.
+
+    ``change_type_stats`` contains only records that matched every active
+    filter; ``source_change_type_counts`` counts all parsed records.
     """
     log_path = ds.ds_paths.audit_log
-    if not log_path or not os.path.isfile(log_path):
+    family = _log_family_paths(log_path, include_archived)
+    if not family:
         return {"error": f"Audit log not found at {log_path}"}
 
-    start_ts, end_ts = _parse_time_range(time_range)
     op_lower = operation.lower() if operation else None
 
-    changes: List[Dict[str, Any]] = []
+    # Newest matches win when the family exceeds the limit
+    changes = deque(maxlen=max(1, limit))
     change_type_counts: Dict[str, int] = {}
+    source_change_type_counts: Dict[str, int] = {}
     actor_counts: Dict[str, int] = {}
     counters: Dict[str, int] = {"malformed_lines": 0}
     total_parsed = 0
     matched_count = 0
+    unknown_ts_count = 0
 
-    is_json = _detect_json_log(log_path)
+    is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
+    start_ts, end_ts, effective_window = _resolve_time_window(
+        time_range, log_path, is_json, "audit", anchor_to_dataset_end, include_archived
+    )
+    time_filter_active = start_ts is not None or end_ts is not None
 
-    if is_json:
-        for jentry in _read_json_log_entries(log_path, counters):
+    for path in family:
+        file_is_json = _detect_json_log(path)
+        if file_is_json:
+            records = (
+                ("json", e) for e in _read_json_lines_single(path, counters)
+            )
+        else:
+            records = (
+                ("ldif", r)
+                for r in _iter_audit_records(
+                    _read_lines_single(path, counters),
+                    collect_raw=not stats_only,
+                )
+            )
+
+        for kind, rec in records:
             total_parsed += 1
-            ct = jentry.get("changetype", jentry.get("op_type", "")).lower()
-            change_type_counts[ct] = change_type_counts.get(ct, 0) + 1
+            if kind == "json":
+                ct = rec.get("changetype", rec.get("op_type", "")).lower()
+                entry_dn = rec.get("dn", "")
+                entry_bind = rec.get("modifiersname", rec.get("bind_dn", ""))
+                ts = rec.get("gm_time", rec.get("date", ""))
+            else:
+                ct = rec.get("changetype", "unknown").lower()
+                entry_dn = rec.get("dn", "")
+                entry_bind = rec.get("bind_dn", "")
+                ts = rec.get("time", "")
 
-            entry_dn = jentry.get("dn", "")
-            entry_bind = jentry.get("modifiersname", jentry.get("bind_dn", ""))
-            ts = jentry.get("gm_time", jentry.get("date", ""))
+            source_change_type_counts[ct] = source_change_type_counts.get(ct, 0) + 1
 
+            # Non-time filters first, so unknown-timestamp counting matches
+            # the access/error loops: only records that survive the other
+            # filters are counted as time-unknown.
             if not _matches_audit_filters(
                 entry_dn, entry_bind, ct, ts,
-                op_lower, target_dn, bind_dn, start_ts, end_ts,
+                op_lower, target_dn, bind_dn, None, None,
             ):
                 continue
 
-            matched_count += 1
-            actor_counts[entry_bind] = actor_counts.get(entry_bind, 0) + 1
-
-            if not stats_only and len(changes) < limit:
-                changes.append(jentry)
-    else:
-        # Traditional LDIF-style audit log — use our own parser
-        try:
-            with open(log_path, "r", errors="ignore") as fh:
-                records = _parse_audit_log_traditional(fh)
-        except OSError:
-            return {"error": f"Could not read audit log at {log_path}"}
-
-        for rec in records:
-            total_parsed += 1
-            ct = rec.get("changetype", "unknown").lower()
-            change_type_counts[ct] = change_type_counts.get(ct, 0) + 1
-
-            entry_dn = rec.get("dn", "")
-            entry_bind = rec.get("bind_dn", "")
-            ts = rec.get("time", "")
-
-            if not _matches_audit_filters(
-                entry_dn, entry_bind, ct, ts,
-                op_lower, target_dn, bind_dn, start_ts, end_ts,
-            ):
+            in_range, ts_known = _timestamp_in_range_known(ts, start_ts, end_ts)
+            if time_filter_active and not ts_known:
+                unknown_ts_count += 1
+            if not in_range:
                 continue
 
             matched_count += 1
+            change_type_counts[ct] = change_type_counts.get(ct, 0) + 1
             actor_counts[entry_bind] = actor_counts.get(entry_bind, 0) + 1
 
-            if not stats_only and len(changes) < limit:
+            if not stats_only:
                 changes.append(rec)
 
     if stats_only:
@@ -1061,21 +1492,31 @@ def _parse_audit_log_entries(
             "total_parsed": total_parsed,
             "matched_count": matched_count,
             "change_type_stats": change_type_counts,
+            "source_change_type_counts": source_change_type_counts,
             "actor_stats": actor_counts,
         }
         if is_json:
             result["malformed_lines"] = counters["malformed_lines"]
+        if effective_window is not None:
+            result["effective_window"] = effective_window
+            result["unknown_timestamp_count"] = unknown_ts_count
+        _attach_read_counters(result, counters)
         return result
 
     result = {
-        "changes": changes,
+        "changes": list(changes),
         "total_parsed": total_parsed,
         "matched_count": matched_count,
         "change_type_stats": change_type_counts,
+        "source_change_type_counts": source_change_type_counts,
         "actor_stats": actor_counts,
     }
     if is_json:
         result["malformed_lines"] = counters["malformed_lines"]
+    if effective_window is not None:
+        result["effective_window"] = effective_window
+        result["unknown_timestamp_count"] = unknown_ts_count
+    _attach_read_counters(result, counters)
     return result
 
 
@@ -1140,6 +1581,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             data = _parse_access_log_entries(
                 ds, operation, result_code, time_range,
                 pattern, include_archived_logs, max(1, limit),
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
             )
             result = {"type": "access_log", "server": target, **data}
             return _sanitize_log_result(mcp, result)
@@ -1161,6 +1603,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
     def parse_error_log(
         server_name: Optional[str] = None,
         severity: Optional[str] = None,
+        include_archived_logs: bool = False,
         component: Optional[str] = None,
         time_range: Optional[str] = None,
         pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
@@ -1206,6 +1649,8 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             data = _parse_error_log_entries(
                 ds, severity, component, time_range,
                 pattern, max(1, limit),
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
+                include_archived=include_archived_logs,
             )
             result = {"type": "error_log", "server": target, **data}
             return _sanitize_log_result(mcp, result)
@@ -1231,12 +1676,13 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         target_dn: Optional[str] = None,
         time_range: Optional[str] = None,
         limit: Annotated[int, Field(ge=1, le=10000, description="Max entries to return")] = 100,
+        include_archived_logs: bool = False,
     ) -> Dict[str, Any]:
         """Parse audit log entries with full detail (requires expose_sensitive_data).
 
         Works with live local servers, offline instances, and archive sources.
         Handles both traditional LDIF-format and JSON-format audit logs.
-        Reads the current audit log only — rotated logs are not scanned.
+        Set include_archived_logs=True to also scan rotated logs.
 
         Args:
             server_name: Target server name. Uses default if not specified.
@@ -1272,6 +1718,8 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
             data = _parse_audit_log_entries(
                 ds, operation, bind_dn, target_dn,
                 time_range, max(1, limit),
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
+                include_archived=include_archived_logs,
             )
             result = {"type": "audit_log", "server": target, **data}
             return _sanitize_log_result(mcp, result)
@@ -1352,6 +1800,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 ds, operation, result_code, time_range,
                 pattern, include_archived_logs, 0,
                 stats_only=True,
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
             )
             result = {"type": "access_log_analysis", "server": target, **data}
             return _sanitize_log_result(mcp, result)
@@ -1376,6 +1825,7 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         component: Optional[str] = None,
         time_range: Optional[str] = None,
         pattern: Annotated[Optional[str], Field(max_length=500, description="Regex filter pattern")] = None,
+        include_archived_logs: bool = False,
     ) -> Dict[str, Any]:
         """Analyze error log statistics (severity, components, patterns). LOCAL/ARCHIVE.
 
@@ -1423,6 +1873,8 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 ds, severity, component, time_range,
                 pattern, 0,
                 stats_only=True,
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
+                include_archived=include_archived_logs,
             )
             result = {"type": "error_log_analysis", "server": target, **data}
             return _sanitize_log_result(mcp, result)
@@ -1447,10 +1899,11 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         bind_dn: Optional[str] = None,
         target_dn: Optional[str] = None,
         time_range: Optional[str] = None,
+        include_archived_logs: bool = False,
     ) -> Dict[str, Any]:
         """Analyze audit log statistics (change types, actors). LOCAL/ARCHIVE.
 
-        Reads the current audit log only — rotated logs are not scanned.
+        Set include_archived_logs=True to also scan rotated logs.
         Returns aggregate statistics only — no individual change records.
         Privacy-safe (works with privacy mode ON). For full change records,
         use ``parse_audit_log`` (requires expose_sensitive_data).
@@ -1465,6 +1918,16 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
         Returns:
             Change type statistics and actor statistics.
         """
+        # DN-filtered exact counts are an existence/count oracle
+        # for arbitrary DNs (with subtree matching, even enumeration).
+        if mcp.privacy_enabled and (bind_dn or target_dn):
+            raise ToolError(
+                "Parameters 'bind_dn' and 'target_dn' of tool 'analyze_audit_log' "
+                "are disabled in privacy mode: DN-filtered match counts can be "
+                "used to probe for the existence of arbitrary entries. "
+                "Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true to enable DN filters."
+            )
+
         target = server_name or mcp.default_server
         if not target:
             return {"type": "audit_log_analysis", "error": "No server configured"}
@@ -1486,6 +1949,8 @@ def register_log_tools(mcp: "DirSrvMCP") -> None:
                 ds, operation, bind_dn, target_dn,
                 time_range, 0,
                 stats_only=True,
+                anchor_to_dataset_end=is_archive_server(mcp.connection_manager, target),
+                include_archived=include_archived_logs,
             )
             result = {"type": "audit_log_analysis", "server": target, **data}
             return _sanitize_log_result(mcp, result)

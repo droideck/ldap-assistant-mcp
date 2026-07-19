@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lib389 import lint
 from lib389.backend import Backends
-from lib389.config import Config, Encryption
+from lib389.config import RSA, Config, Encryption
 from lib389.dirsrv_log import DirsrvAccessLog
 from lib389.dseldif import DSEldif, FSChecks
 from lib389.monitor import Monitor, MonitorDiskSpace
@@ -51,6 +51,11 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
     if "error" in sanitized and isinstance(sanitized["error"], str):
         sanitized["error"] = sanitizer.sanitize_text(sanitized["error"])
 
+    # Failure-path summaries embed the raw exception text (e.g. run_healthcheck
+    # "FAILED: ... - <message>"), which can carry hostnames/DNs/paths.
+    if "summary" in sanitized and isinstance(sanitized["summary"], str):
+        sanitized["summary"] = sanitizer.sanitize_text(sanitized["summary"])
+
     if "findings" in sanitized and isinstance(sanitized["findings"], list):
         sanitized["findings"] = sanitizer.sanitize_findings(sanitized["findings"])
 
@@ -59,6 +64,15 @@ def _sanitize_health_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Dict[st
 
     if "detailed_metrics" in sanitized and isinstance(sanitized["detailed_metrics"], dict):
         sanitized["detailed_metrics"] = _sanitize_metrics(sanitizer, sanitized["detailed_metrics"])
+
+    for key in ("evidence_gaps", "checks_failed", "discovery_errors"):
+        if key in sanitized and isinstance(sanitized[key], list):
+            sanitized[key] = [
+                {**item, "error": sanitizer.sanitize_text(item["error"])}
+                if isinstance(item, dict) and isinstance(item.get("error"), str)
+                else item
+                for item in sanitized[key]
+            ]
 
     return sanitized
 
@@ -88,12 +102,19 @@ def _sanitize_server_metrics(sanitizer, data: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = _sanitize_disk_metrics(sanitizer, value)
         elif key == "certificates" and isinstance(value, dict):
             result[key] = _sanitize_cert_metrics(value, sanitizer)
+        elif key in ("connections", "threads", "operations") and isinstance(value, dict):
+            section = dict(value)
+            if isinstance(section.get("error"), str):
+                section["error"] = sanitizer.sanitize_text(section["error"])
+            result[key] = section
         elif key == "suffixes" and isinstance(value, list):
             result[key] = [sanitizer.sanitize_suffix(s) for s in value]
         elif key in ("port", "secure_port"):
             result[key] = "[port]"
-        elif key in ("error", "dse_error") and isinstance(value, str):
+        elif key in ("error", "dse_error", "dse_lint_error", "fs_lint_error") and isinstance(value, str):
             result[key] = sanitizer.sanitize_text(value)
+        elif key in ("dse_lint_errors", "fs_lint_errors") and isinstance(value, list):
+            result[key] = [sanitizer.sanitize_text(str(v)) for v in value]
         else:
             # Keep numeric metrics and status flags
             result[key] = value
@@ -105,6 +126,8 @@ def _sanitize_replication_metrics(sanitizer, repl: Dict[str, Any]) -> Dict[str, 
     result = dict(repl)
     if "error" in result and isinstance(result["error"], str):
         result["error"] = sanitizer.sanitize_text(result["error"])
+    if "errors" in result and isinstance(result["errors"], list):
+        result["errors"] = [sanitizer.sanitize_text(str(e)) for e in result["errors"]]
     if "agreements" in result and isinstance(result["agreements"], list):
         result["agreements"] = [
             {
@@ -122,6 +145,8 @@ def _sanitize_cache_metrics(sanitizer, cache: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(cache)
     if "error" in result and isinstance(result["error"], str):
         result["error"] = sanitizer.sanitize_text(result["error"])
+    if "errors" in result and isinstance(result["errors"], list):
+        result["errors"] = [sanitizer.sanitize_text(str(e)) for e in result["errors"]]
     if "backends" in result and isinstance(result["backends"], list):
         result["backends"] = [
             {
@@ -157,16 +182,32 @@ def _sanitize_cert_metrics(certs: Dict[str, Any], sanitizer=None) -> Dict[str, A
     result = dict(certs)
     if "error" in result and isinstance(result["error"], str) and sanitizer:
         result["error"] = sanitizer.sanitize_text(result["error"])
+    if "active_nickname" in result and isinstance(result["active_nickname"], str):
+        # Nicknames can embed hostnames
+        result["active_nickname"] = "[certificate]"
     if "certs" in result and isinstance(result["certs"], list):
-        result["certs"] = [
-            {
+        new_certs = []
+        for c in result["certs"]:
+            new_c = {
                 "subject": "[certificate]",
                 "type": c.get("type"),
                 "days_until_expiry": c.get("days_until_expiry"),
             }
-            for c in result["certs"]
-        ]
+            if "is_active" in c:
+                new_c["is_active"] = c["is_active"]
+            new_certs.append(new_c)
+        result["certs"] = new_certs
     return result
+
+# Check classes whose CONSTRUCTION needs local file access; discovery
+# failures for these against a remote live server are expected N/A.
+_LOCAL_ONLY_CHECK_CLASSES = {
+    "DSEldif",
+    "FSChecks",
+    "MonitorDiskSpace",
+    "NssSsl",
+    "DirsrvAccessLog",
+}
 
 LOCAL_ONLY_CHECK_UIDS = {
     "fschecks",
@@ -218,7 +259,7 @@ def _get_all_error_codes() -> List[Dict[str, Any]]:
     return sorted(errors, key=lambda x: x["code"])
 
 
-def _list_check_targets(ds) -> Dict[str, Any]:
+def _list_check_targets(ds, discovery_errors: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """List all check targets and their available lint checks.
 
     Discovery uses the lib389 DSLint API (``lint_list()``), the same mechanism
@@ -228,6 +269,8 @@ def _list_check_targets(ds) -> Dict[str, Any]:
     reachable through ``lint_list()`` recursion.
 
     Returns a dict of ``uid -> {"object": obj, "checks": {spec_name: callable}}``.
+    Categories that failed to instantiate or enumerate are appended to
+    ``discovery_errors`` (when given) so callers can report incomplete coverage.
     """
     targets = {}
     for check_class in CHECK_OBJECTS:
@@ -247,6 +290,11 @@ def _list_check_targets(ds) -> Dict[str, Any]:
                 "Skipping health check category %s: %s: %s",
                 getattr(check_class, "__name__", check_class), type(exc).__name__, exc,
             )
+            if discovery_errors is not None:
+                discovery_errors.append({
+                    "category": getattr(check_class, "__name__", str(check_class)),
+                    "error": format_error_message(exc),
+                })
             continue
     return targets
 
@@ -296,9 +344,17 @@ def _expand_check_spec(targets: Dict[str, Any], spec: str) -> List[tuple]:
     return checks
 
 
-def _run_single_check(check_id: str, lint_fn) -> List[Dict[str, Any]]:
-    """Run a single lint check callable and return results."""
+def _run_single_check(check_id: str, lint_fn) -> tuple:
+    """Run a single lint check callable.
+
+    Returns ``(results, error, malformed_count)``. ``error`` is set when the
+    check raised, and ``malformed_count`` counts non-dict lint results that
+    had to be discarded — either condition means the check did not complete
+    successfully and must not be counted as passed.
+    """
     results = []
+    error = None
+    malformed = 0
     try:
         for result in lint_fn() or []:
             if isinstance(result, dict):
@@ -307,8 +363,11 @@ def _run_single_check(check_id: str, lint_fn) -> List[Dict[str, Any]]:
                     result = copy.deepcopy(result)
                     result["check"] = check_id
                 results.append(result)
+            else:
+                malformed += 1
     except Exception as e:
-        # Return error as a finding
+        error = format_error_message(e)
+        # Also surface the failure as a finding for visibility
         results.append({
             "dsle": "RUNTIME_ERROR",
             "severity": "MEDIUM",
@@ -318,7 +377,7 @@ def _run_single_check(check_id: str, lint_fn) -> List[Dict[str, Any]]:
             "fix": "Review server logs and verify the server is accessible.",
             "check": check_id,
         })
-    return results
+    return results, error, malformed
 
 
 def _convert_lib389_result_to_finding(result: Dict[str, Any], server_name: str) -> Dict[str, Any]:
@@ -353,6 +412,50 @@ def _convert_lib389_result_to_finding(result: Dict[str, Any], server_name: str) 
 
 _get_dse_ldif_path = get_dse_ldif_path
 _find_child_dns = find_child_dns
+
+# Metric keys written by the per-server health probes. Each probe leaves an
+# ``error`` trail in its section when it could not collect required evidence;
+# explicit not-applicable sections ({"available": False, "reason": ...} or
+# {"configured": False} without an error) are not evidence gaps.
+_PROBE_METRIC_KEYS = ("connections", "replication", "cache", "disk", "certificates")
+
+
+def _metrics_evidence_gaps(server_name: str, srv_metrics: Dict[str, Any]) -> List[Dict[str, str]]:
+    """List required-evidence gaps recorded in a server's health metrics.
+
+    A ``healthy``/all-clear conclusion is impossible while any gap exists:
+    a failed probe proves nothing about the state it was meant to observe.
+    """
+    gaps: List[Dict[str, str]] = []
+    if isinstance(srv_metrics.get("error"), str):
+        gaps.append({"server": server_name, "probe": "connect", "error": srv_metrics["error"]})
+        return gaps
+    for probe in _PROBE_METRIC_KEYS:
+        value = srv_metrics.get(probe)
+        if not isinstance(value, dict):
+            continue
+        if isinstance(value.get("error"), str):
+            gaps.append({"server": server_name, "probe": probe, "error": value["error"]})
+        elif value.get("incomplete"):
+            errors = value.get("errors") or []
+            detail = "; ".join(str(e) for e in errors) or "incomplete evidence"
+            gaps.append({"server": server_name, "probe": probe, "error": detail})
+    for key, probe in (
+        ("dse_error", "dse"),
+        ("dse_lint_error", "dse_lint"),
+        ("fs_lint_error", "fs_checks"),
+    ):
+        if isinstance(srv_metrics.get(key), str):
+            gaps.append({"server": server_name, "probe": probe, "error": srv_metrics[key]})
+    for key, probe in (("dse_lint_errors", "dse_lint"), ("fs_lint_errors", "fs_checks")):
+        errors = srv_metrics.get(key)
+        if isinstance(errors, list) and errors:
+            gaps.append({
+                "server": server_name,
+                "probe": probe,
+                "error": "; ".join(str(e) for e in errors),
+            })
+    return gaps
 
 
 def _check_server_health_offline(
@@ -410,7 +513,9 @@ def _check_server_health_offline(
         mcp.logger.debug("Could not read dse.ldif for %s: %s", server_name, e)
         metrics["dse_error"] = format_error_message(e)
 
-    # Run DSEldif lint checks
+    # Run DSEldif lint checks. Failures are recorded in the metrics so the
+    # aggregation can tell "lint passed" apart from "lint never ran".
+    dse_lint_errors: List[str] = []
     try:
         dse = DSEldif(ds, path=dse_path)
         for method_name in dir(dse):
@@ -423,11 +528,16 @@ def _check_server_health_offline(
                             findings.append(finding)
                 except Exception as e:
                     mcp.logger.debug("DSEldif lint %s failed: %s", method_name, e)
+                    dse_lint_errors.append(f"{method_name}: {format_error_message(e)}")
     except Exception as e:
         mcp.logger.debug("Could not run DSEldif checks for %s: %s", server_name, e)
+        metrics["dse_lint_error"] = format_error_message(e)
+    if dse_lint_errors:
+        metrics["dse_lint_errors"] = dse_lint_errors
 
     # For offline (non-archive) servers, we can also run FSChecks and log analysis
     if not is_archive:
+        fs_lint_errors: List[str] = []
         try:
             fs_checks = FSChecks(ds)
             for method_name in dir(fs_checks):
@@ -440,8 +550,12 @@ def _check_server_health_offline(
                                 findings.append(finding)
                     except Exception as e:
                         mcp.logger.debug("FSChecks lint %s failed: %s", method_name, e)
+                        fs_lint_errors.append(f"{method_name}: {format_error_message(e)}")
         except Exception as e:
             mcp.logger.debug("Could not run FSChecks for %s: %s", server_name, e)
+            metrics["fs_lint_error"] = format_error_message(e)
+        if fs_lint_errors:
+            metrics["fs_lint_errors"] = fs_lint_errors
 
     metrics["connections"] = {"available": False, "reason": f"{mode_label} mode - no live connection"}
     metrics["replication"] = {"available": False, "reason": f"{mode_label} mode - no live connection"}
@@ -468,8 +582,14 @@ def _check_server_health_offline(
     )
 
 
-def _list_check_targets_offline(ds, is_archive: bool) -> Dict[str, Any]:
-    """List check targets available for offline/archive mode."""
+def _list_check_targets_offline(
+    ds, is_archive: bool, discovery_errors: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """List check targets available for offline/archive mode.
+
+    Categories that failed to instantiate or enumerate are appended to
+    ``discovery_errors`` (when given) so callers can report incomplete coverage.
+    """
     compatible_uids = ARCHIVE_COMPATIBLE_CHECK_UIDS if is_archive else OFFLINE_COMPATIBLE_CHECK_UIDS
     targets = {}
 
@@ -496,7 +616,13 @@ def _list_check_targets_offline(ds, is_archive: bool) -> Dict[str, Any]:
                     "object": obj,
                     "checks": checks,
                 }
-        except Exception:
+        except Exception as exc:
+            _health_logger.warning(
+                "Skipping offline health check category %s: %s: %s",
+                uid, type(exc).__name__, exc,
+            )
+            if discovery_errors is not None:
+                discovery_errors.append({"category": uid, "error": format_error_message(exc)})
             continue
     return targets
 
@@ -631,7 +757,17 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         findings.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 5))
 
-        # Determine overall health
+        # Required-evidence completeness: any probe that failed left an error
+        # trail in its metrics. A HEALTHY conclusion is impossible while a
+        # required probe is missing its evidence.
+        evidence_gaps: List[Dict[str, str]] = []
+        for srv_name, srv_metrics in server_metrics.items():
+            evidence_gaps.extend(_metrics_evidence_gaps(srv_name, srv_metrics))
+
+        # Determine overall health. Incomplete evidence outranks a FAIR
+        # verdict (mirroring run_healthcheck's INCOMPLETE-over-OK): medium
+        # findings from partial evidence must not read as a fully-observed
+        # "fair" system.
         if severity_counts["critical"] > 0:
             overall_health = "critical"
             summary = (
@@ -640,6 +776,19 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
         elif severity_counts["high"] > 0:
             overall_health = "degraded"
             summary = f"DEGRADED: {severity_counts['high']} high-priority issue(s) found"
+        elif evidence_gaps:
+            overall_health = "unknown"
+            gap_servers = sorted({g["server"] for g in evidence_gaps})
+            summary = (
+                f"INCOMPLETE: {len(evidence_gaps)} required probe(s) failed on "
+                f"{len(gap_servers)} server(s) - health cannot be confirmed"
+            )
+            if severity_counts["medium"] > 0:
+                summary += (
+                    f"; {severity_counts['medium']} issue(s) found in collected evidence"
+                )
+            else:
+                summary += "; no issues found in collected evidence"
         elif severity_counts["medium"] > 0:
             overall_health = "fair"
             summary = f"FAIR: {severity_counts['medium']} issue(s) found that should be addressed"
@@ -656,7 +805,8 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             if "error" in srv_metrics:
                 metrics_summary[srv_name] = {"status": "unreachable"}
             else:
-                srv_summary = {"status": "ok"}
+                srv_gaps = _metrics_evidence_gaps(srv_name, srv_metrics)
+                srv_summary = {"status": "incomplete" if srv_gaps else "ok"}
 
                 # Connection summary
                 if "connections" in srv_metrics and "error" not in srv_metrics["connections"]:
@@ -696,6 +846,8 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             "servers_checked": servers_checked,
             "servers_failed": servers_failed,
             "total_servers": len(server_names),
+            "evidence_status": "partial" if evidence_gaps else "complete",
+            "evidence_gaps": evidence_gaps,
             "metrics": metrics_summary,
             "detailed_metrics": server_metrics,
         }
@@ -832,15 +984,27 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             offline_archive = is_offline_or_archive(mcp.connection_manager, target)
             ds = mcp.connection_manager.connect(target)
 
-            # Use mode-appropriate check targets
+            # Use mode-appropriate check targets. Discovery failures are
+            # collected so incomplete coverage cannot pass as an all-clear.
+            discovery_errors: List[Dict[str, str]] = []
             if offline_archive:
                 is_archive = is_archive_server(mcp.connection_manager, target)
-                targets = _list_check_targets_offline(ds, is_archive)
+                targets = _list_check_targets_offline(ds, is_archive, discovery_errors)
             else:
-                targets = _list_check_targets(ds)
+                targets = _list_check_targets(ds, discovery_errors)
 
             # Check if this is a local server
             is_local = is_local_server(mcp.connection_manager, target)
+
+            # Local-only categories (dse.ldif, filesystem, NSS DB, disk,
+            # local logs) cannot even construct against a remote server —
+            # that is expected N/A, not incomplete evidence. Their checks
+            # would be excluded via LOCAL_ONLY_CHECK_UIDS anyway.
+            if not is_local and not offline_archive:
+                discovery_errors = [
+                    e for e in discovery_errors
+                    if e.get("category") not in _LOCAL_ONLY_CHECK_CLASSES
+                ]
 
             # Determine which checks to run
             if checks:
@@ -884,10 +1048,13 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                                 excluded.add(check_id)
                                 local_only_skipped.append(check_id)
 
-            # Run checks
+            # Run checks. A check is counted as executed (passed evidence
+            # collection) only after it completed without raising and without
+            # discarding malformed results.
             raw_results = []
             checks_executed = []
             checks_skipped = []
+            checks_failed = []
 
             for uid, spec_name, lint_fn in checks_to_run:
                 check_id = f"{uid}:{spec_name}"
@@ -895,9 +1062,17 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                     checks_skipped.append(check_id)
                     continue
 
-                checks_executed.append(check_id)
-                results = _run_single_check(check_id, lint_fn)
+                results, check_error, malformed = _run_single_check(check_id, lint_fn)
                 raw_results.extend(results)
+                if check_error is not None:
+                    checks_failed.append({"check": check_id, "error": check_error})
+                elif malformed:
+                    checks_failed.append({
+                        "check": check_id,
+                        "error": f"{malformed} malformed (non-dict) lint result(s) discarded",
+                    })
+                else:
+                    checks_executed.append(check_id)
 
             # Convert results to findings format
             findings = []
@@ -912,16 +1087,40 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 if sev in severity_counts:
                     severity_counts[sev] += 1
 
-            # Generate summary
+            # Generate summary. An all-clear ("HEALTHY"/"OK") is impossible
+            # unless at least one check executed and none failed, was
+            # malformed, or vanished during discovery.
             total_issues = sum(severity_counts.values())
+            attempted = len(checks_executed) + len(checks_failed)
+            incomplete = bool(checks_failed or discovery_errors)
             if severity_counts["critical"] > 0:
                 summary = f"CRITICAL: {severity_counts['critical']} critical issue(s) found"
             elif severity_counts["high"] > 0:
                 summary = f"WARNING: {severity_counts['high']} high-priority issue(s) found"
+            elif attempted == 0:
+                summary = "UNKNOWN: no health checks could be executed"
+                if discovery_errors:
+                    summary += f" - {len(discovery_errors)} check category(ies) failed discovery"
+            elif incomplete:
+                parts = []
+                if checks_failed:
+                    parts.append(f"{len(checks_failed)} of {attempted} check(s) failed to complete")
+                if discovery_errors:
+                    parts.append(f"{len(discovery_errors)} check category(ies) failed discovery")
+                summary = "INCOMPLETE: " + ", ".join(parts)
+                if total_issues:
+                    summary += f"; {total_issues} issue(s) found in completed checks"
             elif total_issues > 0:
                 summary = f"OK: {total_issues} issue(s) found (no critical or high severity)"
             else:
                 summary = f"HEALTHY: No issues found ({len(checks_executed)} checks passed)"
+
+            if attempted == 0:
+                evidence_status = "unavailable"
+            elif incomplete:
+                evidence_status = "partial"
+            else:
+                evidence_status = "complete"
 
             mcp.logger.info("run_healthcheck completed: %s", summary)
 
@@ -936,6 +1135,9 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 "low_count": severity_counts["low"],
                 "info_count": severity_counts["info"],
                 "total_issues": total_issues,
+                "evidence_status": evidence_status,
+                "checks_failed": checks_failed,
+                "discovery_errors": discovery_errors,
                 "findings": findings,
                 "checks_executed": checks_executed,
                 "checks_skipped": checks_skipped,
@@ -1013,12 +1215,13 @@ def _check_server_health(
     # Store metrics for this server
     server_metrics[server_name] = metrics
 
-    # Add success indicator if no critical issues were found for this server
+    # Add success indicator only when no critical issues were found AND every
+    # probe actually delivered its evidence — a failed probe proves nothing.
     server_findings = [f for f in findings if f.get("server") == server_name]
     critical_count = sum(1 for f in server_findings if f.get("severity") == "critical")
     high_count = sum(1 for f in server_findings if f.get("severity") == "high")
 
-    if critical_count == 0 and high_count == 0:
+    if critical_count == 0 and high_count == 0 and not _metrics_evidence_gaps(server_name, metrics):
         findings.append(
             format_finding(
                 title=f"Server {server_name} is healthy",
@@ -1095,6 +1298,8 @@ def _check_replication_health(
 
             except Exception as e:
                 mcp.logger.debug("Error checking replica %s: %s", replica, e)
+                metrics["replication"]["incomplete"] = True
+                metrics["replication"].setdefault("errors", []).append(format_error_message(e))
 
     except Exception as e:
         mcp.logger.debug("Could not check replication for %s: %s", server_name, e)
@@ -1157,6 +1362,8 @@ def _check_cache_health(
 
             except Exception as e:
                 mcp.logger.debug("Error checking cache for backend %s: %s", be_name, e)
+                cache_metrics["incomplete"] = True
+                cache_metrics.setdefault("errors", []).append(format_error_message(e))
 
         if low_hit_ratio_count > 0:
             cache_metrics["overall_health"] = "degraded"
@@ -1243,6 +1450,25 @@ def _check_disk_health(
         metrics["disk"] = {"available": False, "error": format_error_message(e)}
 
 
+def _get_active_cert_nickname(mcp: DirSrvMCP, ds) -> Optional[str]:
+    """Read the nickname of the certificate the server actually serves.
+
+    The active server certificate is named by ``nsSSLPersonalitySSL`` under
+    ``cn=RSA,cn=encryption,cn=config``.  Returns None when it cannot be
+    determined (activeness of NSS DB certs is then unknown).
+    """
+    try:
+        val = RSA(ds).get_attr_val_utf8("nsSSLPersonalitySSL")
+    except Exception as e:
+        mcp.logger.debug(
+            "Active server certificate nickname unavailable: %s", e
+        )
+        return None
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
 def _check_certificate_health(
     mcp: DirSrvMCP,
     ds,
@@ -1252,6 +1478,12 @@ def _check_certificate_health(
     is_local: bool = True,
 ) -> None:
     """Check SSL certificate expiration.
+
+    Distinguishes the ACTIVE server certificate (nsSSLPersonalitySSL) from
+    the rest of the NSS DB inventory: only the active certificate's expiry
+    is an active-service outage; other expired certificates are inventory
+    hygiene issues. When the active nickname cannot be determined, findings
+    are labeled as certificate inventory with unknown role.
 
     Note: Certificate checking requires local server access (is_local=True)
     to read the NSS certificate database. For remote servers, this check
@@ -1268,6 +1500,10 @@ def _check_certificate_health(
     try:
         nss_ssl = NssSsl(ds)
 
+        # Which certificate does the server actually serve?  Without this,
+        # every expired cert in the NSS DB would read as a service outage.
+        active_nickname = _get_active_cert_nickname(mcp, ds)
+
         # Enumerate all certificates in the NSS database. list_certs(ca=False)
         # returns server/user certs, list_certs(ca=True) returns CA certs.
         # Each entry is a list: [nickname, subject, issuer, expire_date, trust_flags].
@@ -1283,11 +1519,16 @@ def _check_certificate_health(
             not_after = detail[3] if len(detail) > 3 else None
             trust_flags = detail[4] if len(detail) > 4 else ""
 
+            cert_type = "ca" if "CT" in str(trust_flags) else "server"
             cert_info = {
                 "nickname": nickname,
                 "subject": subject,
-                "type": "ca" if "CT" in str(trust_flags) else "server",
+                "type": cert_type,
             }
+            is_active: Optional[bool] = None
+            if active_nickname is not None:
+                is_active = nickname == active_nickname
+                cert_info["is_active"] = is_active
 
             exp_date = _parse_cert_expiry(not_after)
             if exp_date is not None:
@@ -1296,27 +1537,65 @@ def _check_certificate_health(
                 cert_info["days_until_expiry"] = days_until
 
                 if days_until < 0:
+                    if is_active:
+                        severity = Severity.CRITICAL
+                        impact = "The ACTIVE server certificate has expired - clients may reject TLS connections"
+                        details = f"Active server certificate '{nickname}' expired {abs(days_until)} day(s) ago ({not_after})"
+                        remediation = "Renew the active SSL server certificate immediately"
+                    elif is_active is None:
+                        # Activeness unknown: keep the worst-case severity but
+                        # label it honestly as an inventory observation.
+                        severity = Severity.CRITICAL
+                        impact = "Certificate inventory: an expired certificate is present (active server certificate could not be determined - this may or may not be the serving certificate)"
+                        details = f"Certificate '{nickname}' expired {abs(days_until)} day(s) ago ({not_after}). Active-role unknown: nsSSLPersonalitySSL could not be read."
+                        remediation = "Determine whether this certificate is the active server certificate (nsSSLPersonalitySSL) and renew it if so"
+                    elif cert_type == "ca":
+                        severity = Severity.HIGH
+                        impact = "An expired CA certificate in the NSS DB - certificates issued by it fail chain validation"
+                        details = f"CA certificate '{nickname}' expired {abs(days_until)} day(s) ago ({not_after})"
+                        remediation = "Replace the CA certificate and re-issue dependent certificates if it anchors the active server certificate's chain"
+                    else:
+                        severity = Severity.MEDIUM
+                        impact = "unused/unknown-role certificate expired - not the active server certificate, so no immediate service impact"
+                        details = f"Certificate '{nickname}' expired {abs(days_until)} day(s) ago ({not_after}) but is not the active server certificate ('{active_nickname}')"
+                        remediation = "Remove or renew the unused certificate to keep the NSS DB inventory clean"
                     findings.append(
                         format_finding(
                             title=f"SSL Certificate Expired: {nickname}",
-                            severity=Severity.CRITICAL,
-                            impact="Certificate has expired - clients may reject TLS connections",
-                            details=f"Certificate '{nickname}' expired {abs(days_until)} day(s) ago ({not_after})",
-                            remediation="Renew the SSL certificate immediately",
+                            severity=severity,
+                            impact=impact,
+                            details=details,
+                            remediation=remediation,
                             server=server_name,
-                            metadata={"nickname": nickname, "days_expired": abs(days_until)},
+                            metadata={
+                                "nickname": nickname,
+                                "days_expired": abs(days_until),
+                                "is_active": is_active,
+                                "cert_type": cert_type,
+                            },
                         )
                     )
                 elif days_until <= 30:
+                    if is_active is False and cert_type != "ca":
+                        expiring_severity = Severity.LOW
+                        expiring_impact = f"unused/unknown-role certificate '{nickname}' expires in {days_until} day(s) - not the active server certificate"
+                    else:
+                        expiring_severity = Severity.HIGH if days_until <= 7 else Severity.MEDIUM
+                        expiring_impact = f"Certificate '{nickname}' expires in {days_until} day(s)"
                     findings.append(
                         format_finding(
                             title=f"SSL Certificate Expiring Soon: {nickname}",
-                            severity=Severity.HIGH if days_until <= 7 else Severity.MEDIUM,
-                            impact=f"Certificate '{nickname}' expires in {days_until} day(s)",
+                            severity=expiring_severity,
+                            impact=expiring_impact,
                             details=f"Expiration: {not_after}",
                             remediation="Plan certificate renewal before expiration",
                             server=server_name,
-                            metadata={"nickname": nickname, "days_until_expiry": days_until},
+                            metadata={
+                                "nickname": nickname,
+                                "days_until_expiry": days_until,
+                                "is_active": is_active,
+                                "cert_type": cert_type,
+                            },
                         )
                     )
             elif not_after is not None:
@@ -1327,11 +1606,14 @@ def _check_certificate_health(
 
             certs.append(cert_info)
 
-        metrics["certificates"] = (
+        cert_metrics: Dict[str, Any] = (
             {"available": True, "certs": certs}
             if certs
             else {"available": True, "status": "no certificates found"}
         )
+        if active_nickname is not None:
+            cert_metrics["active_nickname"] = active_nickname
+        metrics["certificates"] = cert_metrics
 
     except Exception as e:
         # Do not silently swallow failures (e.g. missing NSS DB or API changes):
@@ -1379,14 +1661,17 @@ def _check_connection_health(
     try:
         monitor = Monitor(ds)
 
-        # Get specific attributes
+        # Get specific attributes. A failed monitor read must leave an error
+        # trail — all-zero metrics would silently pass as measured evidence.
         try:
             status = monitor.get_attrs_vals_utf8([
                 'currentconnections', 'totalconnections', 'dtablesize',
                 'threads', 'currentconnectionsatmaxthreads', 'opsinitiated', 'opscompleted'
             ])
-        except Exception:
-            status = {}
+        except Exception as e:
+            mcp.logger.debug("Could not read monitor attributes for %s: %s", server_name, e)
+            metrics["connections"] = {"error": format_error_message(e)}
+            return
 
         current_conns = safe_int(status.get("currentconnections"))
         total_conns = safe_int(status.get("totalconnections"))

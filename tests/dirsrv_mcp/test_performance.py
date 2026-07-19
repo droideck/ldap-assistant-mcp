@@ -183,7 +183,7 @@ async def test_get_performance_summary_returns_valid_structure(dirsrv_server: Di
     assert data["type"] == "performance_summary"
     assert "server" in data
     assert "overall_health" in data
-    assert data["overall_health"] in ["healthy", "fair", "degraded", "critical"]
+    assert data["overall_health"] in ["healthy", "fair", "degraded", "critical", "unknown"]
     assert "summary" in data
     assert "findings" in data
     assert isinstance(data["findings"], list)

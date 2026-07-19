@@ -17,6 +17,7 @@ rather than failing the entire tool.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lib389.backend import Backends
@@ -31,6 +32,24 @@ from ldap_assistant_mcp.lib.result_formatter import Severity, format_finding
 from ldap_assistant_mcp.lib.value_utils import format_bytes, safe_float, safe_int
 
 _RO = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=True)
+
+# cn=snmp,cn=monitor error counters and maxThreadsPerConnHits are
+# cumulative since server start, so absolute thresholds mislabel healthy
+# long-uptime servers (and miss a fresh server under attack).  When uptime
+# is available (cn=monitor starttime/currenttime) findings are rate-based.
+# The rates are deliberately conservative — a sustained ~1 event/minute for
+# security/thread events and ~10/minute for the aggregate error counter —
+# chosen as the same order of magnitude the old absolute thresholds implied
+# for a one-hour-old server, not as calibrated SLOs.
+BIND_SECURITY_ERRORS_PER_HOUR = 60.0
+TOTAL_ERRORS_PER_HOUR = 600.0
+MAX_THREADS_HITS_PER_HOUR = 60.0
+# Fallback gates when uptime is unavailable: the historical absolute counts
+# are reused, but the finding is downgraded to LOW with an explicit
+# cumulative-counter caveat (no new absolute thresholds are invented).
+BIND_SECURITY_ERRORS_CUMULATIVE_GATE = 100
+TOTAL_ERRORS_CUMULATIVE_GATE = 1000
+MAX_THREADS_HITS_CUMULATIVE_GATE = 100
 
 if TYPE_CHECKING:
     from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
@@ -90,6 +109,22 @@ def _sanitize_performance_result(mcp: "DirSrvMCP", result: Dict[str, Any]) -> Di
         if isinstance(value, dict) and "error" in value and isinstance(value["error"], str):
             sanitized[key] = {**value, "error": sanitizer.sanitize_text(value["error"])}
 
+    if "probe_failures" in sanitized and isinstance(sanitized["probe_failures"], list):
+        sanitized["probe_failures"] = [
+            {**p, "error": sanitizer.sanitize_text(p["error"])}
+            if isinstance(p, dict) and isinstance(p.get("error"), str)
+            else p
+            for p in sanitized["probe_failures"]
+        ]
+
+    # Error trails nested one level under "metrics" (e.g. metrics.cache.error)
+    if "metrics" in sanitized and isinstance(sanitized["metrics"], dict):
+        metrics = dict(sanitized["metrics"])
+        for mkey, mval in metrics.items():
+            if isinstance(mval, dict) and isinstance(mval.get("error"), str):
+                metrics[mkey] = {**mval, "error": sanitizer.sanitize_text(mval["error"])}
+        sanitized["metrics"] = metrics
+
     return sanitized
 
 def _calculate_hit_ratio(hits: int, tries: int) -> float:
@@ -110,6 +145,72 @@ def _assess_cache_health(hit_ratio: float) -> tuple[str, Severity]:
         return "poor", Severity.MEDIUM
     else:
         return "critical", Severity.HIGH
+
+def _parse_generalized_time(value: Any) -> Optional[datetime]:
+    """Parse an LDAP GeneralizedTime value (e.g. ``20260713012345Z``).
+
+    Accepts the raw string or a single-element list as returned by
+    ``get_attrs_vals_utf8``.  Returns None when absent or unparseable.
+    """
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _uptime_hours(status: Dict[str, Any]) -> Optional[float]:
+    """Server uptime in hours from cn=monitor starttime/currenttime.
+
+    Returns None when either timestamp is missing/unparseable or the
+    difference is non-positive — callers must then treat cumulative
+    counters as rate-less and caveat accordingly.
+    """
+    start = _parse_generalized_time(status.get("starttime"))
+    now = _parse_generalized_time(status.get("currenttime"))
+    if start is None or now is None:
+        return None
+    seconds = (now - start).total_seconds()
+    if seconds <= 0:
+        return None
+    return seconds / 3600.0
+
+
+def _finalize_drilldown(
+    result: Dict[str, Any],
+    findings: List[Dict[str, Any]],
+    probe_failures: List[Dict[str, str]],
+    healthy_summary: str,
+    issue_noun: str,
+) -> None:
+    """Attach summary/findings/evidence keys to a drill-down result.
+
+    Mirrors the ``get_performance_summary`` evidence pattern: a confident
+    healthy/normal summary is impossible while a required probe failed.
+    ``evidence_status`` is "partial" whenever probes failed.
+    """
+    if probe_failures and findings:
+        summary = (
+            f"ATTENTION (incomplete evidence): {len(findings)} {issue_noun}(s) detected; "
+            f"{len(probe_failures)} required probe(s) failed"
+        )
+    elif probe_failures:
+        summary = (
+            f"INCOMPLETE: {len(probe_failures)} required probe(s) failed - "
+            "results may not reflect actual server state"
+        )
+    elif findings:
+        summary = f"ATTENTION: {len(findings)} {issue_noun}(s) detected"
+    else:
+        summary = healthy_summary
+    result["summary"] = summary
+    result["evidence_status"] = "partial" if probe_failures else "complete"
+    result["probe_failures"] = probe_failures
+    result["findings"] = findings
+
 
 def register_performance_tools(mcp: DirSrvMCP) -> None:
     """Register performance diagnostic tools with the MCP server."""
@@ -146,6 +247,9 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         try:
             ds = mcp.connection_manager.connect(target)
             findings: List[Dict[str, Any]] = []
+            # Required probes that failed — a healthy summary is impossible
+            # while this list is non-empty.
+            probe_failures: List[Dict[str, str]] = []
             cache_data = {
                 "type": "cache_statistics",
                 "server": target,
@@ -219,6 +323,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error getting LDBM monitor: %s", e)
                 cache_data["global_db_cache"] = {"error": format_error_message(e)}
+                probe_failures.append({
+                    "probe": "ldbm_monitor",
+                    "error": format_error_message(e),
+                })
 
             try:
                 backends_obj = Backends(ds)
@@ -300,23 +408,28 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     except Exception as e:
                         mcp.logger.warning("Error getting monitor for backend %s: %s", be_name, e)
                         cache_data["backends"].append({"name": be_name, "error": format_error_message(e)})
+                        probe_failures.append({
+                            "probe": "backend_cache",
+                            "error": format_error_message(e),
+                        })
 
             except Exception as e:
                 mcp.logger.warning("Error listing backends: %s", e)
+                probe_failures.append({
+                    "probe": "backend_list",
+                    "error": format_error_message(e),
+                })
 
             backends_with_cache = [b for b in cache_data["backends"] if "entry_cache" in b]
-            if findings:
-                summary = f"ATTENTION: {len(findings)} cache issue(s) detected"
-            elif backends_with_cache:
+            if backends_with_cache:
                 avg_ratio = sum(
                     b.get("entry_cache", {}).get("hit_ratio", 0) for b in backends_with_cache
                 ) / len(backends_with_cache)
-                summary = f"HEALTHY: Average entry cache hit ratio {avg_ratio:.1f}% across {len(cache_data['backends'])} backend(s)"
+                healthy_summary = f"HEALTHY: Average entry cache hit ratio {avg_ratio:.1f}% across {len(cache_data['backends'])} backend(s)"
             else:
-                summary = "No backend cache data available"
+                healthy_summary = "No backend cache data available"
 
-            cache_data["summary"] = summary
-            cache_data["findings"] = findings
+            _finalize_drilldown(cache_data, findings, probe_failures, healthy_summary, "cache issue")
 
             return _sanitize_performance_result(mcp, cache_data)
 
@@ -360,6 +473,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             ds = mcp.connection_manager.connect(target)
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
+            probe_failures: List[Dict[str, str]] = []
+            is_local = is_local_server(mcp.connection_manager, target)
 
             try:
                 status = monitor.get_attrs_vals_utf8([
@@ -368,26 +483,59 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
+                probe_failures.append({
+                    "probe": "ldap_monitor",
+                    "error": format_error_message(e),
+                })
 
             current_conns = safe_int(status.get("currentconnections"))
             total_conns = safe_int(status.get("totalconnections"))
             dtable_size = safe_int(status.get("dtablesize"))
             read_waiters = safe_int(status.get("readwaiters"))
 
-            try:
-                resource_stats = monitor.get_resource_stats()
-                conn_count = safe_int(resource_stats.get("connection_count"))
-                conn_established = safe_int(resource_stats.get("connection_established_count"))
-                conn_close_wait = safe_int(resource_stats.get("connection_close_wait_count"))
-                conn_time_wait = safe_int(resource_stats.get("connection_time_wait_count"))
-            except Exception as e:
-                mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
-                conn_count = 0
-                conn_established = 0
-                conn_close_wait = 0
-                conn_time_wait = 0
+            # lib389 Monitor.get_resource_stats() inspects sockets on
+            # the MCP HOST via psutil (and does not raise for remote targets),
+            # so for a remote server it would report the wrong machine's
+            # connection states.  Only call it when the target is local.
+            conn_count: Optional[int] = None
+            conn_established: Optional[int] = None
+            conn_close_wait: Optional[int] = None
+            conn_time_wait: Optional[int] = None
+            states_available = False
+            states_reason: Optional[str] = None
+            if is_local:
+                try:
+                    resource_stats = monitor.get_resource_stats()
+                    conn_count = safe_int(resource_stats.get("connection_count"))
+                    conn_established = safe_int(resource_stats.get("connection_established_count"))
+                    conn_close_wait = safe_int(resource_stats.get("connection_close_wait_count"))
+                    conn_time_wait = safe_int(resource_stats.get("connection_time_wait_count"))
+                    states_available = True
+                except Exception as e:
+                    mcp.logger.debug("Resource stats unavailable: %s", e)
+                    states_reason = "Local connection state probe failed"
+                    probe_failures.append({
+                        "probe": "local_connection_states",
+                        "error": format_error_message(e),
+                    })
+            else:
+                states_reason = (
+                    "Connection state breakdown requires local server access "
+                    "(is_local=True); socket states measured on the MCP host "
+                    "would describe the MCP host, not the directory server"
+                )
 
             fd_utilization = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
+
+            connection_states: Dict[str, Any] = {
+                "available": states_available,
+                "total": conn_count,
+                "established": conn_established,
+                "close_wait": conn_close_wait,
+                "time_wait": conn_time_wait,
+            }
+            if states_reason:
+                connection_states["reason"] = states_reason
 
             conn_data = {
                 "type": "connection_statistics",
@@ -397,12 +545,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 "max_file_descriptors": dtable_size,
                 "fd_utilization_pct": fd_utilization,
                 "read_waiters": read_waiters,
-                "connection_states": {
-                    "total": conn_count,
-                    "established": conn_established,
-                    "close_wait": conn_close_wait,
-                    "time_wait": conn_time_wait,
-                },
+                "connection_states": connection_states,
             }
 
             if fd_utilization > 80:
@@ -433,17 +576,17 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             if read_waiters > 10:
                 findings.append(
                     format_finding(
-                        title="Connections Waiting for Read",
+                        title="Requests Waiting for Worker Threads",
                         severity=Severity.MEDIUM,
-                        impact=f"{read_waiters} connections waiting - potential bottleneck",
-                        details="Read waiters indicate clients waiting for server response",
-                        remediation="Check server load, consider adding more worker threads",
+                        impact=f"{read_waiters} connections have incoming requests waiting to be read/serviced - worker threads may be saturated",
+                        details="cn=monitor readwaiters counts connections whose requests are waiting for a worker thread to read and service them; sustained high values indicate worker thread saturation",
+                        remediation="Investigate what is occupying worker threads (e.g. long-running or unindexed searches). If load is legitimate and CPU headroom exists, review nsslapd-threadnumber (global worker thread pool).",
                         server=target,
                         metadata={"read_waiters": read_waiters},
                     )
                 )
 
-            if conn_close_wait > 50:
+            if conn_close_wait is not None and conn_close_wait > 50:
                 findings.append(
                     format_finding(
                         title="High CLOSE_WAIT Connections",
@@ -456,13 +599,11 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            if findings:
-                summary = f"ATTENTION: {len(findings)} connection issue(s) detected"
-            else:
-                summary = f"HEALTHY: {current_conns} active connections ({fd_utilization}% of max)"
-
-            conn_data["summary"] = summary
-            conn_data["findings"] = findings
+            _finalize_drilldown(
+                conn_data, findings, probe_failures,
+                f"HEALTHY: {current_conns} active connections ({fd_utilization}% of max)",
+                "connection issue",
+            )
 
             return _sanitize_performance_result(mcp, conn_data)
 
@@ -505,14 +646,23 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             ds = mcp.connection_manager.connect(target)
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
+            probe_failures: List[Dict[str, str]] = []
 
             try:
                 status = monitor.get_attrs_vals_utf8([
-                    'opsinitiated', 'opscompleted', 'entriessent', 'bytessent'
+                    'opsinitiated', 'opscompleted', 'entriessent', 'bytessent',
+                    'starttime', 'currenttime'
                 ])
             except Exception as e:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
+                probe_failures.append({
+                    "probe": "ldap_monitor",
+                    "error": format_error_message(e),
+                })
+
+            # Uptime basis for rate-converting cumulative SNMP counters
+            uptime_h = _uptime_hours(status)
 
             ops_initiated = safe_int(status.get("opsinitiated"))
             ops_completed = safe_int(status.get("opscompleted"))
@@ -571,37 +721,82 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     "referrals_returned": safe_int(snmp_status.get("referralsreturned")),
                 }
 
+                # bindsecurityerrors and errors are cumulative since
+                # server start — threshold on the per-hour rate when uptime is
+                # known, otherwise downgrade to LOW with an explicit caveat.
                 bind_errors = safe_int(snmp_status.get("bindsecurityerrors"))
-                if bind_errors > 100:
+                if uptime_h is not None:
+                    bind_error_rate = bind_errors / uptime_h
+                    if bind_error_rate > BIND_SECURITY_ERRORS_PER_HOUR:
+                        findings.append(
+                            format_finding(
+                                title="High Bind Security Error Rate",
+                                severity=Severity.MEDIUM,
+                                impact=f"~{bind_error_rate:.1f} bind security errors/hour ({bind_errors} cumulative over {uptime_h:.1f}h uptime)",
+                                details=f"bindSecurityErrors is cumulative since server start; the rate over {uptime_h:.1f}h of uptime exceeds {BIND_SECURITY_ERRORS_PER_HOUR:.0f}/hour and may indicate authentication issues or brute force attempts",
+                                remediation="Review access logs for failed bind patterns",
+                                server=target,
+                                metadata={
+                                    "bind_errors": bind_errors,
+                                    "rate_per_hour": round(bind_error_rate, 2),
+                                    "uptime_hours": round(uptime_h, 2),
+                                    "threshold_per_hour": BIND_SECURITY_ERRORS_PER_HOUR,
+                                },
+                            )
+                        )
+                elif bind_errors > BIND_SECURITY_ERRORS_CUMULATIVE_GATE:
                     findings.append(
                         format_finding(
-                            title="High Bind Security Errors",
-                            severity=Severity.MEDIUM,
-                            impact=f"{bind_errors} bind security errors detected",
-                            details="May indicate authentication issues or brute force attempts",
-                            remediation="Review access logs for failed bind patterns",
+                            title="Bind Security Errors Accumulated",
+                            severity=Severity.LOW,
+                            impact=f"{bind_errors} bind security errors accumulated since server start",
+                            details="bindSecurityErrors is a cumulative lifetime counter and server uptime was unavailable, so an hourly rate could not be computed - a large total on a long-running server may be normal",
+                            remediation="Review access logs for failed bind patterns to determine whether the errors are recent",
                             server=target,
-                            metadata={"bind_errors": bind_errors},
+                            metadata={"bind_errors": bind_errors, "uptime_hours": None, "basis": "cumulative"},
                         )
                     )
 
                 total_errors = safe_int(snmp_status.get("errors"))
-                if total_errors > 1000:
+                if uptime_h is not None:
+                    error_rate = total_errors / uptime_h
+                    if error_rate > TOTAL_ERRORS_PER_HOUR:
+                        findings.append(
+                            format_finding(
+                                title="High Error Rate",
+                                severity=Severity.MEDIUM,
+                                impact=f"~{error_rate:.1f} errors/hour ({total_errors} cumulative over {uptime_h:.1f}h uptime)",
+                                details=f"The errors counter is cumulative since server start; the rate over {uptime_h:.1f}h of uptime exceeds {TOTAL_ERRORS_PER_HOUR:.0f}/hour and may indicate configuration or client issues",
+                                remediation="Review error logs to identify patterns",
+                                server=target,
+                                metadata={
+                                    "total_errors": total_errors,
+                                    "rate_per_hour": round(error_rate, 2),
+                                    "uptime_hours": round(uptime_h, 2),
+                                    "threshold_per_hour": TOTAL_ERRORS_PER_HOUR,
+                                },
+                            )
+                        )
+                elif total_errors > TOTAL_ERRORS_CUMULATIVE_GATE:
                     findings.append(
                         format_finding(
-                            title="High Error Count",
-                            severity=Severity.MEDIUM,
-                            impact=f"{total_errors} total errors recorded",
-                            details="High error counts may indicate configuration or client issues",
-                            remediation="Review error logs to identify patterns",
+                            title="Errors Accumulated",
+                            severity=Severity.LOW,
+                            impact=f"{total_errors} total errors accumulated since server start",
+                            details="The errors counter is a cumulative lifetime counter and server uptime was unavailable, so an hourly rate could not be computed - a large total on a long-running server may be normal",
+                            remediation="Review error logs to determine whether the errors are recent",
                             server=target,
-                            metadata={"total_errors": total_errors},
+                            metadata={"total_errors": total_errors, "uptime_hours": None, "basis": "cumulative"},
                         )
                     )
 
             except Exception as e:
                 mcp.logger.warning("Error getting SNMP stats: %s", e)
                 op_data["operation_breakdown"] = {"error": format_error_message(e)}
+                probe_failures.append({
+                    "probe": "snmp_monitor",
+                    "error": format_error_message(e),
+                })
 
             if ops_pending > 100:
                 findings.append(
@@ -616,13 +811,11 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            if findings:
-                summary = f"ATTENTION: {len(findings)} operational issue(s) detected"
-            else:
-                summary = f"HEALTHY: {ops_completed:,} operations completed, {ops_pending} pending"
-
-            op_data["summary"] = summary
-            op_data["findings"] = findings
+            _finalize_drilldown(
+                op_data, findings, probe_failures,
+                f"HEALTHY: {ops_completed:,} operations completed, {ops_pending} pending",
+                "operational issue",
+            )
 
             return _sanitize_performance_result(mcp, op_data)
 
@@ -649,8 +842,14 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             server_name: Target server name. Uses default if not specified.
 
         Returns:
-            Thread count, connections-at-max-threads, per-connection thread
-            hits, utilization assessment, and tuning recommendations.
+            Current worker thread count from cn=monitor (reported as both
+            ``current_threads`` and the deprecated-but-retained
+            ``configured_threads`` key - the value is the CURRENT thread
+            count, not the configured nsslapd-threadnumber),
+            connections at the per-connection thread limit
+            (nsslapd-maxthreadsperconn), per-connection thread hits,
+            utilization assessment, and tuning recommendations. The process
+            thread count (``active_threads``) requires local server access.
         """
         target = server_name or mcp.default_server
         if not target:
@@ -665,69 +864,123 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             ds = mcp.connection_manager.connect(target)
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
+            probe_failures: List[Dict[str, str]] = []
+            is_local = is_local_server(mcp.connection_manager, target)
 
             try:
                 status = monitor.get_attrs_vals_utf8([
-                    'threads', 'currentconnectionsatmaxthreads', 'maxthreadsperconnhits'
+                    'threads', 'currentconnectionsatmaxthreads', 'maxthreadsperconnhits',
+                    'starttime', 'currenttime'
                 ])
             except Exception as e:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
+                probe_failures.append({
+                    "probe": "ldap_monitor",
+                    "error": format_error_message(e),
+                })
 
             threads = safe_int(status.get("threads"))
             conns_at_max_threads = safe_int(status.get("currentconnectionsatmaxthreads"))
             max_threads_hits = safe_int(status.get("maxthreadsperconnhits"))
+            # Uptime basis for rate-converting the cumulative
+            # maxThreadsPerConnHits counter
+            uptime_h = _uptime_hours(status)
 
-            # Get active thread count from resource stats (may fail for remote connections)
-            try:
-                resource_stats = monitor.get_resource_stats()
-                total_threads = safe_int(resource_stats.get("total_threads"))
-            except Exception as e:
-                mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
-                total_threads = 0
+            # The psutil-based process thread count comes from the MCP
+            # HOST, so for a remote server it would describe the wrong process.
+            # Only probe it when the target is local.
+            active_threads: Optional[int] = None
+            active_threads_available = False
+            active_threads_reason: Optional[str] = None
+            if is_local:
+                try:
+                    resource_stats = monitor.get_resource_stats()
+                    active_threads = safe_int(resource_stats.get("total_threads"))
+                    active_threads_available = True
+                except Exception as e:
+                    mcp.logger.debug("Resource stats unavailable: %s", e)
+                    active_threads_reason = "Local process thread probe failed"
+                    probe_failures.append({
+                        "probe": "local_threads",
+                        "error": format_error_message(e),
+                    })
+            else:
+                active_threads_reason = (
+                    "Process thread count requires local server access "
+                    "(is_local=True); a thread count measured on the MCP host "
+                    "would describe the MCP host process, not the directory server"
+                )
 
             thread_data = {
                 "type": "thread_statistics",
                 "server": target,
+                # cn=monitor `threads` is the CURRENT operational
+                # thread count, not the configured nsslapd-threadnumber.
+                # `configured_threads` is a deprecated name retained for
+                # response compatibility; prefer `current_threads`.
                 "configured_threads": threads,
-                "active_threads": total_threads,
+                "current_threads": threads,
+                "threads_source": "cn=monitor threads (current thread count)",
+                "active_threads": active_threads,
+                "active_threads_available": active_threads_available,
                 "connections_at_max_threads": conns_at_max_threads,
                 "max_threads_per_conn_hits": max_threads_hits,
             }
+            if active_threads_reason:
+                thread_data["active_threads_reason"] = active_threads_reason
 
             if conns_at_max_threads > 0:
                 findings.append(
                     format_finding(
-                        title="Connections Hitting Thread Limit",
+                        title="Connections at Per-Connection Thread Limit",
                         severity=Severity.HIGH,
-                        impact=f"{conns_at_max_threads} connections are at max thread limit",
-                        details="Connections are being throttled due to thread limits",
-                        remediation="Investigate server load patterns and CPU availability. If resources permit and thread contention persists under normal load, review nsslapd-threadnumber configuration. Consult server documentation for tuning best practices.",
+                        impact=f"{conns_at_max_threads} connection(s) are currently at the per-connection thread limit (nsslapd-maxthreadsperconn)",
+                        details="currentconnectionsatmaxthreads counts connections that have reached nsslapd-maxthreadsperconn; additional operations on those connections queue until one of their threads frees up",
+                        remediation="Identify clients issuing many concurrent operations over a single connection. If that behavior is legitimate, review nsslapd-maxthreadsperconn (the per-connection limit); only consider the global nsslapd-threadnumber if overall worker thread saturation is also observed.",
                         server=target,
-                        metadata={"at_max": conns_at_max_threads, "configured": threads},
+                        metadata={"at_max": conns_at_max_threads, "current_threads": threads},
                     )
                 )
 
-            if max_threads_hits > 100:
+            # maxThreadsPerConnHits is cumulative since server start.
+            if uptime_h is not None:
+                hits_rate = max_threads_hits / uptime_h
+                if hits_rate > MAX_THREADS_HITS_PER_HOUR:
+                    findings.append(
+                        format_finding(
+                            title="Frequent Max Threads Per Connection Hits",
+                            severity=Severity.MEDIUM,
+                            impact=f"Per-connection thread limit (nsslapd-maxthreadsperconn) hit ~{hits_rate:.1f} times/hour ({max_threads_hits} cumulative over {uptime_h:.1f}h uptime)",
+                            details=f"maxThreadsPerConnHits is cumulative since server start; the rate over {uptime_h:.1f}h of uptime exceeds {MAX_THREADS_HITS_PER_HOUR:.0f}/hour - single connections are repeatedly reaching their per-connection thread limit",
+                            remediation="Review nsslapd-maxthreadsperconn (per-connection limit) or investigate client behavior - identify clients issuing many concurrent operations on one connection",
+                            server=target,
+                            metadata={
+                                "hits": max_threads_hits,
+                                "rate_per_hour": round(hits_rate, 2),
+                                "uptime_hours": round(uptime_h, 2),
+                                "threshold_per_hour": MAX_THREADS_HITS_PER_HOUR,
+                            },
+                        )
+                    )
+            elif max_threads_hits > MAX_THREADS_HITS_CUMULATIVE_GATE:
                 findings.append(
                     format_finding(
-                        title="Frequent Max Threads Per Connection Hits",
-                        severity=Severity.MEDIUM,
-                        impact=f"Max threads per connection limit hit {max_threads_hits} times",
-                        details="Single connections are monopolizing thread pool",
-                        remediation="Review nsslapd-maxthreadsperconn setting or investigate client behavior",
+                        title="Max Threads Per Connection Hits Accumulated",
+                        severity=Severity.LOW,
+                        impact=f"Per-connection thread limit (nsslapd-maxthreadsperconn) hit {max_threads_hits} times since server start",
+                        details="maxThreadsPerConnHits is a cumulative lifetime counter and server uptime was unavailable, so an hourly rate could not be computed - a large total on a long-running server may be normal",
+                        remediation="Check whether the hits are recent (access log err=51 / notes) before tuning nsslapd-maxthreadsperconn (per-connection limit)",
                         server=target,
-                        metadata={"hits": max_threads_hits},
+                        metadata={"hits": max_threads_hits, "uptime_hours": None, "basis": "cumulative"},
                     )
                 )
 
-            if findings:
-                summary = f"ATTENTION: {len(findings)} thread utilization issue(s)"
-            else:
-                summary = f"HEALTHY: {threads} configured threads, no contention detected"
-
-            thread_data["summary"] = summary
-            thread_data["findings"] = findings
+            _finalize_drilldown(
+                thread_data, findings, probe_failures,
+                f"HEALTHY: {threads} worker threads currently running, no contention detected",
+                "thread utilization issue",
+            )
 
             return _sanitize_performance_result(mcp, thread_data)
 
@@ -771,6 +1024,7 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             ds = mcp.connection_manager.connect(target)
             monitor = Monitor(ds)
             findings: List[Dict[str, Any]] = []
+            probe_failures: List[Dict[str, str]] = []
 
             is_local = is_local_server(mcp.connection_manager, target)
 
@@ -780,6 +1034,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             except Exception as e:
                 mcp.logger.warning("Error getting monitor status: %s", e)
                 status = {}
+                probe_failures.append({
+                    "probe": "ldap_monitor",
+                    "error": format_error_message(e),
+                })
 
             # Get resource stats (requires local server with psutil access)
             resource_stats = {}
@@ -790,6 +1048,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     local_metrics_available = True
                 except Exception as e:
                     mcp.logger.debug("Resource stats unavailable: %s", e)
+                    probe_failures.append({
+                        "probe": "local_resources",
+                        "error": format_error_message(e),
+                    })
             else:
                 mcp.logger.debug("Skipping resource stats - server is remote")
                 findings.append(
@@ -908,6 +1170,10 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                 except Exception as e:
                     mcp.logger.warning("Error getting disk stats: %s", e)
                     resource_data["disk"] = {"available": False, "error": format_error_message(e)}
+                    probe_failures.append({
+                        "probe": "disk",
+                        "error": format_error_message(e),
+                    })
 
             if mem_rss_pct > 80:
                 findings.append(
@@ -935,17 +1201,23 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
                     )
                 )
 
-            if findings:
-                critical = sum(1 for f in findings if f.get("severity") == "critical")
-                if critical > 0:
-                    summary = f"CRITICAL: {critical} critical resource issue(s) require immediate attention"
-                else:
-                    summary = f"ATTENTION: {len(findings)} resource issue(s) detected"
+            critical = sum(1 for f in findings if f.get("severity") == "critical")
+            if critical > 0:
+                # Critical issues take precedence over coverage gaps, but the
+                # gap stays visible via evidence_status/probe_failures.
+                summary = f"CRITICAL: {critical} critical resource issue(s) require immediate attention"
+                if probe_failures:
+                    summary += f" ({len(probe_failures)} required probe(s) also failed)"
+                resource_data["summary"] = summary
+                resource_data["evidence_status"] = "partial" if probe_failures else "complete"
+                resource_data["probe_failures"] = probe_failures
+                resource_data["findings"] = findings
             else:
-                summary = f"HEALTHY: Memory {mem_rss_pct}%, CPU {cpu_usage}%"
-
-            resource_data["summary"] = summary
-            resource_data["findings"] = findings
+                _finalize_drilldown(
+                    resource_data, findings, probe_failures,
+                    f"HEALTHY: Memory {mem_rss_pct}%, CPU {cpu_usage}%",
+                    "resource issue",
+                )
 
             return _sanitize_performance_result(mcp, resource_data)
 
@@ -988,8 +1260,13 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
         try:
             ds = mcp.connection_manager.connect(target)
             monitor = Monitor(ds)
+            is_local = is_local_server(mcp.connection_manager, target)
 
             all_findings: List[Dict[str, Any]] = []
+            # Required probes that failed to deliver evidence. A "healthy"
+            # conclusion is impossible while this list is non-empty.
+            probe_failures: List[Dict[str, str]] = []
+            monitor_status_ok = False
             summary_data = {
                 "type": "performance_summary",
                 "server": target,
@@ -997,101 +1274,151 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             }
 
             try:
+                monitor_error = None
                 try:
                     status = monitor.get_attrs_vals_utf8([
                         'currentconnections', 'dtablesize', 'opsinitiated',
                         'opscompleted', 'threads', 'currentconnectionsatmaxthreads'
                     ])
+                    monitor_status_ok = True
                 except Exception as e:
                     mcp.logger.warning("Error getting monitor status: %s", e)
                     status = {}
+                    monitor_error = format_error_message(e)
+                    probe_failures.append({
+                        "probe": "ldap_monitor",
+                        "error": monitor_error,
+                    })
 
-                # Get resource stats (may fail for remote connections)
-                try:
-                    resource_stats = monitor.get_resource_stats()
-                except Exception as e:
-                    mcp.logger.debug("Resource stats unavailable (remote connection): %s", e)
-                    resource_stats = {}
+                # Process resource stats come from psutil on the MCP host, so
+                # they are only meaningful (and only required) for local servers.
+                resource_stats = {}
+                resources_error = None
+                if is_local:
+                    try:
+                        resource_stats = monitor.get_resource_stats()
+                    except Exception as e:
+                        mcp.logger.debug("Resource stats unavailable: %s", e)
+                        resources_error = format_error_message(e)
+                        probe_failures.append({
+                            "probe": "local_resources",
+                            "error": resources_error,
+                        })
 
-                current_conns = safe_int(status.get("currentconnections"))
-                dtable_size = safe_int(status.get("dtablesize"))
-                fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
+                if monitor_status_ok:
+                    current_conns = safe_int(status.get("currentconnections"))
+                    dtable_size = safe_int(status.get("dtablesize"))
+                    fd_util = round((current_conns / dtable_size * 100), 2) if dtable_size > 0 else 0
 
-                summary_data["metrics"]["connections"] = {
-                    "current": current_conns,
-                    "max": dtable_size,
-                    "utilization_pct": fd_util,
-                }
+                    summary_data["metrics"]["connections"] = {
+                        "current": current_conns,
+                        "max": dtable_size,
+                        "utilization_pct": fd_util,
+                    }
 
-                if fd_util > 80:
-                    all_findings.append(format_finding(
-                        title="High Connection Utilization",
-                        severity=Severity.HIGH,
-                        impact=f"{fd_util}% of file descriptors in use",
-                        details=f"Current: {current_conns}, Max: {dtable_size}",
-                        remediation="Investigate connection usage patterns before adjusting limits",
-                        server=target,
-                    ))
+                    if fd_util > 80:
+                        all_findings.append(format_finding(
+                            title="High Connection Utilization",
+                            severity=Severity.HIGH,
+                            impact=f"{fd_util}% of file descriptors in use",
+                            details=f"Current: {current_conns}, Max: {dtable_size}",
+                            remediation="Investigate connection usage patterns before adjusting limits",
+                            server=target,
+                        ))
 
-                ops_initiated = safe_int(status.get("opsinitiated"))
-                ops_completed = safe_int(status.get("opscompleted"))
-                ops_pending = ops_initiated - ops_completed
+                    ops_initiated = safe_int(status.get("opsinitiated"))
+                    ops_completed = safe_int(status.get("opscompleted"))
+                    ops_pending = ops_initiated - ops_completed
 
-                summary_data["metrics"]["operations"] = {
-                    "completed": ops_completed,
-                    "pending": ops_pending,
-                }
+                    summary_data["metrics"]["operations"] = {
+                        "completed": ops_completed,
+                        "pending": ops_pending,
+                    }
 
-                if ops_pending > 100:
-                    all_findings.append(format_finding(
-                        title="High Pending Operations",
-                        severity=Severity.HIGH,
-                        impact=f"{ops_pending} operations pending",
-                        details="Server may be overloaded",
-                        remediation="Check resources and consider scaling",
-                        server=target,
-                    ))
+                    if ops_pending > 100:
+                        all_findings.append(format_finding(
+                            title="High Pending Operations",
+                            severity=Severity.HIGH,
+                            impact=f"{ops_pending} operations pending",
+                            details="Server may be overloaded",
+                            remediation="Check resources and consider scaling",
+                            server=target,
+                        ))
 
-                threads = safe_int(status.get("threads"))
-                conns_at_max = safe_int(status.get("currentconnectionsatmaxthreads"))
+                    threads = safe_int(status.get("threads"))
+                    conns_at_max = safe_int(status.get("currentconnectionsatmaxthreads"))
 
-                summary_data["metrics"]["threads"] = {
-                    "configured": threads,
-                    "at_max_threads": conns_at_max,
-                }
+                    # cn=monitor `threads` is the CURRENT thread count,
+                    # not nsslapd-threadnumber. `configured` is a deprecated name
+                    # retained for compatibility; prefer `current`.
+                    summary_data["metrics"]["threads"] = {
+                        "configured": threads,
+                        "current": threads,
+                        "at_max_threads": conns_at_max,
+                    }
 
-                if conns_at_max > 0:
-                    all_findings.append(format_finding(
-                        title="Thread Contention",
-                        severity=Severity.HIGH,
-                        impact=f"{conns_at_max} connections at thread limit",
-                        details="Connections being throttled",
-                        remediation="Investigate thread contention patterns and available resources",
-                        server=target,
-                    ))
+                    if conns_at_max > 0:
+                        all_findings.append(format_finding(
+                            title="Thread Contention",
+                            severity=Severity.HIGH,
+                            impact=f"{conns_at_max} connection(s) at the per-connection thread limit (nsslapd-maxthreadsperconn)",
+                            details="Operations on those connections queue until one of their threads frees up",
+                            remediation="Use get_thread_statistics to investigate; review nsslapd-maxthreadsperconn (per-connection limit) if the client behavior is legitimate",
+                            server=target,
+                        ))
+                else:
+                    # A failed monitor read must not fabricate zero readings —
+                    # each dependent section carries an explicit error marker.
+                    monitor_error = monitor_error or "monitor status unavailable"
+                    summary_data["metrics"]["connections"] = {"error": monitor_error}
+                    summary_data["metrics"]["operations"] = {"error": monitor_error}
+                    summary_data["metrics"]["threads"] = {"error": monitor_error}
 
-                mem_rss_pct = safe_float(resource_stats.get("mem_rss_percent"))
-                rss = safe_int(resource_stats.get("rss"))
-                cpu = safe_float(resource_stats.get("cpu_usage"))
+                if is_local and resources_error is not None:
+                    summary_data["metrics"]["resources"] = {
+                        "memory_pct": None,
+                        "memory_human": None,
+                        "cpu_pct": None,
+                        "available": False,
+                        "error": resources_error,
+                    }
+                elif is_local:
+                    mem_rss_pct = safe_float(resource_stats.get("mem_rss_percent"))
+                    rss = safe_int(resource_stats.get("rss"))
+                    cpu = safe_float(resource_stats.get("cpu_usage"))
 
-                summary_data["metrics"]["resources"] = {
-                    "memory_pct": mem_rss_pct,
-                    "memory_human": format_bytes(rss),
-                    "cpu_pct": cpu,
-                }
+                    summary_data["metrics"]["resources"] = {
+                        "memory_pct": mem_rss_pct,
+                        "memory_human": format_bytes(rss),
+                        "cpu_pct": cpu,
+                    }
 
-                if mem_rss_pct > 80:
-                    all_findings.append(format_finding(
-                        title="High Memory Usage",
-                        severity=Severity.HIGH,
-                        impact=f"{mem_rss_pct}% of system memory",
-                        details=f"RSS: {format_bytes(rss)}",
-                        remediation="Investigate memory usage patterns and cache efficiency",
-                        server=target,
-                    ))
+                    if mem_rss_pct > 80:
+                        all_findings.append(format_finding(
+                            title="High Memory Usage",
+                            severity=Severity.HIGH,
+                            impact=f"{mem_rss_pct}% of system memory",
+                            details=f"RSS: {format_bytes(rss)}",
+                            remediation="Investigate memory usage patterns and cache efficiency",
+                            server=target,
+                        ))
+                else:
+                    # Remote target: host-process metrics would describe the
+                    # MCP host, not the directory server. Explicitly N/A.
+                    summary_data["metrics"]["resources"] = {
+                        "memory_pct": None,
+                        "memory_human": None,
+                        "cpu_pct": None,
+                        "available": False,
+                        "reason": "Process resource metrics require local server access (is_local=True)",
+                    }
 
             except Exception as e:
                 mcp.logger.warning("Error gathering performance metrics: %s", e)
+                probe_failures.append({
+                    "probe": "performance_metrics",
+                    "error": format_error_message(e),
+                })
 
             try:
                 ldbm_monitor = MonitorLDBM(ds)
@@ -1114,6 +1441,11 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
             except Exception as e:
                 mcp.logger.warning("Error getting cache metrics: %s", e)
+                summary_data["metrics"]["cache"] = {"error": format_error_message(e)}
+                probe_failures.append({
+                    "probe": "ldbm_cache",
+                    "error": format_error_message(e),
+                })
 
             severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
             all_findings.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 5))
@@ -1121,12 +1453,28 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
             critical_count = sum(1 for f in all_findings if f.get("severity") == "critical")
             high_count = sum(1 for f in all_findings if f.get("severity") == "high")
 
+            # The monitor status read is required evidence even when its
+            # failure was absorbed above — never conclude healthy without it.
+            if not monitor_status_ok and not any(p["probe"] == "ldap_monitor" for p in probe_failures):
+                probe_failures.append({
+                    "probe": "ldap_monitor",
+                    "error": "monitor status unavailable",
+                })
+
             if critical_count > 0:
                 overall_health = "critical"
                 summary = f"CRITICAL: {critical_count} critical issue(s) require immediate attention"
             elif high_count > 0:
                 overall_health = "degraded"
                 summary = f"DEGRADED: {high_count} high-priority issue(s) detected"
+            elif probe_failures:
+                overall_health = "unknown"
+                summary = (
+                    f"INCOMPLETE: {len(probe_failures)} required probe(s) failed - "
+                    "performance health cannot be confirmed"
+                )
+                if all_findings:
+                    summary += f"; {len(all_findings)} issue(s) found in collected evidence"
             elif all_findings:
                 overall_health = "fair"
                 summary = f"FAIR: {len(all_findings)} minor issue(s) detected"
@@ -1136,6 +1484,8 @@ def register_performance_tools(mcp: DirSrvMCP) -> None:
 
             summary_data["overall_health"] = overall_health
             summary_data["summary"] = summary
+            summary_data["evidence_status"] = "partial" if probe_failures else "complete"
+            summary_data["probe_failures"] = probe_failures
             summary_data["findings"] = all_findings
             summary_data["finding_count"] = {
                 "critical": critical_count,
