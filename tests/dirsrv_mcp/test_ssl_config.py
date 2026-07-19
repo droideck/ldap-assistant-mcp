@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
 
 from ldap_assistant_mcp.config.loader import _server_config_from_dict, ServerListConfig
 from ldap_assistant_mcp.dirsrv_mcp.connection import ConnectionManager, ServerConfig
@@ -302,9 +303,15 @@ class TestConfigLoaderSSL:
         assert config.use_ssl is False
         assert config.port == 389
 
-    def test_server_config_from_dict_explicit_use_ssl_overrides_url(self):
-        """Explicit use_ssl should override URL scheme inference."""
-        # This tests edge case: ldap:// URL but use_ssl=true
+    def test_server_config_from_dict_conflicting_use_ssl_raises(self):
+        """use_ssl conflicting with the URL scheme is a config error.
+
+        This test used to assert that an explicit use_ssl
+        silently OVERRODE the URL scheme (ldap:// + use_ssl=true was
+        reconstructed as ldaps://, and ldaps:// + use_ssl=false silently
+        downgraded to plaintext).  The URL is now authoritative and a
+        conflicting use_ssl raises at load time instead.
+        """
         data = {
             "name": "override-test",
             "ldap_url": "ldap://localhost:636",
@@ -313,8 +320,22 @@ class TestConfigLoaderSSL:
             "bind_dn": "cn=Directory Manager",
             "bind_password": "secret",
         }
+        with pytest.raises(ValueError, match="use_ssl"):
+            _server_config_from_dict(data)
+
+    def test_server_config_from_dict_matching_use_ssl_accepted(self):
+        """A use_ssl value consistent with the URL scheme stays accepted."""
+        data = {
+            "name": "consistent-test",
+            "ldap_url": "ldaps://secure.example.com:636",
+            "use_ssl": True,
+            "base_dn": "dc=test,dc=com",
+            "bind_dn": "cn=Directory Manager",
+            "bind_password": "secret",
+        }
         config = _server_config_from_dict(data)
         assert config.use_ssl is True
+        assert config.port == 636
 
 
 # Unit tests for ConnectionManager SSL support

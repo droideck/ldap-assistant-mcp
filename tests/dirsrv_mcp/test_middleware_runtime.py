@@ -71,7 +71,9 @@ async def test_timeout_middleware_leaves_fast_tools_alone():
 
 
 @pytest.mark.asyncio
-async def test_response_size_middleware_replaces_oversized_structured_content():
+async def test_response_size_middleware_fails_oversized_structured_content():
+    """An oversized structured result is a real tool error
+    (isError=true), not a silently-discarded payload logged as success."""
     server = _make_server()
 
     @server.tool
@@ -80,19 +82,19 @@ async def test_response_size_middleware_replaces_oversized_structured_content():
         return {"blob": "x" * 300_000}
 
     async with Client(server) as client:
-        result = await client.call_tool("huge_tool", {})
-        data = result.data
+        result = await client.call_tool_mcp("huge_tool", {})
 
-    # The structured channel must hold the small replacement payload,
-    # not 300k of data and not invalid JSON.
-    assert data["truncated"] is True
-    assert data["error"] == "response too large"
-    assert "hint" in data
-    assert "blob" not in data
+    assert result.isError is True
+    text = result.content[0].text
+    assert "Response too large" in text
+    assert "LAMCP-OVERSIZE-001" in text
+    assert "x" * 1000 not in text  # no partial blob leaks
 
 
 @pytest.mark.asyncio
-async def test_response_size_middleware_truncates_oversized_text_content():
+async def test_response_size_middleware_fails_oversized_text_content():
+    """Oversized dict results now fail on the structured channel before
+    the text channel is reached — the caller gets an explicit error."""
     server = _make_server()
 
     @server.tool
@@ -102,10 +104,9 @@ async def test_response_size_middleware_truncates_oversized_text_content():
 
     async with Client(server) as client:
         result = await client.call_tool_mcp("huge_text_tool", {})
-        text = result.content[0].text
 
-    assert len(text) < 300_000
-    assert "[TRUNCATED" in text
+    assert result.isError is True
+    assert "Response too large" in result.content[0].text
 
 
 @pytest.mark.asyncio

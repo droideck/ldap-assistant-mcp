@@ -7,7 +7,13 @@ import ldap
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from ldap_assistant_mcp.core import LDAPAssistantMCP, LDAPAuthMethod, LDAPServerConfig
+from ldap_assistant_mcp.core import (
+    LDAPAssistantMCP,
+    LDAPAuthMethod,
+    LDAPServerConfig,
+    _env_flag,
+    _is_loopback_host,
+)
 
 __all__ = ["OpenLDAPMCP"]
 
@@ -99,11 +105,46 @@ class OpenLDAPMCP(LDAPAssistantMCP):
                 f"Auth method '{config.auth_method.value}' is not supported for OpenLDAP bindings yet"
             )
 
+        # Refuse to send a simple-bind password over plain
+        # ldap:// to a non-loopback host — it would cross the network in
+        # cleartext.  Loopback (localhost, 127.0.0.0/8, ::1) stays allowed.
+        if (
+            config.auth_method == LDAPAuthMethod.SIMPLE
+            and config.bind_password
+            and not config.use_ssl
+            and not _is_loopback_host(config.hostname)
+            and not (
+                config.allow_insecure_plaintext
+                or _env_flag("LDAP_ALLOW_INSECURE_PLAINTEXT")
+            )
+        ):
+            raise ToolError(
+                f"Refusing to bind to server '{config.name}': a simple bind "
+                "over unencrypted ldap:// to a non-loopback host would send "
+                "the bind password across the network in cleartext. Try: "
+                "ldaps:// (use_ssl=true), or set allow_insecure_plaintext=true "
+                "in the server config (or LDAP_ALLOW_INSECURE_PLAINTEXT=true) "
+                "for isolated lab use."
+            )
+
         conn = ldap.initialize(config.ldap_url)
         conn.set_option(ldap.OPT_NETWORK_TIMEOUT, 10.0)
 
         if config.use_ssl:
-            conn.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, ldap.OPT_X_TLS_ALLOW)
+            # Honor the shared tls_verify setting instead of
+            # hard-coding OPT_X_TLS_ALLOW.  Certificates are verified by
+            # default; verification is relaxed only when the config
+            # explicitly sets tls_verify=false (trusted lab setups).
+            if config.tls_verify:
+                reqcert = ldap.OPT_X_TLS_HARD
+            else:
+                reqcert = ldap.OPT_X_TLS_NEVER
+                self.logger.warning(
+                    "TLS certificate verification DISABLED for server '%s' "
+                    "(tls_verify=false)",
+                    config.name,
+                )
+            conn.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, reqcert)
             conn.set_option(ldap.OPT_X_TLS_NEWCTX, 0)
 
         if config.auth_method == LDAPAuthMethod.SASL_EXTERNAL:

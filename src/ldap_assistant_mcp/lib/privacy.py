@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from typing import Any, Dict, List, Optional, Set
 
 # Pattern matchers for sensitive data
@@ -59,15 +60,121 @@ IPV6_ADDR_PATTERN = re.compile(
 # it never breaks determinism.
 _MAX_MAPPING_SIZE = 10_000
 
-# Attribute names that should always be redacted (case-insensitive)
+# Attribute names that should always be redacted (case-insensitive).
+# Membership checks must go through is_secret_attribute() so that LDAP
+# attribute options (userPassword;binary) and unknown-but-credential-like
+# names are caught too; this set alone is exact-match on normalized names.
 ALWAYS_REDACT_ATTRIBUTES: Set[str] = {
     # Credentials
     "userpassword", "userpkcs12", "sshpublickey",
     "usersmimecertificate", "usercertificate",
     "nsslapd-rootpw", "nsds5replicacredentials",
+    # 389 DS replication / chaining / encryption secrets
+    "nsds5replicabootstrapcredentials", "nsmultiplexorcredentials",
+    "nssymmetrickey",
+    # Password history (stores previous password hashes on user entries)
+    "passwordhistory", "pwdhistory",
+    # Cleartext password pseudo-attribute (changelog/audit contexts)
+    "unhashed#user#password",
+    # Samba / Kerberos / FreeIPA key material (schemas shipped with or
+    # commonly deployed on 389 DS)
+    "sambalmpassword", "sambantpassword",
+    "krbprincipalkey", "krbmkey",
+    "ipanthash", "ipatokenotpkey",
     # Binary data
     "jpegphoto", "photo", "audio",
 }
+
+# Substrings that mark an attribute name as credential-bearing when it is
+# not in ALWAYS_REDACT_ATTRIBUTES (fail-closed family matching for names
+# we have never seen, e.g. "adminPassword" or "bindCredentials").
+_SECRET_ATTRIBUTE_FAMILIES = (
+    "password", "credential", "passphrase", "secret",
+    "symmetrickey", "pwdhistory",
+)
+
+# 389 DS password POLICY and per-user password STATE attributes.  Their
+# names contain "password" but their values are switches, counts,
+# timestamps, scheme names, or DNs — never password material — and they
+# are essential for lockout/expiration diagnostics.  This is an explicit
+# vetted allowlist: any password-like name NOT listed here is treated as
+# secret (fail closed).  Names here can never override
+# ALWAYS_REDACT_ATTRIBUTES (the deny check runs first).
+_NON_SECRET_PASSWORD_LIKE_ATTRIBUTES: Set[str] = {
+    # Policy configuration (cn=config / subtree / user policy entries)
+    "passwordstoragescheme", "passwordchange", "passwordmustchange",
+    "passwordinhistory", "passwordadmindn", "passwordadminskipinfoupdate",
+    "passwordtrackupdatetime", "passwordwarning", "passwordisglobalpolicy",
+    "passwordexp", "passwordmaxage", "passwordminage",
+    "passwordgracelimit", "passwordsendexpiringtime", "passwordlockout",
+    "passwordunlock", "passwordlockoutduration", "passwordmaxfailure",
+    "passwordresetfailurecount", "passwordchecksyntax",
+    "passwordminlength", "passwordmindigits", "passwordminalphas",
+    "passwordminuppers", "passwordminlowers", "passwordminspecials",
+    "passwordmin8bit", "passwordmaxrepeats", "passwordpalindrome",
+    "passwordmaxsequence", "passwordmaxseqsets", "passwordmaxclasschars",
+    "passwordmincategories", "passwordmintokenlength", "passwordbadwords",
+    "passworduserattributes", "passworddictcheck", "passworddictpath",
+    "passwordtprmaxuse", "passwordtprdelayexpireat",
+    "passwordtprdelayvalidfrom",
+    "nsslapd-pwpolicy-local", "nsslapd-pwpolicy-inherit-global",
+    "nsslapd-allow-hashed-passwords",
+    # Per-user operational password state (lockout/expiry diagnostics)
+    "passwordexpirationtime", "passwordexpwarned", "passwordretrycount",
+    "passwordgraceusertime", "passwordallowchangetime",
+    # Standard DN-valued attribute (RFC 4519) that merely contains the
+    # substring "secret"; its value is a DN, handled by the identifier
+    # sanitization paths.
+    "secretary",
+}
+
+
+def normalize_attribute_name(attr: Any) -> str:
+    """Normalize an LDAP attribute description for secret matching.
+
+    Strips LDAP attribute options (everything from the first ``;``, e.g.
+    ``userPassword;binary`` -> ``userpassword``), surrounding whitespace,
+    and lowercases.  Unparseable input normalizes to ``""`` so that
+    :func:`is_secret_attribute` fails closed on it.
+    """
+    if attr is None:
+        return ""
+    if isinstance(attr, bytes):
+        try:
+            attr = attr.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    try:
+        name = str(attr)
+    except Exception:
+        return ""
+    return name.split(";", 1)[0].strip().lower()
+
+
+def is_secret_attribute(attr: Any) -> bool:
+    """Return True if *attr* names a credential/secret-bearing attribute.
+
+    Fail-closed matching on the normalized name (options stripped,
+    lowercased):
+
+    1. Empty/unparseable names are treated as secret.
+    2. Exact membership in :data:`ALWAYS_REDACT_ATTRIBUTES`.
+    3. Vetted password-policy/state names are explicitly NOT secret.
+    4. Any other name containing a credential family substring
+       ("password", "credential", "passphrase", "secret",
+       "symmetrickey", "pwdhistory") is secret.
+
+    Use this only to decide whether a VALUE must be withheld — never to
+    hide attribute names themselves from schema/name listings.
+    """
+    normalized = normalize_attribute_name(attr)
+    if not normalized:
+        return True
+    if normalized in ALWAYS_REDACT_ATTRIBUTES:
+        return True
+    if normalized in _NON_SECRET_PASSWORD_LIKE_ATTRIBUTES:
+        return False
+    return any(family in normalized for family in _SECRET_ATTRIBUTE_FAMILIES)
 
 # Attribute names containing sensitive identifiers
 SENSITIVE_IDENTIFIER_ATTRIBUTES: Set[str] = {
@@ -107,6 +214,12 @@ class PrivacySanitizer:
     def __init__(self) -> None:
         """Initialize the sanitizer with a random key and empty caches."""
         self._key: bytes = os.urandom(16)
+        # Single lock guarding all mapping caches: FastMCP runs sync tools
+        # in a worker-thread pool, so concurrent tool calls may insert and
+        # evict on the same dict.  Tokens come from a keyed hash, so
+        # locking only protects the cache structure — determinism is
+        # unaffected.
+        self._lock = threading.Lock()
         self._hostname_map: Dict[str, str] = {}
         self._dn_map: Dict[str, str] = {}
         self._suffix_map: Dict[str, str] = {}
@@ -117,13 +230,14 @@ class PrivacySanitizer:
 
     def reset(self) -> None:
         """Reset all anonymization mapping caches."""
-        self._hostname_map.clear()
-        self._dn_map.clear()
-        self._suffix_map.clear()
-        self._server_map.clear()
-        self._user_map.clear()
-        self._group_map.clear()
-        self._ip_map.clear()
+        with self._lock:
+            self._hostname_map.clear()
+            self._dn_map.clear()
+            self._suffix_map.clear()
+            self._server_map.clear()
+            self._user_map.clear()
+            self._group_map.clear()
+            self._ip_map.clear()
 
     def _token(self, category: str, value: str) -> str:
         """Derive a deterministic placeholder token from *value*.
@@ -153,6 +267,10 @@ class PrivacySanitizer:
         the oldest.  Because placeholders are derived from a keyed hash,
         re-inserting an evicted key later yields the same token, keeping
         anonymization consistent across evictions.
+
+        Callers must hold ``self._lock``: concurrent eviction otherwise
+        races (``del`` on an already-deleted key) and an insert-then-read
+        in ``_get_anon_*`` can observe its own entry evicted.
         """
         if key not in mapping and len(mapping) >= _MAX_MAPPING_SIZE:
             for old_key in list(mapping)[:_MAX_MAPPING_SIZE // 2]:
@@ -164,54 +282,60 @@ class PrivacySanitizer:
         if not hostname:
             return hostname
         key = hostname.lower()
-        if key not in self._hostname_map:
-            self._bounded_insert(self._hostname_map, key, f"[host-{self._token('host', key)}]")
-        return self._hostname_map[key]
+        with self._lock:
+            if key not in self._hostname_map:
+                self._bounded_insert(self._hostname_map, key, f"[host-{self._token('host', key)}]")
+            return self._hostname_map[key]
 
     def _get_anon_server(self, server_name: str) -> str:
         """Get anonymized server name, deterministic within this session."""
         if not server_name:
             return server_name
         key = server_name.lower()
-        if key not in self._server_map:
-            self._bounded_insert(self._server_map, key, f"[server-{self._token('server', key)}]")
-        return self._server_map[key]
+        with self._lock:
+            if key not in self._server_map:
+                self._bounded_insert(self._server_map, key, f"[server-{self._token('server', key)}]")
+            return self._server_map[key]
 
     def _get_anon_suffix(self, suffix: str) -> str:
         """Get anonymized suffix, deterministic within this session."""
         if not suffix:
             return suffix
         key = suffix.lower()
-        if key not in self._suffix_map:
-            self._bounded_insert(self._suffix_map, key, f"[suffix-{self._token('suffix', key)}]")
-        return self._suffix_map[key]
+        with self._lock:
+            if key not in self._suffix_map:
+                self._bounded_insert(self._suffix_map, key, f"[suffix-{self._token('suffix', key)}]")
+            return self._suffix_map[key]
 
     def _get_anon_dn(self, dn: str) -> str:
         """Get anonymized DN, deterministic within this session."""
         if not dn:
             return dn
         key = dn.lower()
-        if key not in self._dn_map:
-            self._bounded_insert(self._dn_map, key, f"[entry-{self._token('entry', key)}]")
-        return self._dn_map[key]
+        with self._lock:
+            if key not in self._dn_map:
+                self._bounded_insert(self._dn_map, key, f"[entry-{self._token('entry', key)}]")
+            return self._dn_map[key]
 
     def _get_anon_user(self, user: str) -> str:
         """Get anonymized user, deterministic within this session."""
         if not user:
             return user
         key = user.lower()
-        if key not in self._user_map:
-            self._bounded_insert(self._user_map, key, f"[user-{self._token('user', key)}]")
-        return self._user_map[key]
+        with self._lock:
+            if key not in self._user_map:
+                self._bounded_insert(self._user_map, key, f"[user-{self._token('user', key)}]")
+            return self._user_map[key]
 
     def _get_anon_group(self, group: str) -> str:
         """Get anonymized group, deterministic within this session."""
         if not group:
             return group
         key = group.lower()
-        if key not in self._group_map:
-            self._bounded_insert(self._group_map, key, f"[group-{self._token('group', key)}]")
-        return self._group_map[key]
+        with self._lock:
+            if key not in self._group_map:
+                self._bounded_insert(self._group_map, key, f"[group-{self._token('group', key)}]")
+            return self._group_map[key]
 
     def _get_anon_ip(self, address: str) -> str:
         """Get anonymized IP address, deterministic within this session."""
@@ -219,9 +343,10 @@ class PrivacySanitizer:
             return address
         # Strip brackets so [2001:db8::1] and 2001:db8::1 share one token.
         key = address.strip("[]").lower()
-        if key not in self._ip_map:
-            self._bounded_insert(self._ip_map, key, f"[ip-{self._token('ip', key)}]")
-        return self._ip_map[key]
+        with self._lock:
+            if key not in self._ip_map:
+                self._bounded_insert(self._ip_map, key, f"[ip-{self._token('ip', key)}]")
+            return self._ip_map[key]
 
     def sanitize_hostname(self, hostname: Optional[str]) -> Optional[str]:
         """Sanitize a hostname value."""
@@ -278,8 +403,9 @@ class PrivacySanitizer:
         """
         attr_lower = attr_name.lower()
 
-        # Always redact credentials and binary data
-        if attr_lower in ALWAYS_REDACT_ATTRIBUTES:
+        # Always redact credentials and binary data — including attribute
+        # options (userPassword;binary) and unlisted credential-like names.
+        if is_secret_attribute(attr_name):
             return "[REDACTED]"
 
         # Handle lists
@@ -365,9 +491,16 @@ class PrivacySanitizer:
         text = re.sub(r'ldaps?://\S+', '[ldap-url]', text, flags=re.IGNORECASE)
         # 2. File paths (absolute, at least 2 segments: /dir/file)
         text = re.sub(r'(?<![.\w])/(?:[a-zA-Z0-9._-]+/)+[a-zA-Z0-9._-]+', '[path]', text)
-        # 3. LDAP DNs (require at least 2 comma-separated attr=value components)
+        # 2b. Bare single-segment system paths (/etc, /var, ...)
         text = re.sub(
-            r'\b[a-zA-Z][a-zA-Z0-9-]*=[^,\s]+(?:,[a-zA-Z][a-zA-Z0-9-]*=[^,\s]+)+',
+            r'(?<![.\w])/(?:etc|var|usr|opt|home|root|srv|tmp|run|data)\b(?!/)',
+            '[path]', text,
+        )
+        # 3. LDAP DNs (>=2 comma-separated attr=value components; inner
+        # values may contain spaces — "cn=John Smith,ou=..." must match)
+        text = re.sub(
+            r'\b[a-zA-Z][a-zA-Z0-9-]*=[^,\n]+(?:,\s*[a-zA-Z][a-zA-Z0-9-]*=[^,\n]+)*'
+            r',\s*[a-zA-Z][a-zA-Z0-9-]*=[^,\s]+',
             '[dn]', text,
         )
         # 4. IP address literals (deterministic tokens, like hostnames)
@@ -384,6 +517,14 @@ class PrivacySanitizer:
             r'tw|hk|sg|za|mx)\b',
             '[hostname]', text, flags=re.IGNORECASE,
         )
+        # 6b. Fail-closed generic dotted names: internal hostnames use
+        # arbitrary TLDs ("ldapserver.prodnet"), so any remaining
+        # multi-label dotted token is treated as a hostname unless its
+        # final label is a known file extension.
+        text = _GENERIC_DOTTED_NAME_RE.sub(_redact_generic_hostname, text)
+        # Collapse partial matches ("[hostname].megacorp") left when the
+        # known-TLD rule matched only a prefix of a longer dotted name.
+        text = re.sub(r"\[hostname\](?:\.[a-zA-Z][a-zA-Z0-9-]+)+", "[hostname]", text)
         # 7. Port numbers after placeholders
         text = re.sub(r'\[hostname\]:\d+', '[hostname]:[port]', text)
         text = re.sub(r'\[dn\]:\d+', '[dn]:[port]', text)
@@ -612,27 +753,33 @@ class PrivacySanitizer:
 def strip_credential_attributes(attrs: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of *attrs* without credential/binary attributes.
 
-    Attributes in :data:`ALWAYS_REDACT_ATTRIBUTES` (userPassword,
-    nsslapd-rootpw, certificates, ...) are never diagnostically useful,
-    so they are stripped from tool outputs unconditionally — in both
-    privacy and sensitive-data modes.
+    Attributes matched by :func:`is_secret_attribute` (userPassword —
+    with or without ;options — nsslapd-rootpw, certificates, password
+    history, unlisted credential-like names, ...) are never
+    diagnostically useful, so they are stripped from tool outputs
+    unconditionally — in both privacy and sensitive-data modes.
     """
     return {
         key: value
         for key, value in attrs.items()
-        if key.lower() not in ALWAYS_REDACT_ATTRIBUTES
+        if not is_secret_attribute(key)
     }
 
 
-# Global sanitizer instance for consistent anonymization within a session
+# Global sanitizer instance for process-level consumers (e.g. the stderr
+# logging filter in core.py).  Tool outputs use the per-DirSrvMCP-instance
+# sanitizer instead (per-investigation pseudonym scope).
 _global_sanitizer: Optional[PrivacySanitizer] = None
+_global_sanitizer_lock = threading.Lock()
 
 
 def get_sanitizer() -> PrivacySanitizer:
     """Get or create the global privacy sanitizer instance."""
     global _global_sanitizer
     if _global_sanitizer is None:
-        _global_sanitizer = PrivacySanitizer()
+        with _global_sanitizer_lock:
+            if _global_sanitizer is None:
+                _global_sanitizer = PrivacySanitizer()
     return _global_sanitizer
 
 
@@ -649,9 +796,52 @@ def create_privacy_error(tool_name: str) -> Dict[str, Any]:
         "type": "privacy_restricted",
         "error": f"Tool '{tool_name}' is disabled in privacy mode. "
                  "Set LDAP_MCP_EXPOSE_SENSITIVE_DATA=true to enable.",
+        "error_code": "LAMCP-PRIVACY-001",
+        "category": "privacy_restricted",
+        "retryable": False,
         "hint": "This tool exposes sensitive directory data. Enable "
                 "expose_sensitive_data in settings for full access.",
     }
+
+
+_GENERIC_DOTTED_NAME_RE = re.compile(
+    r"\b(?:[a-zA-Z0-9][a-zA-Z0-9-]*\.)+[a-zA-Z][a-zA-Z0-9-]+\b"
+)
+
+# Dotted tokens ending in these labels are file names, not hostnames.
+_FILE_EXT_ALLOWLIST = {
+    "py", "txt", "log", "json", "md", "sh", "ldif", "db", "conf", "cfg",
+    "html", "xml", "yml", "yaml", "toml", "gz", "tar", "tgz", "zip",
+    "pem", "crt", "csr", "key", "csv", "ini", "service", "socket",
+    "rpm", "whl", "lock", "bak", "tmp", "pid", "ldb", "mdb", "so",
+}
+
+
+def _redact_generic_hostname(match: "re.Match[str]") -> str:
+    token = match.group(0)
+    last_label = token.rsplit(".", 1)[-1].lower()
+    if last_label in _FILE_EXT_ALLOWLIST:
+        return token
+    return "[hostname]"
+
+
+def bucket_count(count: int) -> str:
+    """Coarse count bucket for privacy mode.
+
+    Exact counts for attacker-controlled filters form a count oracle that
+    can extract attribute values character by character; buckets keep the
+    diagnostic value ("are there matches, roughly how many") without the
+    oracle precision.
+    """
+    if count <= 0:
+        return "0"
+    if count <= 5:
+        return "1-5"
+    if count <= 20:
+        return "6-20"
+    if count <= 100:
+        return "21-100"
+    return "100+"
 
 
 def create_count_only_response(

@@ -252,8 +252,15 @@ class TestTlsVerify:
         open_mock.assert_called_once_with(reqcert=ldap.OPT_X_TLS_NEVER)
 
     def test_plain_ldap_does_not_force_reqcert(self):
+        # allow_insecure_plaintext=True: a simple bind with
+        # a password over ldap:// to a non-loopback host is refused unless
+        # explicitly allowed; this test only cares about reqcert handling.
         open_mock = self._connect_and_capture_open(
-            _live_config(name="plain", ldap_url="ldap://remote.example.com:389")
+            _live_config(
+                name="plain",
+                ldap_url="ldap://remote.example.com:389",
+                allow_insecure_plaintext=True,
+            )
         )
         open_mock.assert_called_once_with()
 
@@ -363,14 +370,15 @@ class _FakeResult:
 
 
 class TestResponseSizeStructuredContent:
-    def test_oversized_structured_content_replaced(self):
+    def test_oversized_structured_content_raises_tool_error(self):
+        """Oversize is a real tool error (isError=true), not a
+        silently-replaced payload logged as success."""
         mw = ResponseSizeMiddleware(max_chars=100)
         result = _FakeResult(structured_content={"data": "x" * 500})
-        guarded = mw._guard(result)
-        sc = guarded.structured_content
-        assert sc["error"] == "response too large"
-        assert sc["truncated"] is True
-        assert sc["hint"]
+        with pytest.raises(ToolError) as exc:
+            mw._guard(result)
+        assert "Response too large" in str(exc.value)
+        assert "LAMCP-OVERSIZE-001" in str(exc.value)
 
     def test_small_structured_content_untouched(self):
         mw = ResponseSizeMiddleware(max_chars=100)
@@ -390,19 +398,17 @@ class TestResponseSizeStructuredContent:
         assert "[TRUNCATED" in text
         assert len(text) < 500
 
-    def test_real_fastmcp_toolresult_structured_replacement(self):
+    def test_real_fastmcp_toolresult_oversize_raises(self):
         from fastmcp.tools.tool import ToolResult
 
         mw = ResponseSizeMiddleware(max_chars=100)
         result = ToolResult(structured_content={"data": "z" * 500})
-        guarded = mw._guard(result)
-        assert guarded.structured_content["truncated"] is True
-        assert guarded.structured_content["error"] == "response too large"
+        with pytest.raises(ToolError):
+            mw._guard(result)
 
-    def test_replacement_payload_is_within_limit(self):
-        import json
-
+    def test_oversize_error_names_the_limit(self):
         mw = ResponseSizeMiddleware(max_chars=1000)
         result = _FakeResult(structured_content={"data": "x" * 5000})
-        guarded = mw._guard(result)
-        assert len(json.dumps(guarded.structured_content)) <= 1000
+        with pytest.raises(ToolError) as exc:
+            mw._guard(result)
+        assert "1000" in str(exc.value)

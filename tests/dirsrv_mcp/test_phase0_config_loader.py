@@ -42,12 +42,17 @@ def clean_config_env(monkeypatch):
 
 
 def _write_config(tmp_path, data, name="servers.json"):
-    """Write *data* as JSON (or raw text if a string) and return the path."""
+    """Write *data* as JSON (or raw text if a string) and return the path.
+
+    Config files carrying an inline bind_password must be owner-only
+    readable, so mirror production and chmod 600.
+    """
     path = tmp_path / name
     if isinstance(data, str):
         path.write_text(data)
     else:
         path.write_text(json.dumps(data))
+    path.chmod(0o600)
     return str(path)
 
 

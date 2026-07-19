@@ -60,6 +60,15 @@ def format_tool_error(
         error_msg = mcp.sanitizer.sanitize_text(error_msg)
     result["error"] = error_msg
 
+    # Stable machine-readable classification so clients can branch
+    # on failures without parsing prose.
+    from ldap_assistant_mcp.lib.envelope import classify_exception
+
+    error_code, category, retryable = classify_exception(exc)
+    result["error_code"] = error_code
+    result["category"] = category
+    result["retryable"] = retryable
+
     # Mode errors (e.g. LiveServerRequired) carry alternative tool names so
     # LLM clients can continue on the same server.  Tool names are part of
     # the public schema, so they bypass the privacy scrub.

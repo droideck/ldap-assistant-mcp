@@ -28,7 +28,18 @@ class LoggingMiddleware(Middleware):
         logger.info("tool_call_start tool=%s", tool_name)
         try:
             result = await call_next(context)
-            logger.info("tool_call_end tool=%s status=ok", tool_name)
+            # An error-shaped dict result is a failed call, not a success —
+            # logging it status=ok would misreport failures as healthy calls.
+            structured = getattr(result, "structured_content", None)
+            if isinstance(structured, dict) and "error" in structured:
+                code = structured.get("error_code", "")
+                logger.warning(
+                    "tool_call_end tool=%s status=error_result%s",
+                    tool_name,
+                    f" error_code={code}" if code else "",
+                )
+            else:
+                logger.info("tool_call_end tool=%s status=ok", tool_name)
             return result
         except Exception as exc:
             logger.error(
@@ -85,11 +96,28 @@ class TimeoutMiddleware(Middleware):
         except asyncio.TimeoutError:
             logger.error("tool_timeout tool=%s timeout=%.1f", tool_name, timeout)
             task.cancel()
+            cleaned_up = True
             try:
                 await asyncio.wait_for(task, timeout=self.cleanup_grace)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except asyncio.CancelledError:
                 pass
-            raise ToolError(f"Operation timed out after {timeout}s")
+            except asyncio.TimeoutError:
+                cleaned_up = False
+            # Cancellation truth: sync tools run in a worker thread that
+            # asyncio cannot interrupt, so the work may still be running.
+            continuation = (
+                "The worker was cancelled and cleaned up."
+                if cleaned_up
+                else (
+                    "The server-side worker did not stop within the grace "
+                    "period and may still be running; its result is discarded."
+                )
+            )
+            raise ToolError(
+                f"Operation timed out after {timeout}s. {continuation} "
+                "Narrow the query (smaller limit, tighter filter, single "
+                "server) before retrying. [LAMCP-TIMEOUT-001]"
+            )
 
 
 class ResponseSizeMiddleware(Middleware):
@@ -147,11 +175,13 @@ class ResponseSizeMiddleware(Middleware):
         return result
 
     def _guard_structured(self, result: Any) -> Any:
-        """Replace oversized structured content with a small valid payload.
+        """Fail oversized structured content as a real MCP error.
 
         Structured results are JSON, so cutting them mid-stream would hand
-        clients an unparseable blob.  Replacement keeps the channel valid
-        while telling the model how to recover.
+        clients an unparseable blob. Discarding the evidence while
+        reporting the call as successful (the previous behavior) made the
+        loss invisible — an oversized result is now a proper tool error
+        (``isError=true``) telling the model how to recover.
         """
         structured = getattr(result, "structured_content", None)
         if structured is None:
@@ -164,22 +194,15 @@ class ResponseSizeMiddleware(Middleware):
         if serialized_size <= self.max_chars:
             return result
 
-        logger.warning(
-            "structured_content_truncated size=%d limit=%d",
+        logger.error(
+            "structured_content_oversize size=%d limit=%d",
             serialized_size,
             self.max_chars,
         )
-        payload = {
-            "error": "response too large",
-            "truncated": True,
-            "hint": (
-                f"Structured result exceeded {self.max_chars} characters. "
-                "Narrow the query — use a smaller 'limit', a more specific "
-                "filter or section, or target a single server — and retry."
-            ),
-        }
-        try:
-            result = result.model_copy(update={"structured_content": payload})
-        except (AttributeError, TypeError):
-            result.structured_content = payload
-        return result
+        raise ToolError(
+            f"Response too large: structured result was {serialized_size} "
+            f"characters (limit {self.max_chars}). No partial data was "
+            "returned. Narrow the query — use a smaller 'limit', a more "
+            "specific filter or section, or target a single server — and "
+            "retry. [LAMCP-OVERSIZE-001]"
+        )

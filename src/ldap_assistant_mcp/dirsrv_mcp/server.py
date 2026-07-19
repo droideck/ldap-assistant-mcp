@@ -39,7 +39,7 @@ from ldap_assistant_mcp.core import (
     MCPSettings,
     configure_package_logging,
 )
-from ldap_assistant_mcp.lib.privacy import PrivacySanitizer, get_sanitizer
+from ldap_assistant_mcp.lib.privacy import PrivacySanitizer
 
 __all__ = ["DirSrvMCP"]
 
@@ -137,7 +137,12 @@ class DirSrvMCP(LDAPAssistantMCP):
             lifespan=_server_lifespan,
             **kwargs,
         )
-        self._sanitizer = get_sanitizer()
+        # Per-instance sanitizer: each DirSrvMCP instance gets its own
+        # pseudonym scope (own random key), so tokens from one
+        # investigation/server instance can never be correlated with
+        # another's.  The process-global get_sanitizer() remains
+        # for process-level consumers such as the stderr logging filter.
+        self._sanitizer = PrivacySanitizer()
 
         self.connection_manager = connection_manager or ConnectionManager()
         for cfg in self.server_configs.values():

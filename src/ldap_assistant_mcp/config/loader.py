@@ -7,7 +7,14 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from ldap_assistant_mcp.core import LDAPAuthMethod, LDAPServerConfig, MCPSettings
+from ldap_assistant_mcp.core import (
+    LDAPAuthMethod,
+    LDAPServerConfig,
+    MCPSettings,
+    env_strict_bool,
+    parse_strict_bool,
+    resolve_bind_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +34,25 @@ class ServerListConfig:
                 "port": s.port,
                 "use_ssl": s.use_ssl,
                 "bind_dn": s.bind_dn,
-                "bind_password": s.bind_password,
+                # Never serialize the secret itself — only whether
+                # one is configured.  Indirection sources (env var name /
+                # file path) are kept so a dump can be re-loaded.
+                "bind_password_set": bool(
+                    s.bind_password or s.bind_password_env or s.bind_password_file
+                ),
                 "base_dn": s.base_dn,
                 "auth_method": s.auth_method.value,
                 "provider_type": s.provider_type,
             }
+            if s.bind_password_env:
+                server_dict["bind_password_env"] = s.bind_password_env
+            if s.bind_password_file:
+                server_dict["bind_password_file"] = s.bind_password_file
             # Only include tls_verify when it differs from the (safe) default
             if not s.tls_verify:
                 server_dict["tls_verify"] = False
+            if s.allow_insecure_plaintext:
+                server_dict["allow_insecure_plaintext"] = True
             # Only include local fields if configured
             if s.is_local:
                 server_dict["is_local"] = s.is_local
@@ -69,9 +87,18 @@ class ServerListConfig:
             base_dir: Directory to resolve relative paths against (typically
                 the directory containing the JSON config file).
         """
-        servers = []
-        for server_data in data.get("servers", []):
-            servers.append(_server_config_from_dict(server_data, base_dir=base_dir))
+        servers: List[LDAPServerConfig] = []
+        seen_names: Dict[str, int] = {}
+        for index, server_data in enumerate(data.get("servers", [])):
+            server = _server_config_from_dict(server_data, base_dir=base_dir)
+            if server.name in seen_names:
+                raise ValueError(
+                    f"Duplicate server name '{server.name}' in configuration "
+                    f"(entries #{seen_names[server.name] + 1} and #{index + 1}). "
+                    "Server names must be unique."
+                )
+            seen_names[server.name] = index
+            servers.append(server)
 
         settings_data = data.get("settings", {})
         settings = _settings_from_dict(settings_data)
@@ -118,6 +145,15 @@ def load_config(
 
     Note: For local instances (is_local=true), the serverid field is required.
     This enables access to server log files, config files, and other local resources.
+
+    Secrets: instead of an inline "bind_password" you can set
+    "bind_password_env" (name of an environment variable holding the
+    password) or "bind_password_file" (path to a chmod-600, owner-owned
+    regular file whose stripped content is the password; relative paths
+    resolve against the config file's directory). At most one of the three
+    may be set per server. A config file that carries an inline
+    "bind_password" must itself be a regular file with mode 600
+    (not a symlink, not group/other-readable).
 
     Privacy note: The ``name`` field is never redacted in privacy mode — it is
     passed as-is to AI agents so they can reference servers across tool calls.
@@ -170,6 +206,11 @@ def _load_from_file(file_path: str) -> ServerListConfig:
         FileNotFoundError: If file doesn't exist
         json.JSONDecodeError: If file is not valid JSON
         KeyError: If required fields are missing
+        ValueError: If the file defines no servers (an explicitly requested
+            config must not silently fall back to a default localhost
+            server), contains invalid/duplicate/unknown fields, or contains
+            an inline "bind_password" while being a symlink or
+            group/other-readable
     """
     logger.info(f"Loading server configuration from {file_path}")
 
@@ -179,11 +220,100 @@ def _load_from_file(file_path: str) -> ServerListConfig:
     with open(file_path, 'r') as f:
         data = json.load(f)
 
+    _check_config_file_permissions(file_path, data)
+
     config_dir = os.path.dirname(os.path.abspath(file_path))
     config = ServerListConfig.from_dict(data, base_dir=config_dir)
+    if not config.servers:
+        raise ValueError(
+            f"Config file {file_path} defines no servers. Add at least one "
+            'entry to the "servers" list. (An explicitly requested config '
+            "file must not silently fall back to a default localhost server.)"
+        )
     logger.info(f"Loaded configuration for {len(config.servers)} servers")
 
     return config
+
+def _check_config_file_permissions(file_path: str, data: Any) -> None:
+    """Refuse world-readable / symlinked config files with inline secrets.
+
+    A servers.json that carries an inline ``bind_password`` must be a
+    regular file readable only by its owner.  Config files that
+    keep secrets out-of-band (``bind_password_env`` / ``bind_password_file``
+    or no password at all) are exempt; for those, a symlinked config only
+    logs a warning.
+    """
+    servers_raw = data.get("servers", []) if isinstance(data, dict) else []
+    has_inline_password = any(
+        isinstance(entry, dict) and entry.get("bind_password")
+        for entry in servers_raw
+    )
+    is_symlink = os.path.islink(file_path)
+
+    if not has_inline_password:
+        if is_symlink:
+            logger.warning(
+                "Config file %s is a symlink. It contains no inline "
+                "bind_password, so it will be loaded — but prefer pointing "
+                "LDAP_SERVERS_CONFIG at the real file.",
+                file_path,
+            )
+        return
+
+    if is_symlink:
+        raise ValueError(
+            f"Config file {file_path} is a symlink and contains an inline "
+            '"bind_password". Refusing to load secrets through symlinks — '
+            "replace the symlink with the real file, or move the secret to "
+            "bind_password_file / bind_password_env."
+        )
+    st = os.stat(file_path)
+    if st.st_mode & 0o077:
+        raise ValueError(
+            f"Config file {file_path} contains an inline \"bind_password\" "
+            f"but is group/other-readable (mode {oct(st.st_mode & 0o777)}). "
+            f"Fix with: chmod 600 {file_path} — or move the secret to "
+            "bind_password_file / bind_password_env."
+        )
+
+
+# Every key accepted in a server entry of servers.json.  Unknown keys are
+# rejected so a typo ("tls_verfy", "use_sssl") fails startup instead of
+# being silently ignored.
+_KNOWN_SERVER_KEYS = frozenset(
+    {
+        "name",
+        "hostname",
+        "port",
+        "use_ssl",
+        "ldap_url",
+        "bind_dn",
+        "bind_password",
+        "bind_password_env",
+        "bind_password_file",
+        # Output-only marker emitted by to_dict(); accepted and ignored on
+        # load so a dumped config can be re-loaded.
+        "bind_password_set",
+        "base_dn",
+        "auth_method",
+        "provider_type",
+        "tls_verify",
+        "allow_insecure_plaintext",
+        "is_local",
+        "serverid",
+        "use_ldapi",
+        "is_offline",
+        "is_archive",
+        "archive_path",
+        "config_path",
+        "logs_path",
+        "instance_name",
+    }
+)
+
+# URL schemes accepted in ldap_url / LDAP_URL.
+_SUPPORTED_URL_SCHEMES = ("ldap", "ldaps", "ldapi")
+
 
 def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = None) -> LDAPServerConfig:
     """Convert a dictionary entry into an LDAPServerConfig.
@@ -191,9 +321,24 @@ def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = Non
     Args:
         data: Server configuration dictionary.
         base_dir: Directory to resolve relative paths against.
+
+    Raises:
+        ValueError: On unknown keys, invalid boolean values, unsupported
+            ldap_url schemes, or ldap_url/use_ssl conflicts.
+        KeyError: If neither hostname nor ldap_url is provided (non-archive).
     """
-    is_offline = _coerce_bool(data.get("is_offline", False))
-    is_archive = _coerce_bool(data.get("is_archive", False))
+    unknown_keys = set(data) - _KNOWN_SERVER_KEYS
+    if unknown_keys:
+        raise ValueError(
+            f"Server '{data.get('name', '?')}': unknown configuration key(s): "
+            + ", ".join(sorted(repr(k) for k in unknown_keys))
+            + ". Valid keys: "
+            + ", ".join(sorted(_KNOWN_SERVER_KEYS))
+            + "."
+        )
+
+    is_offline = _coerce_bool(data.get("is_offline", False), field="is_offline")
+    is_archive = _coerce_bool(data.get("is_archive", False), field="is_archive")
     archive_path = _expand_path(data.get("archive_path"), base_dir)
     config_path_override = _expand_path(data.get("config_path"), base_dir)
     logs_path_override = _expand_path(data.get("logs_path"), base_dir)
@@ -215,14 +360,66 @@ def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = Non
     hostname = data.get("hostname")
     port = data.get("port")
     use_ssl = data.get("use_ssl")
+    if use_ssl is not None:
+        use_ssl = _coerce_bool(use_ssl, field="use_ssl")
 
-    if not hostname and data.get("ldap_url"):
-        parsed = urlparse(data["ldap_url"])
-        hostname = parsed.hostname or "localhost"
-        inferred_ssl = parsed.scheme.lower() == "ldaps"
-        use_ssl = inferred_ssl if use_ssl is None else use_ssl
-        if port is None:
-            port = parsed.port or (636 if inferred_ssl else 389)
+    server_label = data.get("name", hostname or data.get("ldap_url", "?"))
+
+    # The URL is authoritative for the transport: unknown
+    # schemes and use_ssl/hostname/port values that contradict the URL are
+    # configuration errors, never silently reconciled into plaintext.
+    url_value = data.get("ldap_url")
+    if url_value:
+        parsed = urlparse(str(url_value))
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in _SUPPORTED_URL_SCHEMES:
+            raise ValueError(
+                f"Server '{server_label}': unsupported scheme {parsed.scheme!r} "
+                f"in ldap_url {url_value!r}. Supported schemes: ldap://, "
+                "ldaps://, ldapi:// (StartTLS is not yet supported)."
+            )
+        if scheme == "ldapi":
+            if use_ssl:
+                raise ValueError(
+                    f"Server '{server_label}': use_ssl=true conflicts with the "
+                    f"ldapi:// URL {url_value!r} — LDAPI is a Unix socket and "
+                    "does not use TLS."
+                )
+            if hostname is None:
+                hostname = parsed.hostname or "localhost"
+        else:
+            if not parsed.hostname:
+                raise ValueError(
+                    f"Server '{server_label}': ldap_url {url_value!r} has no "
+                    f"hostname (expected e.g. '{scheme}://host:port')."
+                )
+            url_ssl = scheme == "ldaps"
+            if use_ssl is not None and use_ssl != url_ssl:
+                raise ValueError(
+                    f"Server '{server_label}': use_ssl={str(use_ssl).lower()} "
+                    f"conflicts with the {scheme}:// scheme of ldap_url "
+                    f"{url_value!r}. The URL is authoritative — remove use_ssl "
+                    "or make it match (ldap:// = false, ldaps:// = true)."
+                )
+            if hostname is not None and hostname != parsed.hostname:
+                raise ValueError(
+                    f"Server '{server_label}': hostname {hostname!r} conflicts "
+                    f"with the host in ldap_url {url_value!r}. Remove one of them."
+                )
+            if port is not None and parsed.port is not None:
+                try:
+                    explicit_port = int(port)
+                except (TypeError, ValueError):
+                    explicit_port = None  # invalid port raises below
+                if explicit_port is not None and explicit_port != parsed.port:
+                    raise ValueError(
+                        f"Server '{server_label}': port {port!r} conflicts with "
+                        f"the port in ldap_url {url_value!r}. Remove one of them."
+                    )
+            hostname = parsed.hostname
+            use_ssl = url_ssl
+            if port is None:
+                port = parsed.port or (636 if url_ssl else 389)
 
     if hostname is None:
         if is_offline or is_archive:
@@ -230,7 +427,7 @@ def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = Non
         else:
             raise KeyError("Server definition must include either hostname or ldap_url")
 
-    ssl_bool = _coerce_bool(use_ssl)
+    ssl_bool = bool(use_ssl)
     if port is None:
         port = 0 if is_archive else (636 if ssl_bool else 389)
 
@@ -251,18 +448,28 @@ def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = Non
 
     # TLS certificate verification for remote ldaps:// connections.
     # JSON field wins; otherwise fall back to LDAP_TLS_VERIFY (default: on).
+    # Both paths use the same strict parser: a typo raises instead of
+    # silently disabling certificate verification.
     if "tls_verify" in data:
-        tls_verify = _coerce_bool(data["tls_verify"])
+        tls_verify = _coerce_bool(data["tls_verify"], field="tls_verify")
     else:
-        tls_verify = (
-            os.environ.get("LDAP_TLS_VERIFY", "").strip().lower()
-            not in {"0", "false", "no", "off"}
+        tls_verify = env_strict_bool("LDAP_TLS_VERIFY", True)
+
+    # Escape hatch for sending a simple-bind password over plain ldap:// to
+    # a non-loopback host.  Default: refused at connect time.
+    if "allow_insecure_plaintext" in data:
+        allow_insecure_plaintext = _coerce_bool(
+            data["allow_insecure_plaintext"], field="allow_insecure_plaintext"
+        )
+    else:
+        allow_insecure_plaintext = env_strict_bool(
+            "LDAP_ALLOW_INSECURE_PLAINTEXT", False
         )
 
     # Local instance support
-    is_local = _coerce_bool(data.get("is_local", False))
+    is_local = _coerce_bool(data.get("is_local", False), field="is_local")
     serverid = data.get("serverid")
-    use_ldapi = _coerce_bool(data.get("use_ldapi", False))
+    use_ldapi = _coerce_bool(data.get("use_ldapi", False), field="use_ldapi")
 
     # Offline mode implies is_local
     if is_offline:
@@ -290,17 +497,33 @@ def _server_config_from_dict(data: Dict[str, Any], base_dir: Optional[str] = Non
             data.get("name", hostname),
         )
 
+    # Resolve the bind password from exactly one source:
+    # inline "bind_password", "bind_password_env" (environment variable
+    # name), or "bind_password_file" (owner-only readable file, relative
+    # paths resolved against the config file's directory).
+    bind_password_env = data.get("bind_password_env")
+    bind_password_file = _expand_path(data.get("bind_password_file"), base_dir)
+    bind_password = resolve_bind_password(
+        label=data.get("name", hostname),
+        bind_password=data.get("bind_password"),
+        bind_password_env=bind_password_env,
+        bind_password_file=bind_password_file,
+    )
+
     return LDAPServerConfig(
         name=data.get("name", hostname),
         hostname=hostname,
         port=port,
         use_ssl=ssl_bool,
         bind_dn=data.get("bind_dn"),
-        bind_password=data.get("bind_password"),
+        bind_password=bind_password,
+        bind_password_env=bind_password_env,
+        bind_password_file=bind_password_file,
         base_dn=data.get("base_dn"),
         auth_method=auth_method,
         provider_type=data.get("provider_type", "389ds"),
         tls_verify=tls_verify,
+        allow_insecure_plaintext=allow_insecure_plaintext,
         is_local=is_local,
         serverid=serverid,
         use_ldapi=use_ldapi,
@@ -327,12 +550,15 @@ def _expand_path(path: Optional[str], base_dir: Optional[str] = None) -> Optiona
     return os.path.abspath(path)
 
 
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+def _coerce_bool(value: Any, field: str = "boolean setting") -> bool:
+    """Strictly parse a boolean config value; raise ValueError on garbage.
+
+    Delegates to :func:`ldap_assistant_mcp.core.parse_strict_bool` so JSON
+    config fields and environment variables share one parser.
+    A typo like ``"flase"`` fails startup instead of silently disabling a
+    security setting.
+    """
+    return parse_strict_bool(value, field)
 
 
 def _coerce_float_setting(key: str, value: Any) -> float:
@@ -368,12 +594,12 @@ def _settings_from_dict(data: Dict[str, Any]) -> MCPSettings:
 
     # Override with config file values if present
     if "expose_sensitive_data" in data:
-        expose = _coerce_bool(data["expose_sensitive_data"])
+        expose = _coerce_bool(data["expose_sensitive_data"], field="expose_sensitive_data")
     else:
         expose = env_settings.expose_sensitive_data
 
     if "debug" in data:
-        debug = _coerce_bool(data["debug"])
+        debug = _coerce_bool(data["debug"], field="debug")
     else:
         debug = env_settings.debug
 
