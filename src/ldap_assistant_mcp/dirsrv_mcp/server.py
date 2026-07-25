@@ -20,6 +20,8 @@ from ldap_assistant_mcp.dirsrv_mcp.connection import (
 from ldap_assistant_mcp.dirsrv_mcp.middleware import LoggingMiddleware, ResponseSizeMiddleware, TimeoutMiddleware
 from ldap_assistant_mcp.dirsrv_mcp.tools import (
     register_archive_tools,
+    register_capability_tools,
+    register_case_tools,
     register_config_tools,
     register_group_tools,
     register_health_tools,
@@ -450,6 +452,104 @@ class DirSrvMCP(LDAPAssistantMCP):
                 ),
             ]
 
+        @self.prompt()
+        def intake_389ds_support_case(symptom: str) -> list[Message]:
+            """Collect the minimum consequential facts for a new 389 DS support case, pick a route, then stop."""
+
+            return [
+                Message(role="user", content=f"New 389 DS support case: {symptom}"),
+                Message(
+                    role="assistant",
+                    content=(
+                        "I'll run a bounded case intake — collect the minimum facts that "
+                        "change what we do next, select a route, and stop (no deep diagnosis yet).\n\n"
+                        "**Step 1: What evidence do we have?**\n"
+                        "I'll call `list_servers` and `collect_case_snapshot` to establish the "
+                        "available modes (live/offline/archive) and evidence coverage — the "
+                        "snapshot records every probe that failed, so we know what we CANNOT see.\n\n"
+                        "**Step 2: Consequential intake facts**\n"
+                        "Before collecting more, I need from you (only what's missing):\n"
+                        "- Customer impact and scope (who/what is affected, how badly?)\n"
+                        "- Onset time and timezone (when did it start?)\n"
+                        "- Last known good state / recent changes (upgrade, config, network?)\n"
+                        "- Any workaround currently in place?\n\n"
+                        "**Step 3: Route selection**\n"
+                        "Based on symptom + modes: replication issues -> `get_replication_status` "
+                        "path; performance -> `get_performance_summary` path; log-driven incident "
+                        "-> `build_389ds_incident_timeline` prompt; SOS archive -> `analyze_archive` "
+                        "path.\n\n"
+                        "**Output:** an intake record — impact, scope, onset, unknowns, available "
+                        "modes, selected route, and next owner. I will state what the evidence "
+                        "cannot establish rather than guessing.\n\n"
+                        "Starting with the evidence inventory..."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def build_389ds_incident_timeline(incident_window: str) -> list[Message]:
+            """Build a cross-signal, time-bounded incident chronology; co-occurrence only, never causality."""
+
+            return [
+                Message(role="user", content=f"Build an incident timeline for: {incident_window}"),
+                Message(
+                    role="assistant",
+                    content=(
+                        "I'll build an evidence-linked incident chronology for that window.\n\n"
+                        "**Step 1: Coverage first**\n"
+                        "`inspect_log_coverage` — what logs exist and what time span they "
+                        "actually cover. If the window falls outside the dataset, I'll say so "
+                        "instead of returning an empty timeline.\n\n"
+                        "**Step 2: Bucketed correlation**\n"
+                        "`correlate_incident_window` with the incident window — error-log "
+                        "severities, failed operations, and audit changes per time bucket, "
+                        "with statistically anomalous buckets flagged as change points.\n\n"
+                        "**Step 3: Drill into change points**\n"
+                        "For each change point: `analyze_error_log` / `analyze_access_log` / "
+                        "`analyze_audit_log` scoped to that bucket's time range to characterize "
+                        "what changed (counts and patterns only in privacy mode).\n\n"
+                        "**Step 4: Chronology**\n"
+                        "A timeline of observations, each tied to its evidence: first anomaly, "
+                        "correlated signals, config changes in the window, and coverage gaps. "
+                        "Temporal co-occurrence is a lead, never proof of cause — I'll keep "
+                        "observations separate from hypotheses.\n\n"
+                        "Checking log coverage now..."
+                    ),
+                ),
+            ]
+
+        @self.prompt()
+        def prepare_389ds_escalation(ask: str) -> list[Message]:
+            """Assemble an engineering escalation packet from already-collected case evidence."""
+
+            return [
+                Message(role="user", content=f"Prepare an engineering escalation: {ask}"),
+                Message(
+                    role="assistant",
+                    content=(
+                        "I'll assemble an engineering-ready escalation packet from evidence "
+                        "we already hold — rendering and validation only, no silent recollection.\n\n"
+                        "**Required inputs** (tell me if any is missing):\n"
+                        "- The case snapshot or evidence collected so far (or I'll run "
+                        "`collect_case_snapshot` once, with your OK)\n"
+                        "- What was already tried and ruled out\n"
+                        "- The specific engineering ask and deadline\n\n"
+                        "**Step 1: Validate evidence**\n"
+                        "`render_case_packet(audience='engineering')` — every claim must resolve "
+                        "to an evidence ID; unresolvable references fail instead of shipping.\n\n"
+                        "**Step 2: Packet assembly**\n"
+                        "Issue statement, impact, versions/topology (from the snapshot), timeline "
+                        "(from `correlate_incident_window` if available), evidence index, "
+                        "ruled-out paths, limitations (probes that failed and what that hides), "
+                        "and the explicit ask.\n\n"
+                        "**Step 3: Disclosure check**\n"
+                        "In privacy mode the packet contains pseudonymized identifiers only; "
+                        "I'll flag anything that still looks sensitive before you send it.\n\n"
+                        "What evidence do we have so far, and what exactly is the engineering ask?"
+                    ),
+                ),
+            ]
+
     def _register_resources(self) -> None:
         """Register MCP resources for cn=config access."""
 
@@ -482,16 +582,15 @@ class DirSrvMCP(LDAPAssistantMCP):
                 raise ResourceError(str(exc)) from exc
             return target
 
-        @self.resource("config://config-all")
-        def get_cn_config_all_attributes() -> str:
-            """Return all attributes for cn=config as JSON.
+        def _cn_config_json(target: str) -> str:
+            """Return all cn=config attributes of *target* as a JSON string.
 
-            Note: In privacy mode (default), sensitive values like hostnames,
-            paths, and suffixes are redacted.
+            Shared by the default-server ``config://config-all`` resource
+            and the server-addressable ``ldap://{server_name}/config``
+            template.  Sanitized in privacy mode.
             """
             import json as _json
 
-            target = _require_live_default_server("config://config-all")
             with self._connection(target) as (_, ds):
                 try:
                     config_entry = Config(ds)
@@ -510,7 +609,40 @@ class DirSrvMCP(LDAPAssistantMCP):
                         f"Failed to retrieve cn=config attributes: {_resource_error_detail(exc)}"
                     ) from exc
 
-        @self.resource("config://config-attribute/{attribute}")
+        @self.resource("config://config-all", mime_type="application/json")
+        def get_cn_config_all_attributes() -> str:
+            """Return all attributes for cn=config as JSON (default server).
+
+            Note: In privacy mode (default), sensitive values like hostnames,
+            paths, and suffixes are redacted.
+            """
+            target = _require_live_default_server("config://config-all")
+            return _cn_config_json(target)
+
+        @self.resource("ldap://{server_name}/config", mime_type="application/json")
+        def get_server_cn_config(server_name: str) -> str:
+            """Return all cn=config attributes for the named server as JSON.
+
+            Server-addressable variant of ``config://config-all`` for
+            multi-server configurations: pass any configured server name
+            (see the ``list_servers`` tool).  Requires a live server; in
+            privacy mode sensitive values are redacted.
+            """
+            if server_name not in self.server_configs:
+                available = ", ".join(sorted(self.server_configs)) or "none"
+                raise ResourceError(
+                    f"Server '{server_name}' is not configured. "
+                    f"Configured servers: {available}."
+                )
+            try:
+                self.require_live(server_name, "ldap://{server_name}/config resource")
+            except LiveServerRequired as exc:
+                raise ResourceError(str(exc)) from exc
+            return _cn_config_json(server_name)
+
+        @self.resource(
+            "config://config-attribute/{attribute}", mime_type="application/json"
+        )
         def get_cn_config_attribute(attribute: str) -> Dict[str, Any]:
             """Return a specific attribute from cn=config.
 
@@ -575,6 +707,8 @@ class DirSrvMCP(LDAPAssistantMCP):
         register_config_tools(self)
         register_log_tools(self)
         register_archive_tools(self)
+        register_case_tools(self)
+        register_capability_tools(self)
 
     @contextmanager
     def _connection(self, server_name: Optional[str] = None) -> Iterator[Tuple[str, Any]]:
