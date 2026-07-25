@@ -1,6 +1,8 @@
 """Tool registration modules for DirSrv MCP."""
 
 from ldap_assistant_mcp.dirsrv_mcp.tools.archive import register_archive_tools
+from ldap_assistant_mcp.dirsrv_mcp.tools.capabilities import register_capability_tools
+from ldap_assistant_mcp.dirsrv_mcp.tools.case import register_case_tools
 from ldap_assistant_mcp.dirsrv_mcp.tools.config import register_config_tools
 from ldap_assistant_mcp.dirsrv_mcp.tools.groups import register_group_tools
 from ldap_assistant_mcp.dirsrv_mcp.tools.health import register_health_tools
@@ -15,6 +17,8 @@ from ldap_assistant_mcp.dirsrv_mcp.tools.users import register_user_tools
 
 __all__ = [
     "register_archive_tools",
+    "register_capability_tools",
+    "register_case_tools",
     "register_config_tools",
     "register_group_tools",
     "register_health_tools",
