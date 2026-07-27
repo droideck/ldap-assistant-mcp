@@ -34,7 +34,9 @@ Commands:
   create        Create and start all dev DS containers with replication (default)
   start         Start all existing containers
   stop          Stop all containers
-  remove        Remove all containers and volumes
+  remove [--force-clean]
+                Remove all containers and volumes (only containers created by
+                these scripts; --force-clean removes them regardless)
   status        Show status of all containers and replication
   repl-status   Show detailed replication status
   generate [N]  Generate N operations (default: 100) for cache/stats testing
@@ -493,10 +495,13 @@ stop_all() {
 }
 
 remove_all() {
+  local force=false
+  [[ "${1:-}" == "--force-clean" ]] && force=true
+
   echo "Removing all dev containers and volumes..."
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    remove_ds_container "$name"
+    remove_ds_container "$name" "$force"
   done
   rm -f "$REPO_ROOT/servers.json" && echo "  Removed servers.json" || true
 }
@@ -570,7 +575,7 @@ case "$COMMAND" in
     stop_all
     ;;
   remove)
-    remove_all
+    remove_all "$COMMAND_ARG"
     ;;
   status)
     show_status

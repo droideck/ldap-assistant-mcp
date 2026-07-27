@@ -32,6 +32,8 @@ Options:
   --base-dn <dn>           Base DN (default: "$DS_BASE_DN")
   --skip-seed              Skip adding example test data
   --no-clean               Skip removing existing containers
+  --force-clean            Remove existing containers even if they were not
+                           created by these scripts (no ownership label)
   --no-pytest              Skip running pytest (useful for CI)
   -h, --help               Show this help
 
@@ -56,6 +58,7 @@ EOF
 
 SKIP_SEED=false
 CLEAN=true
+FORCE_CLEAN=false
 RUN_PYTEST=true
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +73,8 @@ while [[ $# -gt 0 ]]; do
       SKIP_SEED=true; shift ;;
     --no-clean)
       CLEAN=false; shift ;;
+    --force-clean)
+      FORCE_CLEAN=true; shift ;;
     --no-pytest)
       RUN_PYTEST=false; shift ;;
     -h|--help)
@@ -94,8 +99,7 @@ if [[ "$CLEAN" == true ]]; then
   echo "[$STEP/$TOTAL_STEPS] Cleaning existing test containers..."
   for server in "${TEST_SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port <<< "$server"
-    docker rm -f "$name" 2>/dev/null || true
-    docker volume rm "${name}-data" 2>/dev/null || true
+    remove_ds_container "$name" "$FORCE_CLEAN"
   done
   rm -f "$REPO_ROOT/tests-servers.json" 2>/dev/null || true
 else
@@ -345,14 +349,15 @@ if [[ "$RUN_PYTEST" == true ]]; then
   fi
 
   cd "$REPO_ROOT"
-  uv venv
-  uv pip install -r requirements.txt
-  uv pip install pytest pytest-asyncio
+  # Install exactly what uv.lock pins (fails if uv.lock is out of date with
+  # pyproject.toml). --no-sync below then reuses this environment, mirroring
+  # CI (.github/workflows/pytest.yml), so a single dependency set is used.
+  uv sync --locked --extra dev
   STEP=$((STEP + 1))
 
   # Step 7: Run tests
   echo "[$STEP/$TOTAL_STEPS] Running pytest..."
-  uv run pytest -v -s
+  uv run --no-sync pytest -v -s
   STEP=$((STEP + 1))
 fi
 

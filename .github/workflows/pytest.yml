@@ -1,7 +1,8 @@
 name: Pytest Tests
 
 on:
-  workflow_call:
+  workflow_call:  # Called by release.yml as the tag gate — keep every job
+                  # runnable in a tag context (no github.event.* PR fields).
   workflow_dispatch:  # Allow manual triggering
   push:
     branches:
