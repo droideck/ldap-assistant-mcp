@@ -1,0 +1,54 @@
+name: Dependency Audit
+
+# Weekly pip-audit of the LOCKED dependency set (uv.lock), plus on-demand
+# runs. Advisory-but-visible: this workflow fails loudly when a locked
+# dependency has a known vulnerability, but it is intentionally NOT a
+# required PR check and does not gate releases.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'  # Mondays 06:17 UTC
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (locked dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Export locked dependency set
+        run: |
+          # --frozen: audit exactly what uv.lock says, never re-resolve.
+          # --all-extras: include the dev extra (pytest, ruff, build, ...).
+          # --no-emit-project: the editable project itself is not on PyPI.
+          # --no-hashes: pip-audit parses plain pinned requirements.
+          uv export --frozen --all-extras --no-emit-project --no-hashes \
+            --output-file requirements-audit.txt
+          echo "Auditing the following locked set:"
+          cat requirements-audit.txt
+
+      - name: Run pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          # --no-deps:     the export above is a complete, fully pinned
+          #                closure, so audit exactly those pins.
+          # --disable-pip: never install anything — parse the pins directly
+          #                (without this, pip-audit pip-installs the whole
+          #                set into a temp venv just to enumerate it).
+          # --strict:      fail if any dependency cannot be audited at all.
+          pip-audit --strict --no-deps --disable-pip -r requirements-audit.txt

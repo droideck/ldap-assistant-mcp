@@ -1,9 +1,25 @@
 #!/bin/bash
 # Common functions for 389 Directory Server container management
-# Sourced by ds-dev.sh and ds-test.sh
+# Sourced by ds-dev.sh, ds-test.sh, and ds-test-local.sh
 
 # Default image
 DS_IMAGE=${DS_IMAGE:-quay.io/389ds/dirsrv}
+
+# Ownership label stamped on containers/volumes created by these scripts.
+# Cleanup only force-removes containers that carry this label, so the
+# scripts never delete resources they did not create.
+DS_OWNER_LABEL="ldap-assistant-mcp.owner"
+DS_OWNER_VALUE="ds-scripts"
+
+# Check whether a container was created by these scripts (carries the
+# ownership label). Returns non-zero if it is missing or not ours.
+container_is_script_owned() {
+  local name=$1
+  local owner
+
+  owner=$(docker inspect -f "{{index .Config.Labels \"${DS_OWNER_LABEL}\"}}" "$name" 2>/dev/null) || return 1
+  [[ "$owner" == "$DS_OWNER_VALUE" ]]
+}
 
 # Wait for DS to be ready (accepts connections)
 wait_for_ds() {
@@ -92,12 +108,13 @@ create_ds_container() {
   fi
 
   # Create volume
-  docker volume create "${name}-data" > /dev/null
+  docker volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
 
   # Create and start container
   docker run -d \
     --name "$name" \
     --hostname localhost \
+    --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" \
     -v "${name}-data:/data" \
     -e DS_DM_PASSWORD="$password" \
     -e DS_SUFFIX_NAME="$base_dn" \
@@ -109,11 +126,22 @@ create_ds_container() {
   return 0
 }
 
-# Remove a DS container and its volume
+# Remove a DS container and its volume.
+# Refuses to remove a container that does not carry the ownership label
+# (see DS_OWNER_LABEL) unless "true" is passed as the second argument.
 remove_ds_container() {
   local name=$1
+  local force=${2:-false}
 
-  docker rm -f "$name" 2>/dev/null && echo "  Removed $name" || true
+  if docker inspect "$name" >/dev/null 2>&1; then
+    if [[ "$force" != true ]] && ! container_is_script_owned "$name"; then
+      echo "Error: container '$name' exists but was not created by these scripts" >&2
+      echo "  (missing docker label ${DS_OWNER_LABEL}=${DS_OWNER_VALUE})." >&2
+      echo "  Remove it manually, or pass --force-clean to remove it anyway." >&2
+      return 1
+    fi
+    docker rm -f "$name" 2>/dev/null && echo "  Removed $name" || true
+  fi
   docker volume rm "${name}-data" 2>/dev/null || true
 }
 

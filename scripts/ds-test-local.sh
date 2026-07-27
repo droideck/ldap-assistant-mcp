@@ -31,6 +31,8 @@ Options:
   --password <password>    Directory Manager password (default: "$DS_PASSWORD")
   --base-dn <dn>           Base DN (default: "$DS_BASE_DN")
   --no-clean               Skip removing existing containers
+  --force-clean            Remove existing containers even if they were not
+                           created by these scripts (no ownership label)
   --no-pytest              Skip running pytest (setup only)
   -h, --help               Show this help
 
@@ -50,7 +52,9 @@ EOF
 }
 
 CLEAN=true
+FORCE_CLEAN=false
 RUN_PYTEST=true
+TEST_EXIT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,6 +66,8 @@ while [[ $# -gt 0 ]]; do
       DS_BASE_DN="$2"; shift 2 ;;
     --no-clean)
       CLEAN=false; shift ;;
+    --force-clean)
+      FORCE_CLEAN=true; shift ;;
     --no-pytest)
       RUN_PYTEST=false; shift ;;
     -h|--help)
@@ -73,11 +79,11 @@ done
 
 require_docker
 
-# Determine total steps
+# Determine total steps (including the final summary step)
 if [[ "$RUN_PYTEST" == true ]]; then
-  TOTAL_STEPS=7
+  TOTAL_STEPS=8
 else
-  TOTAL_STEPS=5
+  TOTAL_STEPS=6
 fi
 STEP=1
 
@@ -86,8 +92,7 @@ if [[ "$CLEAN" == true ]]; then
   echo "[$STEP/$TOTAL_STEPS] Cleaning existing local test containers..."
   for server in "${LOCAL_TEST_SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port <<< "$server"
-    docker rm -f "$name" 2>/dev/null || true
-    docker volume rm "${name}-data" 2>/dev/null || true
+    remove_ds_container "$name" "$FORCE_CLEAN"
   done
 else
   echo "[$STEP/$TOTAL_STEPS] Skipping cleanup (--no-clean)"
@@ -108,12 +113,13 @@ for server in "${LOCAL_TEST_SERVERS[@]}"; do
     docker start "$name" >/dev/null
   else
     # Create volume
-    docker volume create "${name}-data" > /dev/null
+    docker volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
 
     # Create container with MCP code mounted
     docker run -d \
       --name "$name" \
       --hostname localhost \
+      --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" \
       -v "${name}-data:/data" \
       -v "$REPO_ROOT:/mcp:ro" \
       -e DS_DM_PASSWORD="$DS_PASSWORD" \
@@ -249,18 +255,23 @@ if [[ "$RUN_PYTEST" == true ]]; then
   # Step 6: Install test dependencies inside container
   echo "[$STEP/$TOTAL_STEPS] Installing test dependencies in container..."
 
-  # The 389ds container is minimal - use ensurepip to bootstrap pip
+  # The 389ds container is minimal - use ensurepip to bootstrap pip.
+  # ensurepip may fail where pip already exists (|| true); everything else
+  # must succeed or the script aborts (set -e propagates the exit code).
   docker exec ds-local-1 bash -c "
+    set -e
     python3 -m ensurepip --upgrade 2>/dev/null || true
     cd /mcp
     python3 -m pip install --quiet pytest pytest-asyncio
     python3 -m pip install --quiet /mcp
-  " 2>/dev/null || true
+  "
   STEP=$((STEP + 1))
 
   # Step 7: Run local connection tests inside container
   echo "[$STEP/$TOTAL_STEPS] Running local connection tests inside container..."
 
+  # Capture the pytest exit code so the summary still prints, then exit
+  # with it at the end (no false green on test failures).
   docker exec \
     -e LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json \
     -e LDAP_URL="ldap://localhost:3389" \
@@ -271,14 +282,17 @@ if [[ "$RUN_PYTEST" == true ]]; then
     -e LDAP_SERVERID="localhost" \
     ds-local-1 bash -c "
       cd /mcp && \
-      python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s 2>&1 || \
-      echo 'Local connection tests completed (some failures may be expected if test file does not exist yet)'
-    "
+      python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s 2>&1
+    " || TEST_EXIT=$?
   STEP=$((STEP + 1))
 fi
 
 # Final summary
-echo "[$STEP/$TOTAL_STEPS] Done!"
+if [[ "$TEST_EXIT" -ne 0 ]]; then
+  echo "[$STEP/$TOTAL_STEPS] FAILED: local connection tests exited with code $TEST_EXIT"
+else
+  echo "[$STEP/$TOTAL_STEPS] Done!"
+fi
 echo ""
 echo "Local test containers:"
 for server in "${LOCAL_TEST_SERVERS[@]}"; do
@@ -295,3 +309,5 @@ echo "  export LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json"
 echo "  export LDAP_IS_LOCAL=true"
 echo "  export LDAP_SERVERID=localhost"
 echo "  python3 -m pytest tests/dirsrv_mcp/test_local_connection.py -v -s"
+
+exit "$TEST_EXIT"

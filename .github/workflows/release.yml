@@ -1,8 +1,13 @@
 name: Release
 
-# Tag-triggered release: build → publish to PyPI (trusted publishing) →
+# Tag-triggered release: run the FULL test suite on the tag SHA + verify all
+# version declarations agree → build → publish to PyPI (trusted publishing) →
 # publish to the official MCP Registry (GitHub OIDC) + create a GitHub
 # Release carrying the same wheel/sdist that went to PyPI.
+#
+# Nothing is built or published unless every pytest.yml job passes on the
+# exact tagged commit and the tag / pyproject.toml / uv.lock / server.json /
+# CHANGELOG.md versions all agree (scripts/check-version-consistency.py).
 #
 # One-time setup required before the first release:
 #   1. PyPI: add a "trusted publisher" for this repo/workflow
@@ -16,12 +21,51 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
+# One release pipeline per tag; never cancel a publish that is already
+# in flight (a half-published release is worse than a queued one).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build distribution
+  # Gate 1: the full test suite (lint/unit/build smoke + all container jobs)
+  # must pass on the exact tagged commit before anything is built or
+  # published. Reuses pytest.yml via workflow_call; the called workflow
+  # checks out the caller's ref (the tag SHA).
+  test:
+    name: Test suite (tag gate)
+    uses: ./.github/workflows/pytest.yml
+    secrets: inherit
+
+  # Gate 2: the tag, pyproject.toml, uv.lock, both server.json version
+  # fields, and the top CHANGELOG.md release heading must all agree.
+  version-consistency:
+    name: Version consistency
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Check version declarations agree with the tag
+        run: python scripts/check-version-consistency.py --tag "$GITHUB_REF_NAME"
+
+  build:
+    name: Build distribution
+    needs: [test, version-consistency]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -79,6 +123,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
 
       - name: Check for server.json
         id: server_json

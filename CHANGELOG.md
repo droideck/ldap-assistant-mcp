@@ -2,6 +2,70 @@
 
 All notable changes to LDAP Assistant MCP will be documented in this file.
 
+## [Unreleased]
+
+Broad hardening pass across diagnostic truthfulness, security and privacy,
+log handling, release safety, and the support-case and operability surfaces.
+Highlights:
+
+### Fixed - trust
+- Diagnostic summaries (`first_look`, `run_healthcheck`, `get_performance_summary`,
+  `list_replication_conflicts`, `analyze_index_configuration`, `validate_configuration`)
+  can no longer report healthy/OK/no-conflicts when a required probe failed;
+  results carry `evidence_status` and explicit failure records
+- Filtered log severity/change-type counts now contain only matched records
+  (all-source totals separately named); archive `last N` time ranges anchor
+  to the dataset end; unknown timestamps are counted, not silently blended
+- Replication catch-up is no longer counted as synchronized; archive replica
+  roles derived from type+flags; topology SPOF/orphan analysis uses real
+  per-suffix agreement graphs; remote servers no longer receive MCP-host
+  psutil/socket data; cumulative counters thresholded as rates per uptime
+
+### Security & privacy
+- Credential attribute denial normalizes `;options` and fail-closed matches
+  unknown credential-like names in every privacy mode
+- Privacy count oracles closed (bucketed name-search counts, audit DN
+  filters rejected in privacy mode); free-text sanitizer catches
+  arbitrary-TLD hostnames, spaced DNs, bare system paths; stderr log
+  records sanitized in privacy mode; endpoint details demoted to DEBUG logs
+- Remote SIMPLE bind over plaintext `ldap://` refused by default
+  (`allow_insecure_plaintext` lab escape hatch); strict config parsing
+  (booleans, URL schemes, conflicts, duplicates, unknown keys, empty
+  explicit configs all fail startup); OpenLDAP honors `tls_verify`
+- `bind_password_env` / `bind_password_file` secret indirection; configs
+  never serialize secrets; world-readable configs with inline passwords
+  refused; per-instance sanitizer scope with thread-safe caches
+
+### Reliability & delivery
+- Release workflow gated on the full test suite at the exact tag SHA plus
+  version-consistency validation; weekly pip-audit workflow; local test
+  scripts fail loudly, sync from the lock, and only remove containers they
+  own; `uv.lock` refreshed
+- Unified streaming log readers: per-file format detection across rotated
+  families, pretty-JSON, corrupt-gz tolerance, decompression budgets,
+  streaming audit parser with LDIF unfolding and base64 DNs; rotated-only
+  families readable; `include_archived_logs` on error/audit tools
+- Oversized structured responses are real tool errors; timeout errors state
+  cancellation truth; error dicts carry stable `error_code`/`category`/
+  `retryable`; ReDoS-safe structural regex validation
+- Cursor pagination (`has_more`/`next_cursor`) on user/group listings
+
+### Added - case workflow MVP & operability
+- `inspect_log_coverage`, `collect_case_snapshot`, `correlate_incident_window`,
+  `render_case_packet` tools with stable evidence IDs and audience rendering
+- `intake_389ds_support_case`, `build_389ds_incident_timeline`,
+  `prepare_389ds_escalation` prompts
+- `get_capabilities`, `service_liveness`, `service_readiness` tools;
+  `doctor` and `support-bundle` CLI commands
+
+### Migration notes (target 0.6.0)
+- Config typos, unknown keys, URL/use_ssl conflicts, and empty explicit
+  configs that previously loaded silently now fail startup
+- Remote plaintext SIMPLE binds require `ldaps://`, `ldapi://`, or the
+  explicit `allow_insecure_plaintext: true` lab flag
+- A group/other-readable servers.json containing an inline `bind_password`
+  now fails startup (chmod 600)
+
 ## [0.5.0] - 2026-07-01
 
 First beta release, targeting 389 DS support engineers triaging live instances
