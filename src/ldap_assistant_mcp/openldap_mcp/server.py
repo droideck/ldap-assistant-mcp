@@ -11,7 +11,6 @@ from ldap_assistant_mcp.core import (
     LDAPAssistantMCP,
     LDAPAuthMethod,
     LDAPServerConfig,
-    _env_flag,
     _is_loopback_host,
 )
 
@@ -113,18 +112,24 @@ class OpenLDAPMCP(LDAPAssistantMCP):
             and config.bind_password
             and not config.use_ssl
             and not _is_loopback_host(config.hostname)
-            and not (
-                config.allow_insecure_plaintext
-                or _env_flag("LDAP_ALLOW_INSECURE_PLAINTEXT")
-            )
         ):
-            raise ToolError(
-                f"Refusing to bind to server '{config.name}': a simple bind "
-                "over unencrypted ldap:// to a non-loopback host would send "
-                "the bind password across the network in cleartext. Try: "
-                "ldaps:// (use_ssl=true), or set allow_insecure_plaintext=true "
-                "in the server config (or LDAP_ALLOW_INSECURE_PLAINTEXT=true) "
-                "for isolated lab use."
+            # config.allow_insecure_plaintext already carries the
+            # LDAP_ALLOW_INSECURE_PLAINTEXT env default via strict parsing
+            # at load time; the raw env is deliberately NOT consulted again
+            # here so an explicit false in the server config wins.
+            if not config.allow_insecure_plaintext:
+                raise ToolError(
+                    f"Refusing to bind to server '{config.name}': a simple bind "
+                    "over unencrypted ldap:// to a non-loopback host would send "
+                    "the bind password across the network in cleartext. Try: "
+                    "ldaps:// (use_ssl=true), or set allow_insecure_plaintext=true "
+                    "in the server config (or LDAP_ALLOW_INSECURE_PLAINTEXT=true) "
+                    "for isolated lab use."
+                )
+            self.logger.warning(
+                "allow_insecure_plaintext is enabled for server '%s': the "
+                "bind password will cross the network in cleartext",
+                config.name,
             )
 
         conn = ldap.initialize(config.ldap_url)

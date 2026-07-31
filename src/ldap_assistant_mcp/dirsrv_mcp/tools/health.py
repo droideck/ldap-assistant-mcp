@@ -1091,6 +1091,15 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
             # unless at least one check executed and none failed, was
             # malformed, or vanished during discovery.
             total_issues = sum(severity_counts.values())
+            # Findings synthesized from check FAILURES (RUNTIME_ERROR) are
+            # already reported via checks_failed — "issue(s) found in
+            # completed checks" must not count them a second time.
+            failure_findings = sum(
+                1
+                for r in raw_results
+                if isinstance(r, dict) and r.get("dsle") == "RUNTIME_ERROR"
+            )
+            completed_issues = total_issues - failure_findings
             attempted = len(checks_executed) + len(checks_failed)
             incomplete = bool(checks_failed or discovery_errors)
             if severity_counts["critical"] > 0:
@@ -1108,8 +1117,8 @@ def register_health_tools(mcp: DirSrvMCP) -> None:
                 if discovery_errors:
                     parts.append(f"{len(discovery_errors)} check category(ies) failed discovery")
                 summary = "INCOMPLETE: " + ", ".join(parts)
-                if total_issues:
-                    summary += f"; {total_issues} issue(s) found in completed checks"
+                if completed_issues:
+                    summary += f"; {completed_issues} issue(s) found in completed checks"
             elif total_issues > 0:
                 summary = f"OK: {total_issues} issue(s) found (no critical or high severity)"
             else:

@@ -157,6 +157,7 @@ def _build_dirsrv(config_path: Optional[str]) -> DirSrvMCP:
 def _doctor_report(mcp: DirSrvMCP, *, connect: bool) -> Dict[str, Any]:
     """Build the doctor report dict (no hostnames, DNs, or secrets)."""
     from ldap_assistant_mcp.dirsrv_mcp.tools.capabilities import (
+        _probe_reachability,
         evaluate_server_config,
         registered_tools,
         server_mode,
@@ -180,20 +181,15 @@ def _doctor_report(mcp: DirSrvMCP, *, connect: bool) -> Dict[str, Any]:
             entry["detail"] = detail
             problems.append(f"{config.name}: {detail}")
         elif connect:
-            ds = None
-            try:
-                ds = mcp.connection_manager.connect(config.name)
-                entry["reachable"] = True
-            except Exception as exc:
-                entry["reachable"] = False
-                entry["reachability_error"] = f"{type(exc).__name__}: {exc}"
+            # Reuse the capabilities probe: it sanitizes the error detail in
+            # privacy mode (fail-closed) instead of printing raw exception
+            # text with hostnames, URLs, and certificate DNs.
+            reachable, detail = _probe_reachability(mcp, config.name)
+            entry["reachable"] = reachable
+            if not reachable:
+                if detail:
+                    entry["reachability_error"] = detail
                 problems.append(f"{config.name}: unreachable")
-            finally:
-                if ds is not None:
-                    try:
-                        ds.close()
-                    except Exception:
-                        pass
         servers.append(entry)
 
     return {
@@ -326,8 +322,21 @@ def _cmd_support_bundle(config_path: Optional[str], output: str) -> int:
     payload = json.dumps(bundle, indent=2, sort_keys=True)
 
     # Forbidden-content scan: fail closed BEFORE anything touches disk.
+    # The payload is JSON, so a secret containing characters JSON escapes
+    # (quotes, backslashes, non-ASCII -> \uXXXX) appears in escaped form —
+    # scan for the JSON-encoded spelling too, and casefold so a
+    # case-differing hostname spelling still counts as a hit.
+    payload_folded = payload.casefold()
+
+    def _leaks(value: str) -> bool:
+        encoded_value = json.dumps(value)[1:-1]
+        return (
+            value.casefold() in payload_folded
+            or encoded_value.casefold() in payload_folded
+        )
+
     hits = sorted(
-        {label for label, value in _forbidden_values(mcp) if value and value in payload}
+        {label for label, value in _forbidden_values(mcp) if value and _leaks(value)}
     )
     if hits:
         print(

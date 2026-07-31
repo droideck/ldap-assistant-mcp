@@ -408,11 +408,33 @@ class TestPlaintextBindRejection:
         mock_ds.open.assert_called_once()
 
     def test_env_escape_hatch_permits(self, monkeypatch):
+        """The env hatch is honored at config-LOAD time (strict parsing);
+        connect() trusts the resolved config field and never re-reads the
+        raw environment."""
         monkeypatch.setenv("LDAP_ALLOW_INSECURE_PLAINTEXT", "true")
-        mock_ds = _connect_mocked(
-            _live_config(name="lab-env", ldap_url="ldap://remote.example.com:389")
-        )
+        data = _base_server(name="lab-env", ldap_url="ldap://remote.example.com:389")
+        data.pop("hostname")
+        config = _server_config_from_dict(data)
+        assert config.allow_insecure_plaintext is True
+        mock_ds = _connect_mocked(config)
         mock_ds.open.assert_called_once()
+
+    def test_explicit_false_beats_env_hatch(self, monkeypatch):
+        """An explicit allow_insecure_plaintext=false in the server config
+        wins over an ambient env hatch: cleartext stays refused."""
+        monkeypatch.setenv("LDAP_ALLOW_INSECURE_PLAINTEXT", "true")
+        data = _base_server(
+            name="wan-locked",
+            ldap_url="ldap://remote.example.com:389",
+            allow_insecure_plaintext=False,
+        )
+        data.pop("hostname")
+        config = _server_config_from_dict(data)
+        assert config.allow_insecure_plaintext is False
+        cm = ConnectionManager()
+        cm.add_server(config)
+        with pytest.raises(ConnectionFailed):
+            cm.connect("wan-locked")
 
     def test_garbage_env_escape_hatch_stays_closed(self, monkeypatch):
         """A typo in the escape hatch must NOT open it (fail closed)."""

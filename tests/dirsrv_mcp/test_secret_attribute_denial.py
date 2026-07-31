@@ -438,3 +438,95 @@ class TestLdapSearchSecretDenial:
         assert "SECRET-CANARY-123" not in serialized
         for key in attrs:
             assert normalize_attribute_name(key) != "userpassword"
+
+
+# ── Confusable attribute spellings (review fix: NFKC + casefold) ─────
+
+class TestConfusableAttributeNames:
+    """Unicode spellings that are visually/foldingly equivalent to a
+    credential family name must not bypass fail-closed matching."""
+
+    def test_fullwidth_char_normalizes(self):
+        # U+FF52 FULLWIDTH LATIN SMALL LETTER R
+        assert normalize_attribute_name("userPasswoｒd") == "userpassword"
+        assert is_secret_attribute("userPasswoｒd") is True
+
+    def test_turkish_dotted_capital_folds(self):
+        # U+0130 casefolds to "i" + combining dot; the mark is stripped
+        assert is_secret_attribute("credentİal") is True
+
+    def test_remaining_non_ascii_fails_closed(self):
+        # RFC 4512 keystrings are ASCII: anything still non-ASCII after
+        # NFKC cannot be a legitimate schema name -> treated as secret.
+        assert normalize_attribute_name("passаword") == ""  # Cyrillic а
+        assert is_secret_attribute("passаword") is True
+
+    def test_plain_ascii_names_unaffected(self):
+        assert normalize_attribute_name("telephoneNumber") == "telephonenumber"
+        assert is_secret_attribute("telephoneNumber") is False
+
+
+# ── cn=config resources (review fix: unconditional stripping) ────────
+
+_CONFIG_ATTRS_JSON = json.dumps({
+    "dn": "cn=config",
+    "attrs": {
+        "cn": ["config"],
+        "nsslapd-port": ["389"],
+        "nsslapd-rootpw": ["{PBKDF2-SHA512}10000$ROOTPW-CANARY-999"],
+    },
+})
+
+
+class TestConfigResourceCredentialDenial:
+    """The cn=config resources honor the credential-denial contract:
+    credential values are stripped/refused in BOTH privacy and
+    sensitive-data modes."""
+
+    async def _read(self, server: DirSrvMCP, uri: str) -> str:
+        ds = MagicMock()
+        _install_fake_connection(server, ds)
+        mock_config = MagicMock()
+        mock_config.get_all_attrs_json.return_value = _CONFIG_ATTRS_JSON
+        with patch(
+            "ldap_assistant_mcp.dirsrv_mcp.server.Config",
+            return_value=mock_config,
+        ):
+            async with Client(server) as client:
+                contents = await client.read_resource(uri)
+        return contents[0].text
+
+    async def test_config_all_strips_rootpw_in_exposed_mode(self):
+        text = await self._read(_make_server(expose=True), "config://config-all")
+        assert "ROOTPW-CANARY" not in text
+        assert "nsslapd-rootpw" not in text
+        assert "nsslapd-port" in text  # non-secret attrs survive
+
+    async def test_server_addressable_config_strips_rootpw(self):
+        text = await self._read(_make_server(expose=True), "ldap://ds-mock/config")
+        assert "ROOTPW-CANARY" not in text
+        assert "nsslapd-port" in text
+
+    async def test_config_all_strips_rootpw_in_privacy_mode(self):
+        text = await self._read(_make_server(expose=False), "config://config-all")
+        assert "ROOTPW-CANARY" not in text
+
+    async def test_config_attribute_rootpw_refused_in_exposed_mode(self):
+        server = _make_server(expose=True)
+        _install_fake_connection(server, MagicMock())
+        async with Client(server) as client:
+            with pytest.raises(Exception) as excinfo:
+                await client.read_resource(
+                    "config://config-attribute/nsslapd-rootpw"
+                )
+        assert "credential attribute" in str(excinfo.value)
+
+    async def test_config_attribute_options_spelling_refused(self):
+        server = _make_server(expose=True)
+        _install_fake_connection(server, MagicMock())
+        async with Client(server) as client:
+            with pytest.raises(Exception) as excinfo:
+                await client.read_resource(
+                    "config://config-attribute/nsslapd-rootpw;binary"
+                )
+        assert "credential attribute" in str(excinfo.value)

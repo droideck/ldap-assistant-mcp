@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import ipaddress
 import logging
 import os
@@ -90,34 +91,56 @@ def read_bind_password_file(path: str, field: str = "bind_password_file") -> str
     stripped.  Every violation raises ValueError naming the file and the
     fix, so a misconfigured secrets file fails startup loudly.
     """
+    symlink_error = (
+        f"{field}: {path!r} is a symlink. Refusing to read secrets "
+        "through symlinks — point it at the regular file directly."
+    )
     if os.path.islink(path):
-        raise ValueError(
-            f"{field}: {path!r} is a symlink. Refusing to read secrets "
-            "through symlinks — point it at the regular file directly."
-        )
+        raise ValueError(symlink_error)
+    # Open first, then validate the OPENED file via fstat: a stat-then-open
+    # sequence could be raced into reading a different inode (symlink swap
+    # between check and open).  O_NOFOLLOW makes the open itself refuse
+    # symlinks, so every check below applies to the file actually read.
     try:
-        st = os.stat(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
         raise ValueError(
             f"{field}: password file {path!r} does not exist."
         ) from None
-    if not stat_module.S_ISREG(st.st_mode):
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(symlink_error) from None
         raise ValueError(
-            f"{field}: {path!r} is not a regular file."
-        )
-    if hasattr(os, "getuid") and st.st_uid != os.getuid():
-        raise ValueError(
-            f"{field}: {path!r} is owned by uid {st.st_uid}, not the "
-            f"current user (uid {os.getuid()}). Secrets files must be "
-            "owned by the user running the server."
-        )
-    if st.st_mode & 0o077:
-        raise ValueError(
-            f"{field}: {path!r} is group/other-accessible "
-            f"(mode {oct(st.st_mode & 0o777)}). Fix with: chmod 600 {path}"
-        )
-    with open(path, "r", encoding="utf-8") as fh:
-        password = fh.read().strip()
+            f"{field}: cannot open password file {path!r}: "
+            f"{exc.strerror or exc}."
+        ) from None
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode):
+            raise ValueError(
+                f"{field}: {path!r} is not a regular file."
+            )
+        if hasattr(os, "getuid") and st.st_uid != os.getuid():
+            raise ValueError(
+                f"{field}: {path!r} is owned by uid {st.st_uid}, not the "
+                f"current user (uid {os.getuid()}). Secrets files must be "
+                "owned by the user running the server."
+            )
+        if st.st_mode & 0o077:
+            raise ValueError(
+                f"{field}: {path!r} is group/other-accessible "
+                f"(mode {oct(st.st_mode & 0o777)}). Fix with: chmod 600 {path}"
+            )
+        fh = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1  # ownership transferred to the file object
+        with fh:
+            password = fh.read().strip()
+    finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     if not password:
         raise ValueError(
             f"{field}: password file {path!r} is empty."

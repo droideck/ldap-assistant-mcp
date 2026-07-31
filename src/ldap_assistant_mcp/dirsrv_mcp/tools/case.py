@@ -31,8 +31,12 @@ from ldap_assistant_mcp.dirsrv_mcp.connection import (
     is_archive_server,
     is_local_server,
 )
-from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import format_error_message
+from ldap_assistant_mcp.dirsrv_mcp.tools.error_utils import (
+    format_error_message,
+    format_tool_error,
+)
 from ldap_assistant_mcp.dirsrv_mcp.tools.logs import (
+    _attach_read_counters,
     _detect_json_log,
     _is_relative_range,
     _log_family_paths,
@@ -101,7 +105,7 @@ def _log_coverage_for(ds, include_rotated: bool) -> Dict[str, Any]:
         is_json = _detect_json_log(family[-1])
         try:
             first, last = _log_time_span(family[-1] if not include_rotated else log_path,
-                                         is_json, kind, include_rotated)
+                                         kind, include_rotated)
         except Exception:
             first, last = None, None
         coverage[kind] = {
@@ -175,6 +179,10 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                     "dataset_end, not the current wall clock."
                 ),
             }
+        except ToolError:
+            raise
+        except Exception as exc:
+            return format_tool_error(exc, mcp, "log_coverage", server=target)
         finally:
             if ds:
                 try:
@@ -358,10 +366,11 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
         """Bucket log signals over an incident window and surface change points.
 
         Counts error-log records by severity, access-log failed results, and
-        audit changes per time bucket, then flags buckets whose activity is
-        anomalously high (mean + 2 standard deviations). Reports temporal
-        CO-OCCURRENCE only — a spike in the same bucket is a lead, never a
-        proven cause. Counts only; no identifiers leave the tool.
+        audit changes per time bucket, then flags buckets whose total is at
+        least double the mean of all other buckets (leave-one-out), with an
+        absolute floor of 5 records. Reports temporal CO-OCCURRENCE only —
+        a spike in the same bucket is a lead, never a proven cause. Counts
+        only; no identifiers leave the tool.
 
         Works in LOCAL, OFFLINE, and ARCHIVE modes (needs file access).
         Relative ranges anchor to the dataset end on archives.
@@ -389,6 +398,7 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
             buckets: Dict[int, Dict[str, int]] = {}
             counters: Dict[str, int] = {}
             windows: Dict[str, Any] = {}
+            unknown_ts_count = 0
 
             def _bucket_of(dt) -> int:
                 # Parsed log timestamps are naive UTC; timestamp() would
@@ -413,9 +423,7 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                         _family = _log_family_paths(_log_path, include_archived=True)
                         if not _family:
                             continue
-                        _, _last = _log_time_span(
-                            _log_path, _detect_json_log(_family[-1]), _kind, True
-                        )
+                        _, _last = _log_time_span(_log_path, _kind, True)
                         if _last is not None and (shared_anchor is None or _last > shared_anchor):
                             shared_anchor = _last
                     anchor_label = "dataset_end" if shared_anchor else "dataset_end_unavailable"
@@ -432,6 +440,7 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                 }
 
             def _scan(kind: str, path_attr: str, classify):
+                nonlocal unknown_ts_count
                 log_path = getattr(ds.ds_paths, path_attr, None)
                 family = _log_family_paths(log_path, include_archived=True)
                 if not family:
@@ -448,6 +457,7 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                             )
                             dt = _parse_log_timestamp(ts) if ts else None
                             if dt is None:
+                                unknown_ts_count += 1
                                 continue
                             if start_ts and dt < start_ts:
                                 continue
@@ -473,7 +483,10 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                                     continue
                                 dt = _parse_log_timestamp(line[1:closing])
                                 signal = classify(json_entry=None, line=line)
-                            if dt is None or not signal:
+                            if not signal:
+                                continue
+                            if dt is None:
+                                unknown_ts_count += 1
                                 continue
                             if start_ts and dt < start_ts:
                                 continue
@@ -544,7 +557,7 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                 for b, signals in sorted(buckets.items())
             ]
 
-            return {
+            result = {
                 "type": "incident_correlation",
                 "server": target,
                 "time_range": time_range,
@@ -560,6 +573,26 @@ def register_case_tools(mcp: "DirSrvMCP") -> None:
                     "restarts) before drawing conclusions."
                 ),
             }
+            # Reader incidents and unparseable timestamps mean the timeline
+            # was computed from partial evidence — say so instead of letting
+            # a quiet bucket read as "no spike happened".
+            _attach_read_counters(result, counters)
+            if counters.get("malformed_lines"):
+                result["malformed_lines"] = counters["malformed_lines"]
+            if unknown_ts_count:
+                result["unknown_timestamp_count"] = unknown_ts_count
+            incomplete = unknown_ts_count > 0 or any(
+                counters.get(key)
+                for key in ("unreadable_files", "decompression_truncated", "malformed_lines")
+            )
+            result["evidence_status"] = "partial" if incomplete else "complete"
+            return result
+        except ToolError:
+            raise
+        except Exception as exc:
+            return format_tool_error(
+                exc, mcp, "incident_correlation", server=target
+            )
         finally:
             if ds:
                 try:
