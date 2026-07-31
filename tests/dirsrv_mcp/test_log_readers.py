@@ -28,6 +28,7 @@ from ldap_assistant_mcp.dirsrv_mcp.server import DirSrvMCP
 from ldap_assistant_mcp.dirsrv_mcp.tools.logs import (
     _iter_audit_records,
     _log_family_paths,
+    _log_time_span,
     _parse_access_log_entries,
     _read_lines_single,
     _unfold_ldif_lines,
@@ -91,6 +92,30 @@ class TestPerFileFormatDetection:
         assert result["malformed_lines"] == 0
         assert result["operation_stats"].get("SRCH") == 1
         assert result["operation_stats"].get("SEARCH") == 1
+
+    def test_time_span_covers_mixed_format_family(self, tmp_path):
+        """_log_time_span detects the format PER FILE: a traditional
+        rotation from before a JSON-logging switch must contribute its
+        (older) timestamps to the family span instead of being silently
+        excluded — coverage would otherwise under-report history."""
+        current = tmp_path / "access"
+        current.write_text(JSON_LINES)  # 2024-01-02 timestamps
+        (tmp_path / "access.20240101-000000").write_text(
+            TRADITIONAL_LINES  # 2024-01-01 timestamps
+        )
+
+        first, last = _log_time_span(str(current), "access", include_archived=True)
+        assert first is not None and last is not None
+        # Span start comes from the TRADITIONAL rotation ...
+        assert first.strftime("%Y-%m-%d") == "2024-01-01"
+        # ... and span end from the JSON current file.
+        assert last.strftime("%Y-%m-%d") == "2024-01-02"
+
+        # Without rotations only the JSON current file is spanned.
+        first_cur, _last_cur = _log_time_span(
+            str(current), "access", include_archived=False
+        )
+        assert first_cur.strftime("%Y-%m-%d") == "2024-01-02"
 
     def test_pretty_json_records_parse(self, tmp_path):
         """Pretty-printed multi-line JSON is parsed, not malformed."""

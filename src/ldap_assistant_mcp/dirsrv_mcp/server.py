@@ -41,7 +41,11 @@ from ldap_assistant_mcp.core import (
     MCPSettings,
     configure_package_logging,
 )
-from ldap_assistant_mcp.lib.privacy import PrivacySanitizer
+from ldap_assistant_mcp.lib.privacy import (
+    PrivacySanitizer,
+    is_secret_attribute,
+    strip_credential_attributes,
+)
 
 __all__ = ["DirSrvMCP"]
 
@@ -596,11 +600,20 @@ class DirSrvMCP(LDAPAssistantMCP):
                     config_entry = Config(ds)
                     raw_json = config_entry.get_all_attrs_json()
 
+                    # Credential values (nsslapd-rootpw, ...) are never
+                    # diagnostically useful — strip them unconditionally,
+                    # in BOTH privacy and sensitive-data modes.
+                    data = _json.loads(raw_json)
+                    if isinstance(data, dict):
+                        if isinstance(data.get("attrs"), dict):
+                            data["attrs"] = strip_credential_attributes(data["attrs"])
+                        else:
+                            data = strip_credential_attributes(data)
+
                     if not self.privacy_enabled:
-                        return raw_json
+                        return _json.dumps(data, indent=2)
 
                     # Sanitize in privacy mode
-                    data = _json.loads(raw_json)
                     sanitized = self._sanitizer.sanitize_dict(data)
                     return _json.dumps(sanitized, indent=2)
                 except Exception as exc:
@@ -650,6 +663,13 @@ class DirSrvMCP(LDAPAssistantMCP):
             paths, and suffixes are redacted.
             """
             attr_name = attribute.strip()
+            if is_secret_attribute(attr_name):
+                # Credential attributes are never returned, in both privacy
+                # and sensitive-data modes.
+                raise ResourceError(
+                    f"Attribute '{attr_name}' is a credential attribute and "
+                    "is never returned."
+                )
             target = _require_live_default_server("config://config-attribute")
             with self._connection(target) as (_, ds):
                 try:

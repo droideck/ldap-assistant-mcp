@@ -14,7 +14,6 @@ from lib389 import DirSrv
 
 from ldap_assistant_mcp.core import (
     LDAPServerConfig,
-    _env_flag,
     _is_loopback_host,
     env_strict_bool,
 )
@@ -339,18 +338,26 @@ class ConnectionManager:
             and config.ldap_url.lower().startswith("ldap://")
         ):
             target_host = urlparse(config.ldap_url).hostname
-            if not _is_loopback_host(target_host) and not (
-                config.allow_insecure_plaintext
-                or _env_flag("LDAP_ALLOW_INSECURE_PLAINTEXT")
-            ):
-                raise ConnectionFailed(
-                    f"Refusing to connect to server '{server_name}': a simple "
-                    "bind over unencrypted ldap:// to a non-loopback host "
-                    "would send the bind password across the network in "
-                    "cleartext. Try: ldaps:// (TLS), ldapi:// (local Unix "
-                    "socket via use_ldapi=true), or set "
-                    "allow_insecure_plaintext=true in the server config (or "
-                    "LDAP_ALLOW_INSECURE_PLAINTEXT=true) for isolated lab use."
+            if not _is_loopback_host(target_host):
+                # config.allow_insecure_plaintext already carries the
+                # LDAP_ALLOW_INSECURE_PLAINTEXT env default via strict
+                # parsing at load time; the raw env is deliberately NOT
+                # consulted again here so an explicit false in the server
+                # config wins over an ambient env var.
+                if not config.allow_insecure_plaintext:
+                    raise ConnectionFailed(
+                        f"Refusing to connect to server '{server_name}': a simple "
+                        "bind over unencrypted ldap:// to a non-loopback host "
+                        "would send the bind password across the network in "
+                        "cleartext. Try: ldaps:// (TLS), ldapi:// (local Unix "
+                        "socket via use_ldapi=true), or set "
+                        "allow_insecure_plaintext=true in the server config (or "
+                        "LDAP_ALLOW_INSECURE_PLAINTEXT=true) for isolated lab use."
+                    )
+                logger.warning(
+                    "allow_insecure_plaintext is enabled for server '%s': the "
+                    "bind password will cross the network in cleartext",
+                    server_name,
                 )
 
         local_info = ""

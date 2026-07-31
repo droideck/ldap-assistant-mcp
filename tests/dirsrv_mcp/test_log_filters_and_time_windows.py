@@ -199,7 +199,7 @@ class TestArchiveTimeAnchoring:
         log = tmp_path / "access"
         log.write_text(SAMPLE_ACCESS_LOG)
         start, _end, window = _resolve_time_window(
-            "last 24h", str(log), False, "access", anchor_to_dataset_end=False
+            "last 24h", str(log), "access", anchor_to_dataset_end=False
         )
         assert window["anchor"] == "wall_clock"
         # Wall-clock anchored start is recent, not 2024
@@ -209,7 +209,7 @@ class TestArchiveTimeAnchoring:
         log = tmp_path / "access"
         log.write_text("no timestamps in this file at all\n")
         _start, _end, window = _resolve_time_window(
-            "last 24h", str(log), False, "access", anchor_to_dataset_end=True
+            "last 24h", str(log), "access", anchor_to_dataset_end=True
         )
         assert window["anchor"] == "dataset_end_unavailable"
 

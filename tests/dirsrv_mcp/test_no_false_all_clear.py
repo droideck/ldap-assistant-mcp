@@ -381,6 +381,14 @@ class TestRunHealthcheck:
             f.get("metadata", {}).get("dsle") == "RUNTIME_ERROR" for f in data["findings"]
         )
 
+    async def test_failure_findings_not_double_counted_as_issues(self, dirsrv_server):
+        """Review fix: the RUNTIME_ERROR pseudo-finding of a crashed check
+        is already reported via checks_failed; the INCOMPLETE summary must
+        not ALSO count it as an issue 'found in completed checks'."""
+        data = await self._run(dirsrv_server, [FakeExplodingCheck, FakeConfig])
+        assert data["summary"].startswith("INCOMPLETE")
+        assert "found in completed checks" not in data["summary"]
+
     async def test_complete_run_still_reports_healthy(self, dirsrv_server):
         """Positive control with at least one successful check."""
         data = await self._run(dirsrv_server, [FakeConfig])

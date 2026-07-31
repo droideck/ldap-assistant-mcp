@@ -19,6 +19,7 @@ import glob as globmod
 import gzip
 import heapq
 import json
+import math
 import os
 import re
 import zlib
@@ -387,14 +388,19 @@ def _timestamp_in_range(
     return _timestamp_in_range_known(ts, start, end)[0]
 
 
-def _log_time_span(log_path: str, is_json: bool, kind: str = "access",
+def _log_time_span(log_path: str, kind: str = "access",
                    include_archived: bool = False) -> tuple:
-    """Scan a log file for its first and last parseable timestamps.
+    """Scan a log family for its first and last parseable timestamps.
 
     Returns ``(first_dt, last_dt)`` as naive UTC datetimes (either may be
     None when no timestamp could be parsed). Used to anchor relative time
     ranges to the dataset end for archived evidence and to report log
     coverage.
+
+    Format is detected PER FILE so mixed families — e.g. traditional
+    rotations from before a JSON-logging switch under a JSON current
+    file — contribute their timestamps too instead of being silently
+    excluded from the span.
     """
     first = None
     last = None
@@ -411,28 +417,29 @@ def _log_time_span(log_path: str, is_json: bool, kind: str = "access",
         if last is None or dt > last:
             last = dt
 
-    try:
-        if is_json:
-            counters = {"malformed_lines": 0}
-            for jentry in _read_json_log_entries(log_path, counters, include_archived):
-                _consider(
-                    jentry.get("local_time")
-                    or jentry.get("gm_time")
-                    or jentry.get("date")
-                )
-        elif kind == "audit":
-            for line in _read_log_lines(log_path, include_archived):
-                m = _AUDIT_TIME_RE.match(line.rstrip("\n"))
-                if m:
-                    _consider(m.group(1))
-        else:
-            for line in _read_log_lines(log_path, include_archived):
-                if line.startswith("["):
-                    closing = line.find("]")
-                    if closing > 0:
-                        _consider(line[1:closing])
-    except OSError:
-        return None, None
+    for path in _log_family_paths(log_path, include_archived):
+        try:
+            if _detect_json_log(path):
+                counters: Dict[str, int] = {}
+                for jentry in _read_json_lines_single(path, counters):
+                    _consider(
+                        jentry.get("local_time")
+                        or jentry.get("gm_time")
+                        or jentry.get("date")
+                    )
+            elif kind == "audit":
+                for line in _read_lines_single(path):
+                    m = _AUDIT_TIME_RE.match(line.rstrip("\n"))
+                    if m:
+                        _consider(m.group(1))
+            else:
+                for line in _read_lines_single(path):
+                    if line.startswith("["):
+                        closing = line.find("]")
+                        if closing > 0:
+                            _consider(line[1:closing])
+        except OSError:
+            continue
 
     return first, last
 
@@ -440,7 +447,6 @@ def _log_time_span(log_path: str, is_json: bool, kind: str = "access",
 def _resolve_time_window(
     time_range: Optional[str],
     log_path: str,
-    is_json: bool,
     kind: str,
     anchor_to_dataset_end: bool,
     include_archived: bool = False,
@@ -459,7 +465,7 @@ def _resolve_time_window(
     anchor_label = "absolute"
     if _is_relative_range(time_range):
         if anchor_to_dataset_end:
-            _, dataset_end = _log_time_span(log_path, is_json, kind, include_archived)
+            _, dataset_end = _log_time_span(log_path, kind, include_archived)
             if dataset_end is not None:
                 anchor = dataset_end
                 anchor_label = "dataset_end"
@@ -487,9 +493,15 @@ def _dn_matches_filter(entry_dn: str, filter_dn: str) -> bool:
     return dn_equals(entry_dn, filter_dn) or is_under_dn(entry_dn, filter_dn)
 
 
-# A repeat with a bounded max at or below this cannot blow up meaningfully
-# (e.g. {0,50}); + / * / {2,} count as unbounded.
+# A repeat with a bounded max at or below this is eligible for the
+# decomposition-budget check below; + / * / {2,} count as unbounded.
 _SAFE_REPEAT_MAX = 64
+
+# Maximum number of distinct ways a repeated group may decompose its match
+# before the pattern is rejected.  2**16 keeps worst-case backtracking per
+# start position trivially cheap while admitting harmless bounded forms
+# like (\d{1,3}\.){3} (27 ways).  (a|aa){2,64} is ~2**64 and rejected.
+_AMBIGUITY_BUDGET = 2.0 ** 16
 
 
 def _branch_literal_words(branch_arg) -> Optional[List[str]]:
@@ -532,43 +544,92 @@ def _is_prefix_code(words: List[str]) -> bool:
     return True
 
 
-def _subpattern_can_backtrack(node_list) -> bool:
-    """True when a parsed subpattern can match the same text in multiple
-    ways — the classic exponential-backtracking shape once repeated:
-    ``(a|aa)+``, ``(a+)+``, ``(\\d|\\d\\d)*``.
+def _ambiguity_factor(node_list) -> float:
+    """Upper-bound estimate of how many distinct ways this subpattern can
+    decompose one fixed piece of text (its match multiplicity).
 
-    Alternation over plain literals that form a prefix code (no
-    alternative is a prefix of another) is unambiguous and allowed:
-    ``(ADD|MOD|DEL)+`` is safe.
+    ``1.0`` means unambiguous — at most one way, cannot backtrack.
+    ``math.inf`` means unbounded — an inner ``+``/``*`` can split its span
+    in ~len(text) ways.  Per-node choice counts multiply: alternation over
+    non-prefix-code words contributes the number of alternatives; a
+    bounded repeat contributes its span flexibility (max - min + 1) times
+    its body's ambiguity per iteration.
     """
+    factor = 1.0
     for op, arg in node_list:
         name = str(op).lower()
         if "branch" in name:
             words = _branch_literal_words(arg)
-            if words is None or not _is_prefix_code(words):
-                return True
+            if words is not None:
+                if not _is_prefix_code(words):
+                    factor *= len(words)
+            else:
+                # Non-literal alternatives: disjointness cannot be proven,
+                # so count the alternatives times the worst inner factor.
+                alt_factors = [_ambiguity_factor(list(alt)) for alt in arg[1]]
+                worst = max(alt_factors, default=1.0)
+                if math.isinf(worst):
+                    return math.inf
+                factor *= len(alt_factors) * worst
         elif "repeat" in name or "possessive" in name:
-            return True
+            # arg = (min, max, subpattern)
+            _min, _max, body = arg
+            body_factor = _ambiguity_factor(list(body))
+            if not isinstance(_max, int) or _max > _SAFE_REPEAT_MAX:
+                # Unbounded span: as a component of an enclosing repeat it
+                # can split its match in ~len(text) ways.
+                return math.inf
+            span_choices = float(_max - _min + 1)
+            try:
+                per_iteration = (
+                    body_factor ** min(_max, _SAFE_REPEAT_MAX)
+                    if body_factor > 1.0
+                    else 1.0
+                )
+            except OverflowError:
+                return math.inf
+            factor *= span_choices * per_iteration
         elif "subpattern" in name:
             # arg = (group, add_flags, del_flags, subpattern)
             inner = arg[3] if isinstance(arg, tuple) and len(arg) >= 4 else None
-            if inner is not None and _subpattern_can_backtrack(list(inner)):
-                return True
-    return False
+            if inner is not None:
+                factor *= _ambiguity_factor(list(inner))
+        if math.isinf(factor):
+            return math.inf
+    return factor
 
 
 def _has_catastrophic_repeat(node_list) -> bool:
-    """Walk a parsed regex tree looking for unbounded repeats whose body
-    can itself backtrack (nested repeats or alternation under a repeat)."""
+    """Walk a parsed regex tree looking for repeats whose body can match
+    the same text in multiple ways — the exponential-backtracking shape.
+
+    An unbounded repeat over an ambiguous body (``(a|aa)+``, ``(a+)+``)
+    is always rejected.  A bounded repeat allowing 2+ iterations is
+    rejected when its total decomposition budget ``body_factor ** max``
+    exceeds ``_AMBIGUITY_BUDGET`` — ``(a|aa){2,64}`` (~2**64 ways) and
+    ``(a+){2,64}`` (unbounded body) are rejected, while ``(\\d{1,3}\\.){3}``
+    (27 ways) and single-iteration groups like ``(uid=[a-z]+)?`` pass.
+    """
     for op, arg in node_list:
         name = str(op).lower()
         if "repeat" in name or "possessive" in name:
             # arg = (min, max, subpattern)
             _min, _max, body = arg
-            unbounded = not isinstance(_max, int) or _max > _SAFE_REPEAT_MAX
             body_list = list(body)
-            if unbounded and _subpattern_can_backtrack(body_list):
-                return True
+            unbounded = not isinstance(_max, int) or _max > _SAFE_REPEAT_MAX
+            # Cross-iteration recomposition needs at least 2 iterations;
+            # {0,1} groups have no composition ambiguity of their own.
+            if unbounded or _max >= 2:
+                body_factor = _ambiguity_factor(body_list)
+                if body_factor > 1.0:
+                    if unbounded:
+                        return True
+                    try:
+                        total = body_factor ** _max
+                    except OverflowError:
+                        return True
+                    if total > _AMBIGUITY_BUDGET:
+                        return True
             if _has_catastrophic_repeat(body_list):
                 return True
         elif "subpattern" in name:
@@ -591,10 +652,11 @@ def _validate_regex(pattern: Optional[str]) -> tuple:
 
     Rejects patterns exceeding 500 chars and ReDoS-prone constructs by
     STRUCTURAL analysis of the parsed regex tree (not text heuristics):
-    any unbounded repeat whose body contains alternation or another
-    repeat can backtrack exponentially under Python's ``re`` engine —
-    ``(a+)+``, ``(a|aa)+``, ``(\\d|\\d\\d)*``, and ``((a+))+`` are all
-    caught, including forms the old text heuristics missed.
+    any repeat (bounded or unbounded) whose body can match the same text
+    in multiple ways and whose decomposition budget exceeds
+    ``_AMBIGUITY_BUDGET`` can backtrack catastrophically under Python's
+    ``re`` engine — ``(a+)+``, ``(a|aa)+``, ``(\\d|\\d\\d)*``, ``((a+))+``,
+    and bounded forms like ``(a+){2,64}`` are all caught.
     Polynomial ``.*.*.*`` stacking is additionally capped.
     """
     if not pattern:
@@ -993,7 +1055,7 @@ def _parse_access_log_entries(
 
     is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
     start_ts, end_ts, effective_window = _resolve_time_window(
-        time_range, log_path, is_json, "access", anchor_to_dataset_end, include_archived
+        time_range, log_path, "access", anchor_to_dataset_end, include_archived
     )
 
     # Format is decided per file so mixed-format rotations each get the
@@ -1176,7 +1238,7 @@ def _parse_error_log_entries(
 
     is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
     start_ts, end_ts, effective_window = _resolve_time_window(
-        time_range, log_path, is_json, "error", anchor_to_dataset_end, include_archived
+        time_range, log_path, "error", anchor_to_dataset_end, include_archived
     )
 
     for path in family:
@@ -1431,7 +1493,7 @@ def _parse_audit_log_entries(
 
     is_json = _detect_json_log(log_path) if os.path.isfile(log_path or "") else _detect_json_log(family[-1])
     start_ts, end_ts, effective_window = _resolve_time_window(
-        time_range, log_path, is_json, "audit", anchor_to_dataset_end, include_archived
+        time_range, log_path, "audit", anchor_to_dataset_end, include_archived
     )
     time_filter_active = start_ts is not None or end_ts is not None
 

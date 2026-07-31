@@ -331,6 +331,45 @@ class TestDoctorCLI:
         report = json.loads(capsys.readouterr().out)
         assert report["servers"][0]["reachable"] is True
 
+    def test_doctor_connect_error_sanitized_in_privacy_mode(self, tmp_path, capsys):
+        """Review fix: doctor --json is pasted into tickets; a failed
+        probe's error detail must be scrubbed in privacy mode instead of
+        carrying raw hostnames/URLs/DNs."""
+        from ldap_assistant_mcp.dirsrv_mcp.connection import (
+            ConnectionFailed,
+            ConnectionManager,
+        )
+
+        cfg = _write_config(
+            tmp_path,
+            {
+                "servers": [
+                    {
+                        "name": "prod",
+                        "hostname": "secret-doctor-host.internal.example",
+                        "bind_dn": "cn=admin,dc=corp,dc=internal",
+                        "bind_password_env": "TEST_DOCTOR_BIND_PW",
+                    }
+                ]
+            },
+        )
+        boom = ConnectionFailed(
+            "Cannot connect to ldap://secret-doctor-host.internal.example:389 "
+            "bound as cn=admin,dc=corp,dc=internal"
+        )
+        env = {"LDAP_SERVERS_CONFIG": "", "TEST_DOCTOR_BIND_PW": "pw"}
+        with patch.dict(os.environ, env):
+            with patch.object(ConnectionManager, "connect", side_effect=boom):
+                with pytest.raises(SystemExit) as excinfo:
+                    main(["doctor", "--config", str(cfg), "--json", "--connect"])
+        assert excinfo.value.code == 2
+        report = json.loads(capsys.readouterr().out)
+        server = report["servers"][0]
+        assert server["reachable"] is False
+        err = server.get("reachability_error", "")
+        assert "secret-doctor-host" not in err
+        assert "dc=corp" not in err
+
 
 CANARY_PASSWORD = "CANARY-Secret.12345"
 CANARY_HOSTNAME = "secret-host.internal.example"
@@ -397,6 +436,77 @@ class TestSupportBundleCLI:
                 main(["support-bundle", "--config", str(cfg), "--output", str(out)])
         assert excinfo.value.code == 2
         assert not out.exists()
+
+    def test_bundle_catches_case_differing_hostname_leak(self, tmp_path):
+        """Review fix: the leak scan casefolds, so a case-differing
+        spelling of a forbidden hostname still refuses the bundle."""
+        cfg = _write_config(
+            tmp_path,
+            {
+                "servers": [
+                    {
+                        "name": CANARY_HOSTNAME.upper(),
+                        "hostname": CANARY_HOSTNAME,
+                        "bind_password_env": "X",
+                    }
+                ]
+            },
+        )
+        out = tmp_path / "bundle.json"
+        env = {"LDAP_SERVERS_CONFIG": "", "X": "pw"}
+        with patch.dict(os.environ, env):
+            with pytest.raises(SystemExit) as excinfo:
+                main(["support-bundle", "--config", str(cfg), "--output", str(out)])
+        assert excinfo.value.code == 2
+        assert not out.exists()
+
+    def test_bundle_catches_json_escaped_leak(self, tmp_path):
+        """Review fix: a forbidden value with non-ASCII appears
+        \\uXXXX-escaped in the JSON payload; the scan must catch the
+        JSON-encoded spelling, not just the raw substring."""
+        leaky_dn = "cn=ädmin,dc=corp,dc=internal"
+        cfg = _write_config(
+            tmp_path,
+            {
+                "servers": [
+                    {
+                        "name": leaky_dn,
+                        "hostname": "h1.example",
+                        "bind_dn": leaky_dn,
+                        "bind_password_env": "X",
+                    }
+                ]
+            },
+        )
+        out = tmp_path / "bundle.json"
+        env = {"LDAP_SERVERS_CONFIG": "", "X": "pw"}
+        with patch.dict(os.environ, env):
+            with pytest.raises(SystemExit) as excinfo:
+                main(["support-bundle", "--config", str(cfg), "--output", str(out)])
+        assert excinfo.value.code == 2
+        assert not out.exists()
+
+
+class TestPrivacyDisabledMirror:
+    def test_mirror_matches_create_privacy_error_call_sites(self):
+        """_PRIVACY_DISABLED_TOOLS is a hand-maintained mirror of the
+        create_privacy_error() call sites; this pins the two together so a
+        new call site cannot silently make get_capabilities misreport."""
+        import re
+        from pathlib import Path
+
+        import ldap_assistant_mcp.dirsrv_mcp.tools as tools_pkg
+        from ldap_assistant_mcp.dirsrv_mcp.tools.capabilities import (
+            _PRIVACY_DISABLED_TOOLS,
+        )
+
+        found = set()
+        for py in Path(tools_pkg.__file__).parent.glob("*.py"):
+            for match in re.finditer(
+                r'create_privacy_error\(\s*"([^"]+)"', py.read_text()
+            ):
+                found.add(match.group(1))
+        assert found == set(_PRIVACY_DISABLED_TOOLS)
 
 
 class TestConfigAndToolFlags:

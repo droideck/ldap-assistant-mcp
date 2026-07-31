@@ -158,6 +158,71 @@ class TestIncidentCorrelation:
         assert "uid=" not in serialized
         assert "cn=Directory Manager" not in serialized
 
+    async def test_clean_run_reports_complete_evidence(self, archive_mcp):
+        data = await _call(
+            archive_mcp, "correlate_incident_window", {"time_range": "last 24h"},
+        )
+        assert data["evidence_status"] == "complete"
+        assert "unreadable_files" not in data
+        assert "unknown_timestamp_count" not in data
+
+    @staticmethod
+    def _make_archive(tmp_path, inst, extra_writer):
+        config_dir = tmp_path / "etc" / "dirsrv" / inst
+        config_dir.mkdir(parents=True)
+        (config_dir / "dse.ldif").write_text(DSE_LDIF)
+        logs_dir = tmp_path / "var" / "log" / "dirsrv" / inst
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "access").write_text(ACCESS_LOG)
+        (logs_dir / "errors").write_text(ERROR_LOG)
+        (logs_dir / "audit").write_text(AUDIT_LOG)
+        extra_writer(logs_dir)
+        env = {"LDAP_MCP_EXPOSE_SENSITIVE_DATA": "true", "LDAP_SERVERS_CONFIG": ""}
+        with patch.dict(os.environ, env):
+            config = LDAPServerConfig(
+                name=f"{inst}-archive",
+                hostname="archive",
+                port=0,
+                is_archive=True,
+                archive_path=str(tmp_path),
+            )
+            return DirSrvMCP(servers=[config], include_env_fallback=False)
+
+    async def test_reader_incidents_surface_as_partial_evidence(self, tmp_path):
+        """An unreadable rotation means the timeline was computed from
+        partial evidence: the incident count and evidence_status must say
+        so instead of a quiet bucket reading as 'no spike happened'."""
+        server = self._make_archive(
+            tmp_path, "slapd-t015b",
+            lambda d: (d / "errors.20231231-000000.gz").write_bytes(
+                b"\x1f\x8b\x08\x00 this is not really gzip data"
+            ),
+        )
+        data = await _call(
+            server, "correlate_incident_window", {"time_range": "last 24h"},
+        )
+        assert data["unreadable_files"] >= 1
+        assert data["evidence_status"] == "partial"
+        # The readable logs were still correlated
+        assert data["bucket_count"] >= 1
+
+    async def test_unknown_timestamps_are_counted(self, tmp_path):
+        """Records whose timestamp cannot be parsed are excluded from the
+        timeline — that exclusion must be counted, not silent."""
+        server = self._make_archive(
+            tmp_path, "slapd-t015c",
+            lambda d: (d / "access").write_text(
+                ACCESS_LOG
+                + "[not-a-timestamp] conn=9 op=1 RESULT err=0 tag=101 "
+                "nentries=0 wtime=0.1 optime=0.9 etime=1.0\n"
+            ),
+        )
+        data = await _call(
+            server, "correlate_incident_window", {"time_range": "last 24h"},
+        )
+        assert data["unknown_timestamp_count"] == 1
+        assert data["evidence_status"] == "partial"
+
     async def test_archive_window_anchors_to_dataset(self, archive_mcp):
         data = await _call(
             archive_mcp, "correlate_incident_window",

@@ -20,6 +20,7 @@ import hashlib
 import os
 import re
 import threading
+import unicodedata
 from typing import Any, Dict, List, Optional, Set
 
 # Pattern matchers for sensitive data
@@ -134,8 +135,14 @@ def normalize_attribute_name(attr: Any) -> str:
 
     Strips LDAP attribute options (everything from the first ``;``, e.g.
     ``userPassword;binary`` -> ``userpassword``), surrounding whitespace,
-    and lowercases.  Unparseable input normalizes to ``""`` so that
-    :func:`is_secret_attribute` fails closed on it.
+    NFKC-normalizes (fullwidth/compatibility characters collapse to their
+    ASCII forms) and casefolds (stronger than ``lower()`` — Turkish ``İ``
+    etc.).  Unparseable input normalizes to ``""`` so that
+    :func:`is_secret_attribute` fails closed on it.  Real LDAP attribute
+    descriptions are ASCII (RFC 4512 keystrings); a name that is still
+    non-ASCII after NFKC cannot be a legitimate schema name, so it also
+    normalizes to ``""`` (treated as secret) rather than giving confusable
+    spellings a path around the family matching.
     """
     if attr is None:
         return ""
@@ -148,7 +155,13 @@ def normalize_attribute_name(attr: Any) -> str:
         name = str(attr)
     except Exception:
         return ""
-    return name.split(";", 1)[0].strip().lower()
+    name = unicodedata.normalize("NFKC", name.split(";", 1)[0].strip()).casefold()
+    # Casefold can reintroduce combining marks (İ -> i + U+0307); strip
+    # them so "credentİal" still matches the "credential" family.
+    name = "".join(ch for ch in name if not unicodedata.combining(ch))
+    if name and not name.isascii():
+        return ""
+    return name
 
 
 def is_secret_attribute(attr: Any) -> bool:

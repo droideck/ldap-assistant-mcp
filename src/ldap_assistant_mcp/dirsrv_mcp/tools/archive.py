@@ -27,7 +27,7 @@ from ldap_assistant_mcp.dirsrv_mcp.tools.dse_utils import (
     is_under_dn,
     normalize_dn,
 )
-from ldap_assistant_mcp.lib.privacy import ALWAYS_REDACT_ATTRIBUTES
+from ldap_assistant_mcp.lib.privacy import is_secret_attribute
 from ldap_assistant_mcp.lib.result_formatter import Severity, format_finding
 
 if TYPE_CHECKING:
@@ -332,7 +332,7 @@ def _build_archive_analysis(
 
         # Time span of each present log so "last 24h"-style questions can be
         # anchored to the dataset instead of the wall clock.
-        from ldap_assistant_mcp.dirsrv_mcp.tools.logs import _detect_json_log, _log_time_span
+        from ldap_assistant_mcp.dirsrv_mcp.tools.logs import _log_time_span
         for kind, log_path in (
             ("access", paths.access_log),
             ("error", paths.error_log),
@@ -340,7 +340,7 @@ def _build_archive_analysis(
         ):
             if log_path and os.path.isfile(log_path):
                 try:
-                    first, last = _log_time_span(log_path, _detect_json_log(log_path), kind)
+                    first, last = _log_time_span(log_path, kind)
                 except Exception as e:
                     log_coverage[kind] = {"error": format_error_message(e)}
                     continue
@@ -684,7 +684,10 @@ def _compare_ldif_entries(
                 # ...) always differ between servers, so they would always be
                 # emitted here.  Redact the values regardless of privacy mode —
                 # the diff still notes the difference, just without the hash.
-                if attr_lower in ALWAYS_REDACT_ATTRIBUTES:
+                # Fail-closed family matching (is_secret_attribute) so
+                # ;options spellings and unlisted credential-like names are
+                # covered too, matching every other secret-attribute check site.
+                if is_secret_attribute(attr_lower):
                     vals1 = ["<redacted>"]
                     vals2 = ["<redacted>"]
                 different_values.append({

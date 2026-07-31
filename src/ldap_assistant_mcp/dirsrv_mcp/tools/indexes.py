@@ -1125,8 +1125,7 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 dataset_end = None
                 for candidate in reversed(family):
                     _first, dataset_end = _log_time_span(
-                        candidate, _detect_json_log(candidate), "access",
-                        include_archived=False,
+                        candidate, "access", include_archived=False,
                     )
                     if dataset_end is not None:
                         break
@@ -1336,14 +1335,27 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                     )
 
             # Summary. "No unindexed searches" is a claim about evidence
-            # actually read: if reader incidents left us with no readable
-            # coverage, the truthful answer is unknown, not healthy.
+            # actually read: if reader incidents (unreadable files, budget-
+            # truncated gz rotations, malformed lines) left gaps in coverage
+            # and nothing was found, the truthful answer is unknown, not
+            # healthy.
             total_unindexed = sum(pattern_counts.values())
             unreadable = read_counters.get("unreadable_files", 0)
-            if total_unindexed == 0 and unreadable > 0:
+            truncated = read_counters.get("decompression_truncated", 0)
+            malformed = read_counters.get("malformed_lines", 0)
+            if total_unindexed == 0 and (unreadable or truncated or malformed):
+                incidents = ", ".join(
+                    f"{count} {label}"
+                    for label, count in (
+                        ("unreadable file(s)", unreadable),
+                        ("truncated decompression(s)", truncated),
+                        ("malformed line(s)", malformed),
+                    )
+                    if count
+                )
                 summary = (
-                    f"INCOMPLETE: {unreadable} of {len(family)} log file(s) "
-                    f"unreadable - no unindexed searches found in readable evidence"
+                    f"INCOMPLETE: reader incidents ({incidents}) - no unindexed "
+                    f"searches found in readable evidence"
                 )
                 status = "unknown"
             elif total_unindexed == 0:
@@ -1360,12 +1372,22 @@ def register_index_tools(mcp: DirSrvMCP) -> None:
                 "type": "unindexed_searches",
                 "server": target,
                 "time_range": time_range,
+                # Deprecated alias of effective_window["anchor"].
                 "time_anchor": time_anchor,
+                "effective_window": {
+                    "requested": time_range,
+                    "start": cutoff_time.replace(tzinfo=None).isoformat(),
+                    "end": None,
+                    "anchor": time_anchor,
+                },
                 "summary": summary,
                 "status": status,
                 "total_unindexed_count": total_unindexed,
-                "unique_patterns": len(patterns),
+                # True distinct-pattern count; "patterns" holds the top
+                # `limit` by frequency.
+                "unique_patterns": len(pattern_counts),
                 "patterns": patterns,
+                "patterns_truncated": max(0, len(pattern_counts) - len(patterns)),
                 "findings": findings,
             }
             for counter_key in ("unreadable_files", "decompression_truncated", "malformed_lines"):

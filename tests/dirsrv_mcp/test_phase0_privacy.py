@@ -428,6 +428,39 @@ class TestCompareDseCredentialRedaction:
         assert "roothash" not in serialized
         assert "replcredhash" not in serialized
 
+    def test_options_and_family_names_redacted(self, tmp_path):
+        """Redaction uses fail-closed is_secret_attribute,
+        so ;options spellings and unlisted credential-family names are
+        covered — not just exact ALWAYS_REDACT set membership."""
+        from lib389._ldifconn import LDIFConn
+
+        from ldap_assistant_mcp.dirsrv_mcp.tools.archive import _compare_ldif_entries
+
+        template = (
+            "dn: cn=config\n"
+            "cn: config\n"
+            "nsslapd-rootpw;binary: {rootpw}\n"
+            "customBackupPassphrase: {phrase}\n"
+            "nsslapd-port: {port}\n"
+            "\n"
+        )
+        path1 = tmp_path / "dse1.ldif"
+        path2 = tmp_path / "dse2.ldif"
+        path1.write_text(template.format(
+            rootpw="{PBKDF2}binroothash1", phrase="phrase-canary-1", port="389"
+        ))
+        path2.write_text(template.format(
+            rootpw="{PBKDF2}binroothash2", phrase="phrase-canary-2", port="3389"
+        ))
+        result = _compare_ldif_entries(
+            LDIFConn(str(path1)), LDIFConn(str(path2)), "server-a", "server-b"
+        )
+        serialized = json.dumps(result)
+        assert "binroothash" not in serialized
+        assert "phrase-canary" not in serialized
+        # Non-credential values still compare raw
+        assert '"389"' in serialized and '"3389"' in serialized
+
 
 # ── Mapping-tree DN suffix sanitization ──────────────────────────────
 

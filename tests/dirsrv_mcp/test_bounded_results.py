@@ -186,6 +186,12 @@ class TestRegexStructuralValidation:
         "([^a]|b)+c", "([^x]|y)*z",
         # Case-insensitive compile makes case-variant words ambiguous.
         "(A|aa)+c", "(aB|Ab)+x",
+        # BOUNDED repeats over an ambiguous body blow up too: {2,64} over
+        # (a|aa) is ~2**64 decompositions, and an unbounded inner repeat
+        # under any 2+ iteration outer repeat is polynomial of degree
+        # max-1 in the input length.
+        "(a+){2,64}", "(a|aa){2,64}", "(.|..){2,64}x",
+        "(a{1,64}){2,64}", "(a+){2}",
     ])
     def test_catastrophic_rejected(self, bad):
         compiled, err = _validate_regex(bad)
@@ -195,6 +201,10 @@ class TestRegexStructuralValidation:
         "err=32", "conn=1 op=[0-9]+", "SRCH.*uid=admin",
         "(ADD|MOD|DEL)+", "(err=0|err=49)*", "uid=[a-z]+",
         "a{1,10}", "(?:GET|POST) /api", "a++",
+        # Bounded ambiguity within the decomposition budget stays usable:
+        # 27 ways for the IP-ish shape, 2**8 for the small alternation,
+        # and {0,1} groups have no cross-iteration recomposition at all.
+        r"(\d{1,3}\.){3}", "(uid=[a-z]+)?", "(a|aa){2,8}",
     ])
     def test_safe_accepted(self, good):
         compiled, err = _validate_regex(good)
@@ -368,6 +378,73 @@ class TestUnindexedStreaming:
         assert data["status"] == "unknown"
         assert data["summary"].startswith("INCOMPLETE")
         assert data["unreadable_files"] == 1
+
+    async def test_truncated_gz_is_incomplete_not_healthy(self, tmp_path, monkeypatch):
+        """A budget-truncated gz rotation is a coverage gap: zero findings
+        from partially-read evidence must report INCOMPLETE, not HEALTHY."""
+        import ldap_assistant_mcp.dirsrv_mcp.tools.logs as logs_mod
+
+        monkeypatch.setattr(logs_mod, "_MAX_DECOMPRESSED_BYTES_PER_FILE", 10)
+        clean_line = (
+            '[01/Jan/2024:10:00:02.100000000 +0000] conn=1 op=1 RESULT '
+            'err=0 tag=101 nentries=5 wtime=0.1 optime=0.9 etime=1.0\n'
+        )
+
+        def _write(d):
+            with gzip.open(d / "access.20240101-000000.gz", "wt") as fh:
+                fh.write(clean_line * 50)
+
+        server = self._make_archive(tmp_path, "slapd-t012f", _write)
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "find_unindexed_searches", {"time_range": "24h"}
+            )
+            data = result.data
+        assert data["total_unindexed_count"] == 0
+        assert data["decompression_truncated"] >= 1
+        assert data["status"] == "unknown"
+        assert data["summary"].startswith("INCOMPLETE")
+
+    async def test_effective_window_reported(self, archive_mcp):
+        """find_unindexed_searches reports the same structured
+        effective_window contract as the log analyzers; time_anchor stays
+        as a deprecated alias."""
+        async with Client(archive_mcp) as client:
+            result = await client.call_tool(
+                "find_unindexed_searches", {"time_range": "24h"}
+            )
+            data = result.data
+        window = data["effective_window"]
+        assert window["requested"] == "24h"
+        assert window["anchor"] == data["time_anchor"] == "dataset_end"
+        assert window["start"] is not None
+        assert window["end"] is None
+
+    async def test_unique_patterns_reports_true_count_when_limited(self, tmp_path):
+        """unique_patterns is the TRUE distinct-pattern count; the capped
+        patterns list is flagged via patterns_truncated."""
+        lines = []
+        for i, attr in enumerate(("department", "title", "roomnumber")):
+            lines.append(
+                f'[01/Jan/2024:10:00:{i:02d}.000000000 +0000] conn={i} op=1 '
+                f'SRCH base="dc=example,dc=com" scope=2 filter="({attr}=x)" attrs=ALL\n'
+            )
+            lines.append(
+                f'[01/Jan/2024:10:00:{i:02d}.500000000 +0000] conn={i} op=1 '
+                'RESULT err=0 tag=101 nentries=500 notes=U wtime=0.1 optime=0.9 etime=1.0\n'
+            )
+        server = self._make_archive(
+            tmp_path, "slapd-t012g",
+            lambda d: (d / "access").write_text("".join(lines)),
+        )
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "find_unindexed_searches", {"time_range": "60d", "limit": 1}
+            )
+            data = result.data
+        assert data["unique_patterns"] == 3
+        assert len(data["patterns"]) == 1
+        assert data["patterns_truncated"] == 2
 
     async def test_privacy_mode_findings_use_placeholders(self, tmp_path):
         """Finding details/title/metadata must not leak filter values or
