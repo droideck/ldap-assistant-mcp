@@ -36,6 +36,9 @@ Options:
   --no-pytest              Skip running pytest (setup only)
   -h, --help               Show this help
 
+Container runtime:
+  DS_CLI                    Container CLI: docker (default) or podman
+
 This script tests LOCAL connection functionality by running tests
 INSIDE the DS container. This enables access to:
   - Server log files (access, error, audit logs)
@@ -77,7 +80,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_docker
+require_container_cli
 
 # Determine total steps (including the final summary step)
 if [[ "$RUN_PYTEST" == true ]]; then
@@ -108,15 +111,15 @@ for server in "${LOCAL_TEST_SERVERS[@]}"; do
   echo "  Creating $name (LDAP: $ldap_port)..."
 
   # Skip if already exists
-  if docker inspect "$name" >/dev/null 2>&1; then
+  if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
     echo "  Container $name already exists, starting..."
-    docker start "$name" >/dev/null
+    "$DS_CLI" start "$name" >/dev/null
   else
     # Create volume
-    docker volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
+    "$DS_CLI" volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
 
     # Create container with MCP code mounted
-    docker run -d \
+    "$DS_CLI" run -d \
       --name "$name" \
       --hostname localhost \
       --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" \
@@ -161,7 +164,7 @@ STEP=$((STEP + 1))
 # - Config is written to /tmp inside container (since /mcp is read-only)
 echo "[$STEP/$TOTAL_STEPS] Generating tests-local-servers.json inside container..."
 
-docker exec ds-local-1 bash -c "cat > /tmp/tests-local-servers.json << EOF
+"$DS_CLI" exec ds-local-1 bash -c "cat > /tmp/tests-local-servers.json << EOF
 {
   \"servers\": [
     {
@@ -194,7 +197,7 @@ echo "[$STEP/$TOTAL_STEPS] Seeding test data..."
 seed_local_test_data() {
   local name=$1
 
-  docker exec -i "$name" ldapadd \
+  "$DS_CLI" exec -i "$name" ldapadd \
     -H ldap://localhost:3389 \
     -D "cn=Directory Manager" \
     -w "$DS_PASSWORD" \
@@ -235,15 +238,15 @@ for server in "${LOCAL_TEST_SERVERS[@]}"; do
   IFS=':' read -r name ldap_port ldaps_port <<< "$server"
 
   # Check user count
-  count=$(docker exec "$name" ldapsearch -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -x -b "ou=people,$DS_BASE_DN" -s sub "(uid=*)" dn 2>/dev/null | grep -c "^dn:" || echo "0")
+  count=$("$DS_CLI" exec "$name" ldapsearch -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -x -b "ou=people,$DS_BASE_DN" -s sub "(uid=*)" dn 2>/dev/null | grep -c "^dn:" || echo "0")
   echo "  $name: $count users"
 
   # Check instance info
-  serverid=$(docker exec "$name" dsconf localhost config get nsslapd-instancedir 2>/dev/null | grep -oP 'slapd-\K[^/]+' || echo "unknown")
+  serverid=$("$DS_CLI" exec "$name" dsconf localhost config get nsslapd-instancedir 2>/dev/null | grep -oP 'slapd-\K[^/]+' || echo "unknown")
   echo "    Instance ID: $serverid"
 
   # Check log paths exist
-  if docker exec "$name" test -f /var/log/dirsrv/slapd-localhost/access 2>/dev/null; then
+  if "$DS_CLI" exec "$name" test -f /var/log/dirsrv/slapd-localhost/access 2>/dev/null; then
     echo "    Access log: exists"
   else
     echo "    Access log: not found (may be normal for fresh instance)"
@@ -258,7 +261,7 @@ if [[ "$RUN_PYTEST" == true ]]; then
   # The 389ds container is minimal - use ensurepip to bootstrap pip.
   # ensurepip may fail where pip already exists (|| true); everything else
   # must succeed or the script aborts (set -e propagates the exit code).
-  docker exec ds-local-1 bash -c "
+  "$DS_CLI" exec ds-local-1 bash -c "
     set -e
     python3 -m ensurepip --upgrade 2>/dev/null || true
     cd /mcp
@@ -272,7 +275,7 @@ if [[ "$RUN_PYTEST" == true ]]; then
 
   # Capture the pytest exit code so the summary still prints, then exit
   # with it at the end (no false green on test failures).
-  docker exec \
+  "$DS_CLI" exec \
     -e LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json \
     -e LDAP_URL="ldap://localhost:3389" \
     -e LDAP_BASE_DN="$DS_BASE_DN" \
@@ -303,7 +306,7 @@ echo ""
 echo "Configuration: /tmp/tests-local-servers.json (inside container)"
 echo ""
 echo "To run tests manually inside the container:"
-echo "  docker exec -it ds-local-1 bash"
+echo "  ${DS_CLI} exec -it ds-local-1 bash"
 echo "  cd /mcp"
 echo "  export LDAP_SERVERS_CONFIG=/tmp/tests-local-servers.json"
 echo "  export LDAP_IS_LOCAL=true"

@@ -242,7 +242,7 @@ Single-server fallback (used only when `LDAP_SERVERS_CONFIG` is not set):
 | "requires a running server with a live LDAP connection" errors | The target is an offline/archive server — the error message lists the tools that do work there |
 | LDAPI connection fails for a local server | Check `serverid` has no `slapd-` prefix and the instance socket exists |
 
-No LDAP server to test against? The [Development Guide](docs/DEVELOPMENT.md) spins up test containers with Docker.
+No LDAP server to test against? The [Development Guide](docs/DEVELOPMENT.md) spins up test containers with Docker or Podman.
 
 ## Limitations
 

@@ -8,7 +8,7 @@ Shared pytest fixtures (server config, expected data) live in `conftest.py`. The
 
 | Category | Test files |
 |----------|-----------|
-| Live-server tests (need the Docker containers from `scripts/ds-test.sh`) | `test_users`, `test_groups`, `test_search`, `test_monitoring`, `test_config`, `test_health`, `test_indexes`, `test_performance`, `test_replication`, `test_anonymous`, `test_multiserver`, `test_local_connection`, `test_ssl_config` |
+| Live-server tests (need the Docker or Podman containers from `scripts/ds-test.sh`) | `test_users`, `test_groups`, `test_search`, `test_monitoring`, `test_config`, `test_health`, `test_indexes`, `test_performance`, `test_replication`, `test_anonymous`, `test_multiserver`, `test_local_connection`, `test_ssl_config` |
 | Offline/archive tests (no LDAP connection needed) | `test_offline_mode`, `test_archive_mode`, `test_archive_tools`, `test_logs` |
 | Unit/no-server tests | `test_privacy`, `test_privacy_gaps`, `test_debug_mode`, `test_middleware` |
 
