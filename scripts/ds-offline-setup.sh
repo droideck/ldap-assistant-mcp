@@ -16,6 +16,9 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
+# Sourced for $DS_CLI so this script honors the same runtime selection
+source "$SCRIPT_DIR/ds-common.sh"
+
 # Container to convert to offline mode
 OFFLINE_CONTAINER="ds-dev-3"
 OFFLINE_SERVER_NAME="ds-dev-3-offline"
@@ -37,6 +40,9 @@ Commands:
   clean    Restore all-live mode (restart container, remove host data)
   status   Show current environment state
   help     Show this help
+
+Container runtime:
+  DS_CLI   Container CLI: docker (default) or podman
 
 Prerequisites:
   Run './scripts/ds-dev.sh create' first to create the dev containers.
@@ -66,7 +72,7 @@ EOF
 }
 
 check_container_exists() {
-    if ! docker inspect "$OFFLINE_CONTAINER" > /dev/null 2>&1; then
+    if ! "$DS_CLI" inspect "$OFFLINE_CONTAINER" > /dev/null 2>&1; then
         echo "ERROR: Container '$OFFLINE_CONTAINER' not found."
         echo "Run './scripts/ds-dev.sh create' first."
         exit 1
@@ -75,10 +81,10 @@ check_container_exists() {
 
 check_container_running() {
     local status
-    status=$(docker inspect -f '{{.State.Status}}' "$OFFLINE_CONTAINER" 2>/dev/null || echo "not found")
+    status=$("$DS_CLI" inspect -f '{{.State.Status}}' "$OFFLINE_CONTAINER" 2>/dev/null || echo "not found")
     if [ "$status" != "running" ]; then
         echo "ERROR: Container '$OFFLINE_CONTAINER' is not running (status: $status)."
-        echo "Start it with: docker start $OFFLINE_CONTAINER"
+        echo "Start it with: ${DS_CLI} start $OFFLINE_CONTAINER"
         exit 1
     fi
 }
@@ -93,7 +99,7 @@ setup() {
     # Step 1: Create PREFIX directory for defaults.inf
     echo "[1/5] Creating PREFIX directory for defaults.inf..."
     mkdir -p "$OFFLINE_PREFIX/share/dirsrv/inf"
-    docker cp "$OFFLINE_CONTAINER:/usr/share/dirsrv/inf/defaults.inf" \
+    "$DS_CLI" cp "$OFFLINE_CONTAINER:/usr/share/dirsrv/inf/defaults.inf" \
         "$OFFLINE_PREFIX/share/dirsrv/inf/"
     echo "  -> $OFFLINE_PREFIX/share/dirsrv/inf/defaults.inf"
 
@@ -101,7 +107,7 @@ setup() {
     echo ""
     echo "[2/5] Copying dse.ldif to host (sudo required)..."
     sudo mkdir -p "$HOST_CONFIG_DIR"
-    docker cp "$OFFLINE_CONTAINER:$HOST_CONFIG_DIR/dse.ldif" /tmp/ds-offline-dse.ldif
+    "$DS_CLI" cp "$OFFLINE_CONTAINER:$HOST_CONFIG_DIR/dse.ldif" /tmp/ds-offline-dse.ldif
     sudo cp /tmp/ds-offline-dse.ldif "$HOST_CONFIG_DIR/dse.ldif"
     rm -f /tmp/ds-offline-dse.ldif
     sudo chown -R "$(whoami)" "$HOST_CONFIG_DIR"
@@ -113,7 +119,7 @@ setup() {
     sudo mkdir -p "$HOST_LOG_DIR"
     rm -rf /tmp/ds-offline-logs
     mkdir -p /tmp/ds-offline-logs
-    docker cp "$OFFLINE_CONTAINER:$HOST_LOG_DIR/." /tmp/ds-offline-logs/ 2>/dev/null || true
+    "$DS_CLI" cp "$OFFLINE_CONTAINER:$HOST_LOG_DIR/." /tmp/ds-offline-logs/ 2>/dev/null || true
     sudo cp -r /tmp/ds-offline-logs/* "$HOST_LOG_DIR/" 2>/dev/null || true
     rm -rf /tmp/ds-offline-logs
     sudo chown -R "$(whoami)" "$HOST_LOG_DIR"
@@ -122,7 +128,7 @@ setup() {
     # Step 4: Stop the container
     echo ""
     echo "[4/5] Stopping $OFFLINE_CONTAINER..."
-    docker stop "$OFFLINE_CONTAINER" > /dev/null 2>&1
+    "$DS_CLI" stop "$OFFLINE_CONTAINER" > /dev/null 2>&1
     echo "  Container stopped"
 
     # Step 5: Generate mixed servers.json
@@ -169,9 +175,9 @@ clean() {
     echo "  Removed host files"
 
     # Restart container
-    if docker inspect "$OFFLINE_CONTAINER" > /dev/null 2>&1; then
+    if "$DS_CLI" inspect "$OFFLINE_CONTAINER" > /dev/null 2>&1; then
         echo "Restarting $OFFLINE_CONTAINER..."
-        docker start "$OFFLINE_CONTAINER" > /dev/null 2>&1 || true
+        "$DS_CLI" start "$OFFLINE_CONTAINER" > /dev/null 2>&1 || true
         echo "  Container restarted"
     fi
 
@@ -223,8 +229,8 @@ show_status() {
     # Check containers
     echo "Containers:"
     for name in ds-dev-1 ds-dev-2 ds-dev-3; do
-        if docker inspect "$name" > /dev/null 2>&1; then
-            status=$(docker inspect -f '{{.State.Status}}' "$name")
+        if "$DS_CLI" inspect "$name" > /dev/null 2>&1; then
+            status=$("$DS_CLI" inspect -f '{{.State.Status}}' "$name")
             echo "  $name: $status"
         else
             echo "  $name: not created"
@@ -330,6 +336,12 @@ CFGEOF
 
 # Main
 COMMAND="${1:-setup}"
+
+case "$COMMAND" in
+    setup|clean|status)
+        require_container_cli
+        ;;
+esac
 
 case "$COMMAND" in
     setup)

@@ -42,6 +42,11 @@ Commands:
   generate [N]  Generate N operations (default: 100) for cache/stats testing
   populate      Add 100 more sample users to test replication
 
+Container runtime:
+  DS_CLI                Container CLI: docker (default) or podman
+  DS_REPLICATION_HOST   Host alias used for replication agreements
+                        (default: $DS_REPLICATION_HOST)
+
 Dev environment configuration:
   Servers:     ${#SERVERS[@]} instances with multi-supplier replication
   Base DN:     $DS_BASE_DN
@@ -81,7 +86,7 @@ add_sample_data() {
     [ $((i % 11)) -eq 0 ] && dept="HR"
 
     # Add user
-    docker exec -i "$name" ldapadd \
+    "$DS_CLI" exec -i "$name" ldapadd \
       -H ldap://localhost:3389 \
       -D "cn=Directory Manager" \
       -w "$DS_PASSWORD" \
@@ -115,7 +120,7 @@ EOF
 "
     done
 
-    docker exec -i "$name" ldapadd \
+    "$DS_CLI" exec -i "$name" ldapadd \
       -H ldap://localhost:3389 \
       -D "cn=Directory Manager" \
       -w "$DS_PASSWORD" \
@@ -138,7 +143,7 @@ add_locked_users() {
   echo "  Adding locked/inactive users to $name..."
 
   # Add a locked user (nsAccountLock=true)
-  docker exec -i "$name" ldapadd \
+  "$DS_CLI" exec -i "$name" ldapadd \
     -H ldap://localhost:3389 \
     -D "cn=Directory Manager" \
     -w "$DS_PASSWORD" \
@@ -193,7 +198,7 @@ enable_replication() {
   echo "  Enabling replication on $name (Replica ID: $replica_id)..."
 
   # Enable changelog
-  docker exec "$name" dsconf localhost replication enable \
+  "$DS_CLI" exec "$name" dsconf localhost replication enable \
     --suffix="$DS_BASE_DN" \
     --role=supplier \
     --replica-id="$replica_id" \
@@ -209,10 +214,16 @@ setup_replication_agreement() {
 
   echo "  Creating replication agreement: $source_name -> $target_name..."
 
-  # Create replication agreement using repl-agmt command
-  docker exec "$source_name" dsconf localhost repl-agmt create \
+  # Create replication agreement using repl-agmt command.
+  #
+  # All containers listen on 3389 internally, while this topology reaches
+  # peers through their distinct published host ports. create_ds_container
+  # adds an explicit Docker host-gateway mapping; Podman normally supplies the
+  # compatibility alias. DS_REPLICATION_HOST remains overridable for custom
+  # runtime or network configurations.
+  "$DS_CLI" exec "$source_name" dsconf localhost repl-agmt create \
     --suffix="$DS_BASE_DN" \
-    --host="host.docker.internal" \
+    --host="$DS_REPLICATION_HOST" \
     --port="$target_port" \
     --bind-dn="cn=replication manager,cn=config" \
     --bind-passwd="$DS_PASSWORD" \
@@ -222,7 +233,7 @@ setup_replication_agreement() {
 
   # Initialize the agreement
   sleep 1
-  docker exec "$source_name" dsconf localhost repl-agmt init \
+  "$DS_CLI" exec "$source_name" dsconf localhost repl-agmt init \
     --suffix="$DS_BASE_DN" \
     "$agmt_name" 2>&1 || echo "    Warning: Agreement init may have failed"
 }
@@ -310,7 +321,7 @@ populate_more_data() {
 
   # Add more users to ds-dev-1 (will replicate to others)
   for i in $(seq $((NUM_USERS + 1)) $((NUM_USERS + 100))); do
-    docker exec -i "ds-dev-1" ldapadd \
+    "$DS_CLI" exec -i "ds-dev-1" ldapadd \
       -H ldap://localhost:3389 \
       -D "cn=Directory Manager" \
       -w "$DS_PASSWORD" \
@@ -341,7 +352,7 @@ create_server() {
   echo "Creating $name (LDAP: $ldap_port, LDAPS: $ldaps_port, Replica ID: $replica_id)..."
 
   # Check if container already exists
-  if docker inspect "$name" >/dev/null 2>&1; then
+  if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
     echo "  Container $name already exists, skipping..."
     return 0
   fi
@@ -410,8 +421,6 @@ EOF
 }
 
 create_all() {
-  require_docker
-
   echo "Creating ${#SERVERS[@]} dev DS containers with replication..."
   echo ""
 
@@ -478,8 +487,8 @@ start_all() {
   echo "Starting all dev containers..."
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    if docker inspect "$name" >/dev/null 2>&1; then
-      docker start "$name" > /dev/null && echo "  Started $name"
+    if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
+      "$DS_CLI" start "$name" > /dev/null && echo "  Started $name"
     else
       echo "  $name does not exist"
     fi
@@ -490,20 +499,32 @@ stop_all() {
   echo "Stopping all dev containers..."
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    docker stop "$name" 2>/dev/null && echo "  Stopped $name" || true
+    "$DS_CLI" stop "$name" 2>/dev/null && echo "  Stopped $name" || true
   done
 }
 
 remove_all() {
   local force=false
+  local failed=false
   [[ "${1:-}" == "--force-clean" ]] && force=true
 
   echo "Removing all dev containers and volumes..."
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    remove_ds_container "$name" "$force"
+    if ! remove_ds_container "$name" "$force"; then
+      failed=true
+    fi
   done
-  rm -f "$REPO_ROOT/servers.json" && echo "  Removed servers.json" || true
+
+  if [[ "$failed" == true ]]; then
+    echo "Error: cleanup was incomplete; preserving servers.json" >&2
+    return 1
+  fi
+
+  if [[ -f "$REPO_ROOT/servers.json" ]]; then
+    rm -f "$REPO_ROOT/servers.json"
+    echo "  Removed servers.json"
+  fi
 }
 
 show_status() {
@@ -511,8 +532,8 @@ show_status() {
   echo ""
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    if docker inspect "$name" >/dev/null 2>&1; then
-      status=$(docker inspect -f '{{.State.Status}}' "$name")
+    if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
+      status=$("$DS_CLI" inspect -f '{{.State.Status}}' "$name")
       echo "  $name: $status (ldap://localhost:$ldap_port, Replica ID: $replica_id)"
     else
       echo "  $name: not created"
@@ -524,10 +545,10 @@ show_status() {
   echo "Replication agreements:"
   for server in "${SERVERS[@]}"; do
     IFS=':' read -r name ldap_port ldaps_port replica_id <<< "$server"
-    if docker inspect "$name" >/dev/null 2>&1; then
-      container_status=$(docker inspect -f '{{.State.Status}}' "$name")
+    if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
+      container_status=$("$DS_CLI" inspect -f '{{.State.Status}}' "$name")
       if [ "$container_status" = "running" ]; then
-        agmt_list=$(docker exec "$name" dsconf localhost repl-agmt list --suffix="$DS_BASE_DN" 2>/dev/null)
+        agmt_list=$("$DS_CLI" exec "$name" dsconf localhost repl-agmt list --suffix="$DS_BASE_DN" 2>/dev/null)
         if [ -n "$agmt_list" ]; then
           agmt_count=$(echo "$agmt_list" | grep -c "^cn:" 2>/dev/null || echo "0")
         else
@@ -547,13 +568,13 @@ show_replication_status() {
     echo "=== $name (Replica ID: $replica_id) ==="
 
     # Show replica config
-    docker exec "$name" dsconf localhost replication get \
+    "$DS_CLI" exec "$name" dsconf localhost replication get \
       --suffix="$DS_BASE_DN" 2>/dev/null | grep -E "^(nsDS5Replica|nsds5replica)" | head -5 || echo "  (replication not enabled)"
 
     echo ""
     echo "  Agreements:"
     # List agreements with status
-    docker exec "$name" dsconf localhost repl-agmt list \
+    "$DS_CLI" exec "$name" dsconf localhost repl-agmt list \
       --suffix="$DS_BASE_DN" 2>/dev/null | grep -E "^(cn:|nsds5replicaLastUpdateStatus:|nsds5replicaLastInitStatus:)" | \
       sed 's/^/    /' || echo "    (no agreements)"
     echo ""
@@ -563,6 +584,12 @@ show_replication_status() {
 # Main
 COMMAND="${1:-create}"
 COMMAND_ARG="${2:-}"
+
+case "$COMMAND" in
+  create|start|stop|remove|status|repl-status|populate)
+    require_container_cli
+    ;;
+esac
 
 case "$COMMAND" in
   create)

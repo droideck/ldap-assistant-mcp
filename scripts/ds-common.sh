@@ -1,6 +1,21 @@
 #!/bin/bash
 # Common functions for 389 Directory Server container management
-# Sourced by ds-dev.sh, ds-test.sh, and ds-test-local.sh
+# Sourced by ds-dev.sh, ds-test.sh, ds-test-local.sh, and ds-offline-setup.sh
+
+# Container runtime. Docker remains the deterministic default; opt into
+# Podman for the whole shell session so every lifecycle command uses the
+# same engine:
+#
+#   export DS_CLI=podman
+#   ./scripts/ds-dev.sh create
+#
+DS_CLI=${DS_CLI:-docker}
+
+# Replication reaches peer containers through their published host ports.
+# Docker Engine receives an explicit host-gateway mapping when containers are
+# created. Podman normally supplies this compatibility alias itself. Override
+# the hostname when the local runtime/network configuration requires it.
+DS_REPLICATION_HOST=${DS_REPLICATION_HOST:-host.docker.internal}
 
 # Default image
 DS_IMAGE=${DS_IMAGE:-quay.io/389ds/dirsrv}
@@ -17,7 +32,17 @@ container_is_script_owned() {
   local name=$1
   local owner
 
-  owner=$(docker inspect -f "{{index .Config.Labels \"${DS_OWNER_LABEL}\"}}" "$name" 2>/dev/null) || return 1
+  owner=$("$DS_CLI" inspect -f "{{index .Config.Labels \"${DS_OWNER_LABEL}\"}}" "$name" 2>/dev/null) || return 1
+  [[ "$owner" == "$DS_OWNER_VALUE" ]]
+}
+
+# Check whether a volume was created by these scripts. Docker and Podman both
+# expose volume labels at the top-level Labels field.
+volume_is_script_owned() {
+  local name=$1
+  local owner
+
+  owner=$("$DS_CLI" volume inspect -f "{{index .Labels \"${DS_OWNER_LABEL}\"}}" "$name" 2>/dev/null) || return 1
   [[ "$owner" == "$DS_OWNER_VALUE" ]]
 }
 
@@ -29,7 +54,7 @@ wait_for_ds() {
 
   echo "  Waiting for $name to be ready..."
   while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
+    if "$DS_CLI" exec "$name" ldapsearch -x -H ldap://localhost:3389 -s base -b "" > /dev/null 2>&1; then
       return 0
     fi
     sleep 5
@@ -47,7 +72,7 @@ wait_for_auth() {
 
   echo "  Waiting for Directory Manager auth..."
   while [ $attempt -le $max_attempts ]; do
-    if docker exec "$name" ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$password" > /dev/null 2>&1; then
+    if "$DS_CLI" exec "$name" ldapwhoami -x -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$password" > /dev/null 2>&1; then
       return 0
     fi
     sleep 5
@@ -62,7 +87,7 @@ create_backend() {
   local base_dn=$2
 
   echo "  Creating backend and suffix..."
-  docker exec "$name" dsconf localhost backend create \
+  "$DS_CLI" exec "$name" dsconf localhost backend create \
     --suffix="$base_dn" \
     --be-name=userroot \
     --create-entries \
@@ -75,7 +100,7 @@ create_base_ous() {
   local base_dn=$2
   local password=$3
 
-  docker exec -i "$name" ldapadd \
+  "$DS_CLI" exec -i "$name" ldapadd \
     -H ldap://localhost:3389 \
     -D "cn=Directory Manager" \
     -w "$password" \
@@ -99,22 +124,29 @@ create_ds_container() {
   local ldaps_port=$3
   local password=$4
   local base_dn=$5
+  local runtime_name=${DS_CLI##*/}
+  local -a runtime_args=()
+
+  if [[ "$runtime_name" == "docker" ]]; then
+    runtime_args=(--add-host "${DS_REPLICATION_HOST}:host-gateway")
+  fi
 
   # Skip if already exists
-  if docker inspect "$name" >/dev/null 2>&1; then
+  if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
     echo "  Container $name already exists, starting..."
-    docker start "$name" >/dev/null
+    "$DS_CLI" start "$name" >/dev/null
     return 0
   fi
 
   # Create volume
-  docker volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
+  "$DS_CLI" volume create --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" "${name}-data" > /dev/null
 
   # Create and start container
-  docker run -d \
+  "$DS_CLI" run -d \
     --name "$name" \
     --hostname localhost \
     --label "${DS_OWNER_LABEL}=${DS_OWNER_VALUE}" \
+    "${runtime_args[@]}" \
     -v "${name}-data:/data" \
     -e DS_DM_PASSWORD="$password" \
     -e DS_SUFFIX_NAME="$base_dn" \
@@ -132,23 +164,48 @@ create_ds_container() {
 remove_ds_container() {
   local name=$1
   local force=${2:-false}
+  local volume_name="${name}-data"
 
-  if docker inspect "$name" >/dev/null 2>&1; then
+  if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
     if [[ "$force" != true ]] && ! container_is_script_owned "$name"; then
       echo "Error: container '$name' exists but was not created by these scripts" >&2
-      echo "  (missing docker label ${DS_OWNER_LABEL}=${DS_OWNER_VALUE})." >&2
+      echo "  (missing container label ${DS_OWNER_LABEL}=${DS_OWNER_VALUE})." >&2
       echo "  Remove it manually, or pass --force-clean to remove it anyway." >&2
       return 1
     fi
-    docker rm -f "$name" 2>/dev/null && echo "  Removed $name" || true
+    if ! "$DS_CLI" rm -f "$name" >/dev/null 2>&1; then
+      echo "Error: failed to remove container '$name' with $DS_CLI" >&2
+      return 1
+    fi
+    echo "  Removed $name"
   fi
-  docker volume rm "${name}-data" 2>/dev/null || true
+
+  if "$DS_CLI" volume inspect "$volume_name" >/dev/null 2>&1; then
+    if [[ "$force" != true ]] && ! volume_is_script_owned "$volume_name"; then
+      echo "Error: volume '$volume_name' exists but was not created by these scripts" >&2
+      echo "  (missing volume label ${DS_OWNER_LABEL}=${DS_OWNER_VALUE})." >&2
+      echo "  Remove it manually, or pass --force-clean to remove it anyway." >&2
+      return 1
+    fi
+    if ! "$DS_CLI" volume rm "$volume_name" >/dev/null 2>&1; then
+      echo "Error: failed to remove volume '$volume_name' with $DS_CLI" >&2
+      return 1
+    fi
+    echo "  Removed $volume_name"
+  fi
 }
 
-# Check if docker is available
-require_docker() {
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "Error: docker command not found" >&2
-    exit 1
+# Check that the selected container runtime executable and engine are usable.
+require_container_cli() {
+  if ! command -v "$DS_CLI" >/dev/null 2>&1; then
+    echo "Error: '$DS_CLI' command not found" >&2
+    echo "  Install it, or select another runtime with DS_CLI=<docker|podman>." >&2
+    return 1
+  fi
+
+  if ! "$DS_CLI" info >/dev/null 2>&1; then
+    echo "Error: '$DS_CLI' is installed but its engine is unavailable" >&2
+    echo "  Start Docker, or run 'podman machine start' when using Podman." >&2
+    return 1
   fi
 }

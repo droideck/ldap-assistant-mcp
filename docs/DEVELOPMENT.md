@@ -6,11 +6,33 @@ This guide covers setting up your development environment for LDAP Assistant MCP
 
 - Python 3.13+
 - `uv` package manager
-- Docker
+- Docker 20.10+ or Podman
 - 389 Directory Server or OpenLDAP (via containers or local install)
 - System development libraries for building `python-ldap` — see the [Prerequisites](../README.md#prerequisites) section in the README
 
 ## Development Environment Setup
+
+### Selecting a Container Runtime
+
+The helper scripts use Docker by default. To use Podman, export the runtime
+once for the shell session so create, status, and cleanup commands all target
+the same engine:
+
+```bash
+export DS_CLI=podman
+```
+
+On macOS or Windows, start the Podman VM first:
+
+```bash
+podman machine start
+```
+
+The scripts verify both the CLI and its engine before doing any work. Docker
+containers receive an explicit `host.docker.internal:host-gateway` mapping for
+the development replication topology; Podman normally supplies that alias.
+Set `DS_REPLICATION_HOST` when a custom runtime network uses a different host
+alias.
 
 ### Creating Dev Containers
 
@@ -19,6 +41,9 @@ Run the dev setup script to create 3 DS containers:
 ```bash
 ./scripts/ds-dev.sh create
 ```
+
+Containers created before the host-gateway support was added must be removed
+and recreated with the same selected runtime before using replication.
 
 This creates:
 

@@ -37,6 +37,9 @@ Options:
   --no-pytest              Skip running pytest (useful for CI)
   -h, --help               Show this help
 
+Container runtime:
+  DS_CLI                    Container CLI: docker (default) or podman
+
 Creates ${#TEST_SERVERS[@]} test containers:
   ds-test-1  ldap://localhost:33891
   ds-test-2  ldap://localhost:33892
@@ -84,7 +87,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_docker
+require_container_cli
 
 # Determine total steps based on options
 if [[ "$RUN_PYTEST" == true ]]; then
@@ -119,8 +122,8 @@ for server in "${TEST_SERVERS[@]}"; do
   create_ds_container "$name" "$ldap_port" "$ldaps_port" "$DS_PASSWORD" "$DS_BASE_DN"
 
   # Skip waiting if container already existed
-  if docker inspect "$name" >/dev/null 2>&1; then
-    status=$(docker inspect -f '{{.State.Status}}' "$name")
+  if "$DS_CLI" inspect "$name" >/dev/null 2>&1; then
+    status=$("$DS_CLI" inspect -f '{{.State.Status}}' "$name")
     if [[ "$status" == "running" ]]; then
       # Wait for DS
       if ! wait_for_ds "$name"; then
@@ -190,7 +193,7 @@ if [[ "$SKIP_SEED" != true ]]; then
     local name=$1
     local suffix=$2
 
-    docker exec -i "$name" ldapadd \
+    "$DS_CLI" exec -i "$name" ldapadd \
       -H ldap://localhost:3389 \
       -D "cn=Directory Manager" \
       -w "$DS_PASSWORD" \
@@ -327,7 +330,7 @@ STEP=$((STEP + 1))
 echo "[$STEP/$TOTAL_STEPS] Verifying test data..."
 for server in "${TEST_SERVERS[@]}"; do
   IFS=':' read -r name ldap_port ldaps_port <<< "$server"
-  count=$(docker exec "$name" ldapsearch -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -x -b "ou=people,$DS_BASE_DN" -s sub "(uid=*)" dn 2>/dev/null | grep -c "^dn:" || echo "0")
+  count=$("$DS_CLI" exec "$name" ldapsearch -H ldap://localhost:3389 -D "cn=Directory Manager" -w "$DS_PASSWORD" -x -b "ou=people,$DS_BASE_DN" -s sub "(uid=*)" dn 2>/dev/null | grep -c "^dn:" || echo "0")
   echo "  $name: $count users found"
 done
 STEP=$((STEP + 1))

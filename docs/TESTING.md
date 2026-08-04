@@ -26,6 +26,19 @@ Run everything, including `live` tests, with a single command:
 
 This script handles everything: container setup, test data seeding, and pytest execution.
 
+Docker is the default container runtime. To run the same scripts with Podman,
+select it for the whole shell session (and start `podman machine` first on
+macOS or Windows):
+
+```bash
+export DS_CLI=podman
+podman machine start  # macOS/Windows only
+./scripts/ds-test.sh
+```
+
+The scripts fail before setup or cleanup when the selected CLI is missing or
+its engine is unavailable.
+
 ## Test Environment
 
 The test suite creates **3 DS containers** for multi-server testing:
