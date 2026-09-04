@@ -28,7 +28,7 @@ requires-python = ">=3.11"
 dependencies = [
     # FastMCP 3.x compatibility is covered by the tag metadata fallback in
     # tests/eval/run_eval.py.
-    "fastmcp>=2.13,<4",
+    "fastmcp>=2.13,<5",
     "lib389>=3.1.3",
 ]
 
